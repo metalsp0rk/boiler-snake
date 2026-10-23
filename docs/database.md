@@ -534,7 +534,7 @@ See [Twitch Stream Notifications](twitch-notifications.md).
 
 Per-guild watched GitHub repositories for release announcements. `token`
 (optional per-repo GitHub token) is stored **AES-256-GCM envelope-encrypted
-at rest** (`v1.…` envelope, `TOKEN_ENCRYPTION_KEY` — audit C6, migration
+at rest** (`v1`/`v2` envelope — #281 makes new writes `v2.<key-id>.…`, legacy `v1.…` stays readable; `TOKEN_ENCRYPTION_KEY` — audit C6, migration
 039 back-encrypts pre-existing plaintext rows and fails boot loudly if the
 key is missing while rows exist). It is never surfaced by display queries —
 the ticker reads the decrypted value via `getAllGithubWatches()` only.
@@ -1521,7 +1521,7 @@ CREATE TABLE bridges (
 
 #### `bridge_ends`
 
-The two channel ends of a bridge (`position` `a`/`b`): which community channel participates, its posture flags (`nsfw`, `everyone_denied_view`), and the relay webhook pair each end posts through. `webhook_token_enc` holds **only** the AES-256-GCM `v1.` envelope of the webhook token (`src/features/bridge/tokenCrypto.js`, key `BRIDGE_TOKEN_KEY`) — never plaintext. `UNIQUE (community_id, channel_id)` pins a channel to at most one bridge. Primary writer: the connect flow in `src/features/bridge/service.js` (ends created by the repository).
+The two channel ends of a bridge (`position` `a`/`b`): which community channel participates, its posture flags (`nsfw`, `everyone_denied_view`), and the relay webhook pair each end posts through. `webhook_token_enc` holds **only** an AES-256-GCM envelope of the webhook token — `v2.<key-id>.…` writes, legacy `v1.…` readable, converged forward on relay reads (#281) (`src/features/bridge/tokenCrypto.js`, key `BRIDGE_TOKEN_KEY`) — never plaintext. `UNIQUE (community_id, channel_id)` pins a channel to at most one bridge. Primary writer: the connect flow in `src/features/bridge/service.js` (ends created by the repository).
 
 ```sql
 -- Live DDL (migrated schema, from sqlite_master)
@@ -1716,7 +1716,7 @@ CREATE INDEX idx_admin_audit_created_at
 
 #### `guild_command_permission_oauth`
 
-The per-community Discord OAuth grant behind slash-command permission sync (`016_command_permission_oauth`): `refresh_token` / `access_token` are stored **envelope-encrypted** (`v1.…`, `TOKEN_ENCRYPTION_KEY` via `src/core/thirdPartyTokens.js`; migration `039` back-encrypts pre-encryption rows), plus sync bookkeeping (`last_sync_at` / `last_sync_error`). The grant is obtained by the `/staff syncpermissions` OAuth flow. Primary writer: `src/db/repositories/commandPermissionOauth.js`.
+The per-community Discord OAuth grant behind slash-command permission sync (`016_command_permission_oauth`): `refresh_token` / `access_token` are stored **envelope-encrypted** (`v1`/`v2` — #281, `TOKEN_ENCRYPTION_KEY` via `src/core/thirdPartyTokens.js`; migration `039` back-encrypts pre-encryption rows), plus sync bookkeeping (`last_sync_at` / `last_sync_error`). The grant is obtained by the `/staff syncpermissions` OAuth flow. Primary writer: `src/db/repositories/commandPermissionOauth.js`.
 
 ```sql
 -- Live DDL (migrated schema, from sqlite_master)
@@ -1859,7 +1859,7 @@ Concretely this means:
 | `036_user_links` | Account linking: `user_links` pairs + `user_link_codes` (one Discord ↔ one Fluxer identity, per-direction mirror flags; see [Account Linking](account-linking.md)) |
 | `037_ticket_archive_claim` | CAS archive-claim marker on `tickets` so concurrent closes can't double-archive (audit #197) |
 | `038_event_reminder_claim_state` | Real delivery state machine on `event_reminder_offsets` (`sending`/backoff/attempts; audit #196) |
-| `039_encrypt_third_party_tokens` | One-time re-encryption of third-party credentials (Discord OAuth tokens, GitHub PATs) to the AES-256-GCM `v1.` envelope; loud boot gate when `TOKEN_ENCRYPTION_KEY` is missing while rows exist (audit C6, #189) |
+| `039_encrypt_third_party_tokens` | One-time re-encryption of third-party credentials (Discord OAuth tokens, GitHub PATs) to the AES-256-GCM envelope (`v1.` at migration time; new writes are `v2.<key-id>` since #281); loud boot gate when `TOKEN_ENCRYPTION_KEY` is missing while rows exist — or when a sealed row decrypts with NEITHER the current key NOR a `TOKEN_ENCRYPTION_KEY_RETIRED` entry (audit C6, #189; rotation #281) |
 | `040_schema_hygiene` | CHECK constraints via DDL-derived table rebuilds (`users.xp BETWEEN 0 AND 9007199254740991`, `gork_budget_rules.daily_limit BETWEEN -1 AND 1000`; violating rows fail boot loudly by name), `idx_users_guild_xp` + partial `idx_tickets_archived`, drop the dead `voice_sessions` table (audit #204) |
 | `041_heal_partial_community_cutover` | Self-healing repair for DBs stuck in a **partial** 034 cutover (audit #285): detects every surviving `GUILD_SCOPED_TABLES` straggler (still `guild_id`, or missing `community_id`), backfills `communities` from its guild values and rebuilds it with 034's live-DDL derivation (data/PK/indexes preserved, FK-toggled transaction). Un-mappable rows (NULL guild_id etc.) fail boot loudly by name; healthy DB = pure no-op. Idempotent; the only convergence path for the historical partial state under #202's fast-skip |
 | `042_events_core` | Community events core schema (epic #218 phases 1–2): `events`, `event_options`, `event_signups`, `event_notifications`, `event_mutes`, `event_activity`, `event_guild_settings` |
@@ -1973,7 +1973,8 @@ This reclaims space from deleted logs and optimizes file size.
 - Ticket transcripts and staff notes may hold message content — treat backups carefully
 - **No passwords are stored** — the web console signs in through OAuth; there is
   no local password table. The database **does** store third-party secrets,
-  always **envelope-encrypted at rest** (AES-256-GCM `v1.` envelope — never
+  always **envelope-encrypted at rest** (AES-256-GCM envelope — `v2.<key-id>`
+  for core-codec stores since #281, legacy `v1` readable everywhere; never
   plaintext):
   - per-repo GitHub PATs — `github_watches.token`
     (see [GitHub releases](github-releases.md))
@@ -1986,9 +1987,12 @@ This reclaims space from deleted logs and optimizes file size.
   `src/core/thirdPartyTokens.js`; bridge webhook tokens use the same envelope
   scheme under a separate `BRIDGE_TOKEN_KEY`; web-console tokens use the
   HKDF-derived key in `src/web/auth/tokens.js` (rooted at `SESSION_SECRET`).
-  Migration `039` back-encrypted legacy plaintext rows and boot **fails loudly**
-  when the key is missing while token rows exist — the bot never runs with
-  mixed plaintext/ciphertext columns
+  Rotation (#281): the core-codec keys accept a `*_RETIRED` list of previous
+  keys; rows re-seal with the current key as they are read, so a rotation
+  needs no re-authorization dance. Migration `039` back-encrypted legacy
+  plaintext rows and boot **fails loudly** when the key is missing while
+  token rows exist — the bot never runs with mixed plaintext/ciphertext
+  columns
 - Ciphertext is still a secret: the same file-permission and backup care as the
   rest of the DB applies (ticket `transcript_token` values are random
   bearer-capability URLs — treat exports as sensitive)

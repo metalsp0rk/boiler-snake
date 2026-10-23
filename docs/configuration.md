@@ -143,14 +143,33 @@ See [Help Tickets](tickets.md) and [Gork](gork.md).
 | Variable | Purpose |
 |----------|---------|
 | `TOKEN_ENCRYPTION_KEY` | 32 bytes of base64 (`openssl rand -base64 32`): AES-256-GCM encryption at rest for **GitHub PATs** (entered via [/github token](github-releases.md#set-a-repository-token)) and the Discord user OAuth tokens behind [`/staff syncpermissions`](staff-roles.md). Separate from `BRIDGE_TOKEN_KEY` on purpose |
+| `TOKEN_ENCRYPTION_KEY_RETIRED` | Optional: comma-separated list of **previous** `TOKEN_ENCRYPTION_KEY` values kept read-only during a key rotation (#281). Never used for writes |
 
 When unset, features that would *store* a token fail with an actionable
 message naming this variable (tokens are never stored in plaintext);
 token-less watching still works unauthenticated. On the first boot of the
 version that added it, the one-time migration also **requires** the key if
 such rows already exist in the database — boot stops with the exact fix
-instead of running with half-encrypted columns. No rotation in v1: changing
-the key strands stored tokens (re-add watches, re-run the sync authorize).
+instead of running with half-encrypted columns.
+
+**Rotating the key (#281).** Stored credentials use a versioned envelope:
+`v2.<key-id>.…` for new writes, legacy `v1.…` readable forever. To rotate:
+
+1. Move the current key into `TOKEN_ENCRYPTION_KEY_RETIRED`, set a fresh
+   `TOKEN_ENCRYPTION_KEY` (`openssl rand -base64 32`), restart.
+2. Operate normally — every credential that decrypts (via the retired entry)
+   re-seals with the new key the next time it is used (github ticker read,
+   sync trigger, calendar sync). No downtime, no re-authorization.
+3. Optionally verify nothing old remains:
+   `SELECT COUNT(*) FROM github_watches WHERE token LIKE 'v1.%' OR token LIKE 'v2.<old-key-id>.%'`
+   (same shape for the other two tables; the key id is only visible in the
+   stored envelopes).
+4. Delete the `TOKEN_ENCRYPTION_KEY_RETIRED` entry. Rotating **without**
+   retiring the old key strands existing tokens (re-add watches, re-run the
+   sync authorize) — the unchanged fail-loud posture for unknown-key rows.
+
+Google Calendar grants (`event_google_links`) ride the same key and converge
+the same way.
 
 #### Google Calendar sync (optional)
 

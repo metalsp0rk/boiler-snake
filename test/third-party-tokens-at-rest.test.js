@@ -17,6 +17,7 @@ after(cleanup);
 const {
   KEY_ENV,
   ENVELOPE_PREFIX,
+  ENVELOPE_V2_PREFIX,
   hasTokenKey,
   encryptToken,
   decryptToken,
@@ -129,7 +130,7 @@ describe("github_watches repository: ciphertext at rest", () => {
     assert.equal(row.token, undefined, "user-facing getter must not carry the column");
 
     const raw = rawWatchToken(CID, "acme/secret");
-    assert.ok(raw.startsWith(ENVELOPE_PREFIX), `raw column must be an envelope, got ${raw.slice(0, 12)}…`);
+    assert.ok(raw.startsWith(ENVELOPE_V2_PREFIX), `raw column must be an envelope, got ${raw.slice(0, 12)}…`);
     assert.notEqual(raw, "ghp_faketoken_1234567890");
     assert.ok(!raw.includes("ghp_faketoken"));
     assert.equal(decryptToken(raw), "ghp_faketoken_1234567890");
@@ -249,8 +250,8 @@ describe("guild_command_permission_oauth repository: ciphertext at rest", () => 
       accessExpiresAt: 123,
     });
     const raw = rawOauth(CID);
-    assert.ok(raw.refresh_token.startsWith(ENVELOPE_PREFIX));
-    assert.ok(raw.access_token.startsWith(ENVELOPE_PREFIX));
+    assert.ok(raw.refresh_token.startsWith(ENVELOPE_V2_PREFIX));
+    assert.ok(raw.access_token.startsWith(ENVELOPE_V2_PREFIX));
     assert.notEqual(raw.refresh_token, "rt-at-rest");
     assert.notEqual(raw.access_token, "at-at-rest");
     assert.ok(!JSON.stringify(raw).includes("rt-at-rest"));
@@ -273,7 +274,7 @@ describe("guild_command_permission_oauth repository: ciphertext at rest", () => 
     const row = api.getCommandPermissionOauth(CID);
     assert.equal(row.refresh_token, "rt-rotated");
     assert.equal(row.access_token, "at-rot");
-    assert.ok(rawOauth(CID).refresh_token.startsWith(ENVELOPE_PREFIX));
+    assert.ok(rawOauth(CID).refresh_token.startsWith(ENVELOPE_V2_PREFIX));
   });
 
   it("re-writing the SAME refresh token yields different ciphertext but equal plaintext — the #193 raced-400 check compares decrypted values", () => {
@@ -335,7 +336,7 @@ describe("guild_command_permission_oauth repository: ciphertext at rest", () => 
     assert.deepEqual(rawOauth(CID2), rawBefore, "failed upsert stores nothing");
 
     process.env[KEY_ENV] = FAKE_TOKEN_ENCRYPTION_KEY;
-    assert.ok(rawOauth(CID2).refresh_token.startsWith(ENVELOPE_PREFIX));
+    assert.ok(rawOauth(CID2).refresh_token.startsWith(ENVELOPE_V2_PREFIX));
     assert.ok(!JSON.stringify(rawOauth(CID2)).includes("rt-attacker"));
     assert.ok(!JSON.stringify(rawOauth(CID2)).includes("rt-original"), "plaintext never lands");
     assert.equal(api.getCommandPermissionOauth(CID2).refresh_token, "rt-original");
@@ -381,5 +382,132 @@ describe("guild_command_permission_oauth repository: ciphertext at rest", () => 
         else process.env[k] = v;
       }
     }
+  });
+});
+
+// ===========================================================================
+// #281 — key rotation: lazy forward convergence
+// ===========================================================================
+
+describe("key rotation lazy convergence (#281)", () => {
+  const crypto = require("crypto");
+  const KEY_OLD = Buffer.alloc(32, 0x21).toString("base64");
+  const KEY_NEW = Buffer.alloc(32, 0x22).toString("base64");
+  const KEY_LOST = Buffer.alloc(32, 0x23).toString("base64");
+  const KEY_RETIRED_ENV = "TOKEN_ENCRYPTION_KEY_RETIRED";
+  const CIDR = communityKey("1554590611015729990");
+  const CIDR2 = communityKey("1554590611015729991");
+
+  /** Hand-rolled v1 envelope (the legacy form new code never writes). */
+  function handV1(keyB64, plaintext) {
+    const key = Buffer.from(keyB64, "base64");
+    const iv = crypto.randomBytes(12);
+    const c = crypto.createCipheriv("aes-256-gcm", key, iv);
+    const ct = Buffer.concat([c.update(plaintext, "utf8"), c.final()]);
+    return [
+      "v1",
+      iv.toString("base64"),
+      c.getAuthTag().toString("base64"),
+      ct.toString("base64"),
+    ].join(".");
+  }
+
+  async function withKeys(current, retired, fn) {
+    const prev = {
+      [KEY_ENV]: process.env[KEY_ENV],
+      [KEY_RETIRED_ENV]: process.env[KEY_RETIRED_ENV],
+    };
+    try {
+      if (current == null) delete process.env[KEY_ENV];
+      else process.env[KEY_ENV] = current;
+      if (retired == null) delete process.env[KEY_RETIRED_ENV];
+      else process.env[KEY_RETIRED_ENV] = retired;
+      return await fn();
+    } finally {
+      for (const [k, v] of Object.entries(prev)) {
+        if (v === undefined) delete process.env[k];
+        else process.env[k] = v;
+      }
+    }
+  }
+
+  it("a watch sealed with the pre-rotation key converges on the next read", async () => {
+    // Pre-rotation: token stored under the OLD key...
+    await withKeys(KEY_OLD, null, () => {
+      api.addGithubWatch(CIDR, "acme/rot", "acme/rot", { token: "ghp-rotate-me" });
+    });
+    const v2OldId = rawWatchToken(CIDR, "acme/rot");
+    assert.ok(v2OldId.startsWith("v2."));
+
+    // Rotate: current becomes NEW, OLD demoted to RETIRED.
+    const watches = await withKeys(KEY_NEW, KEY_OLD, () => api.getAllGithubWatches());
+    const watch = watches.find((w) => w.repo === "acme/rot");
+    assert.equal(watch?.token, "ghp-rotate-me", "old-key row reads through the retired key");
+    const converged = rawWatchToken(CIDR, "acme/rot");
+    assert.ok(
+      converged !== v2OldId && converged.startsWith("v2."),
+      "row re-sealed forward to a v2 envelope"
+    );
+
+    // Converged: further reads are byte-identical (no rewrite churn).
+    const again = await withKeys(KEY_NEW, null, () => api.getAllGithubWatches());
+    assert.equal(again.find((w) => w.repo === "acme/rot")?.token, "ghp-rotate-me",
+      "retired entry can be dropped once rows converged");
+    assert.equal(rawWatchToken(CIDR, "acme/rot"), converged, "steady state: no rewrite");
+  });
+
+  it("an OAuth grant sealed with the pre-rotation key converges on the next read", async () => {
+    await withKeys(KEY_OLD, null, () => {
+      api.upsertCommandPermissionOauth(CIDR2, {
+        refreshToken: "rt-rot",
+        accessToken: "at-rot",
+        accessExpiresAt: 999,
+        authorizedByUserId: "u1",
+      });
+    });
+    await withKeys(KEY_NEW, KEY_OLD, async () => {
+      const row = api.getCommandPermissionOauth(CIDR2);
+      assert.equal(row.refresh_token, "rt-rot");
+      assert.equal(row.access_token, "at-rot");
+    });
+    const raw = rawOauth(CIDR2);
+    assert.ok(raw.refresh_token.startsWith("v2.") && raw.access_token.startsWith("v2."));
+    // Both columns now read WITHOUT the retired entry (converged).
+    const after = await withKeys(KEY_NEW, null, () => api.getCommandPermissionOauth(CIDR2));
+    assert.equal(after.refresh_token, "rt-rot");
+    assert.equal(after.access_token, "at-rot");
+  });
+
+  it("a key that was rotated out WITHOUT retiring still fails loud per-site (unchanged)", async () => {
+    await withKeys(KEY_LOST, null, () => {
+      api.addGithubWatch(CIDR2, "acme/stranded", "acme/stranded", { token: "ghp-stranded" });
+      api.upsertCommandPermissionOauth(CIDR, {
+        refreshToken: "rt-stranded",
+        accessToken: null,
+        accessExpiresAt: null,
+        authorizedByUserId: "u1",
+      });
+    });
+    await withKeys(KEY_NEW, null, () => {
+      // github: per-row skip + log (ticker keeps serving healthy rows)
+      const logs = [];
+      const orig = console.error;
+      console.error = (...a) => logs.push(a.join(" "));
+      try {
+        const list = api.getAllGithubWatches();
+        assert.ok(!list.some((w) => w.repo === "acme/stranded"), "stranded row skipped");
+      } finally {
+        console.error = orig;
+      }
+      assert.ok(
+        logs.some((l) => l.includes("acme/stranded") && l.includes("could not be decrypted")),
+        "the skip names the row"
+      );
+      // oauth: verbatim throw (contract of the sync path)
+      assert.throws(
+        () => api.getCommandPermissionOauth(CIDR),
+        /could not be decrypted/
+      );
+    });
   });
 });

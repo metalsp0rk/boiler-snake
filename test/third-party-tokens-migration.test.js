@@ -36,6 +36,7 @@ const migration = require("../src/db/migrations/039_encrypt_third_party_tokens")
 const {
   KEY_ENV,
   ENVELOPE_PREFIX,
+  ENVELOPE_V2_PREFIX,
   encryptToken,
   decryptToken,
   looksLikeEnvelope,
@@ -196,8 +197,8 @@ describe("migration 039_encrypt_third_party_tokens", () => {
         runUp(db);
 
         const oauth = rawOauth(db, 7);
-        assert.ok(oauth.refresh_token.startsWith(ENVELOPE_PREFIX), "refresh becomes an envelope");
-        assert.ok(oauth.access_token.startsWith(ENVELOPE_PREFIX), "access becomes an envelope");
+        assert.ok(oauth.refresh_token.startsWith(ENVELOPE_V2_PREFIX), "refresh becomes an envelope");
+        assert.ok(oauth.access_token.startsWith(ENVELOPE_V2_PREFIX), "access becomes an envelope");
         assert.notEqual(oauth.refresh_token, "rt-secret");
         assert.equal(decryptToken(oauth.refresh_token), "rt-secret");
         assert.equal(decryptToken(oauth.access_token), "at-secret");
@@ -328,14 +329,14 @@ describe("migration 039_encrypt_third_party_tokens", () => {
       const oauth = api2.db
         .prepare(`SELECT refresh_token, access_token FROM guild_command_permission_oauth WHERE community_id=?`)
         .get(cid);
-      assert.ok(oauth.refresh_token.startsWith(ENVELOPE_PREFIX));
-      assert.ok(oauth.access_token.startsWith(ENVELOPE_PREFIX));
+      assert.ok(oauth.refresh_token.startsWith(ENVELOPE_V2_PREFIX));
+      assert.ok(oauth.access_token.startsWith(ENVELOPE_V2_PREFIX));
       assert.notEqual(oauth.refresh_token, "legacy-refresh");
 
       const watch = api2.db
         .prepare(`SELECT token FROM github_watches WHERE community_id=? AND repo='acme/widgets'`)
         .get(cid);
-      assert.ok(watch.token.startsWith(ENVELOPE_PREFIX));
+      assert.ok(watch.token.startsWith(ENVELOPE_V2_PREFIX));
     });
 
     it("repositories read the re-encrypted rows back as the original plaintext", () => {
@@ -364,5 +365,63 @@ describe("migration 039_encrypt_third_party_tokens", () => {
       assert.deepEqual(after, before, "already-encrypted rows stay byte-identical across boots");
       assert.equal(api3.getCommandPermissionOauth(cid).refresh_token, "legacy-refresh");
     });
+  });
+});
+
+// ===========================================================================
+// #281 — rotation era: RETIRED keys pass the boot gate; fail-loud stands
+// ===========================================================================
+
+describe("migration 039 with retired keys (#281)", () => {
+  const crypto = require("crypto");
+  const KEY_NEW = Buffer.alloc(32, 0x31).toString("base64");
+  const KEY_RETIRED_NAME = "TOKEN_ENCRYPTION_KEY_RETIRED";
+
+  function handV1(keyB64, plaintext) {
+    const key = Buffer.from(keyB64, "base64");
+    const iv = crypto.randomBytes(12);
+    const c = crypto.createCipheriv("aes-256-gcm", key, iv);
+    const ct = Buffer.concat([c.update(plaintext, "utf8"), c.final()]);
+    return ["v1", iv.toString("base64"), c.getAuthTag().toString("base64"), ct.toString("base64")].join(".");
+  }
+
+  function withEnv(overlay, fn) {
+    const prev = {};
+    for (const [k, v] of Object.entries(overlay)) {
+      prev[k] = process.env[k];
+      if (v == null) delete process.env[k];
+      else process.env[k] = v;
+    }
+    try {
+      return fn();
+    } finally {
+      for (const [k, v] of Object.entries(prev)) {
+        if (v === undefined) delete process.env[k];
+        else process.env[k] = v;
+      }
+    }
+  }
+
+  it("a row sealed with a key now living in RETIRED passes the gate, untouched", () => {
+    const db = createFixtureDb();
+    const sealed = handV1(KEY_B, "legacy-pat");
+    seedWatch(db, 91, "acme/retired", sealed);
+    withEnv({ [KEY_ENV]: KEY_NEW, [KEY_RETIRED_NAME]: `junk-not-a-key,${KEY_B}` }, () => {
+      assert.doesNotThrow(() => runUp(db), "retired-key rows must not kill boot");
+    });
+    const after = db
+      .prepare("SELECT token FROM github_watches WHERE community_id=91")
+      .get().token;
+    assert.equal(after, sealed, "039 leaves decryptable-migrated rows byte-identical (lazy read converges later)");
+    db.close();
+  });
+
+  it("still refuses rows sealed by a key that is NEITHER current NOR retired", () => {
+    const db = createFixtureDb();
+    seedWatch(db, 92, "acme/stranded", handV1(KEY_B, "legacy-pat"));
+    withEnv({ [KEY_ENV]: KEY_NEW, [KEY_RETIRED_NAME]: null }, () => {
+      assert.throws(() => runUp(db), (err) => /Migration 039 refused/.test(err.message) && /TOKEN_ENCRYPTION_KEY_RETIRED/.test(err.message));
+    });
+    db.close();
   });
 });

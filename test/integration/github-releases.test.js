@@ -497,7 +497,7 @@ describe("integration: github releases", () => {
       const stored = tokenColumn(env.communityId, "gh444/app");
       assert.ok(stored && stored !== SECRET, "stored value is not the plaintext");
       assert.ok(
-        stored.startsWith(require("../../src/core/thirdPartyTokens").ENVELOPE_PREFIX),
+        stored.startsWith(require("../../src/core/thirdPartyTokens").ENVELOPE_V2_PREFIX),
         "stored token is an encryption envelope",
       );
       // The reply confirms without repeating the secret, and is ephemeral.

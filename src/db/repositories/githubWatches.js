@@ -98,13 +98,35 @@ function getAllGithubWatches() {
   const usable = [];
   for (const row of rows) {
     try {
-      usable.push({
-        ...row,
-        token:
-          row.token == null || row.token === ""
-            ? row.token
-            : tokens.decryptToken(row.token),
-      });
+      const plaintext =
+        row.token == null || row.token === ""
+          ? row.token
+          : tokens.decryptToken(row.token);
+      // #281 lazy forward-migration: a v1 row (or v2 sealed by a retired
+      // key) converges to a v2/current-key envelope on the next successful
+      // read. A failed re-seal write NEVER loses the row — the decrypted
+      // read stands, the write is best-effort.
+      if (
+        typeof plaintext === "string" &&
+        plaintext !== "" &&
+        tokens.needsTokenReencrypt(row.token)
+      ) {
+        try {
+          const resealed = tokens.encryptToken(plaintext);
+          if (resealed != null) {
+            db.prepare(
+              `UPDATE github_watches SET token=? WHERE community_id=? AND repo=?`
+            ).run(resealed, row.community_id, row.repo);
+          }
+        } catch (err) {
+          console.error(
+            `[github] Watch ${row.repo} (community ${row.community_id}): token ` +
+              `re-encrypt write failed (key rotation #281, row still usable): ` +
+              `${err?.message || err}`,
+          );
+        }
+      }
+      usable.push({ ...row, token: plaintext });
     } catch (err) {
       console.error(
         `[github] Skipping watch ${row.repo} (community ${row.community_id}): ` +

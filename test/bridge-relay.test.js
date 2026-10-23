@@ -1600,6 +1600,49 @@ describe("bridge relay worker (PR 5)", () => {
     assert.equal(repo.getBridgeOutboxById(row.id).state, "done", "row terminal on the adapter's ack");
   });
 
+
+// ---------------------------------------------------------------------------
+// #281: a v1-sealed end token (pre-rotation era / retired key) converges to
+// v2 with the CURRENT key on the first successful relay — the stored end
+  // never blocks delivery while it is readable.
+  // ---------------------------------------------------------------------------
+    it("#281 a v1-sealed end token re-seals to v2 on the first successful send", async () => {
+      const { bridge, publicId } = seedBridge("a_to_b");
+    const handV1 = (token) => {
+      const key = Buffer.from(KEY, "base64");
+      const iv = crypto.randomBytes(12);
+      const c = crypto.createCipheriv("aes-256-gcm", key, iv);
+      const ct = Buffer.concat([c.update(token, "utf8"), c.final()]);
+      return ["v1", iv.toString("base64"), c.getAuthTag().toString("base64"), ct.toString("base64")].join(".");
+    };
+    const whB = db.db
+      .prepare("SELECT webhook_id FROM bridge_ends WHERE bridge_id=? AND position='b'")
+      .get(bridge.id).webhook_id;
+    repo.setBridgeEndWebhook(bridge.id, "b", { webhookId: whB, tokenEnc: handV1("tok-b") });
+
+    const row = repo.enqueueBridgeOutbox(bridge.id, {
+      direction: "a_to_b",
+      kind: "create",
+      srcMessageId: "9850",
+      payload: createPayload(publicId, "9850"),
+    });
+    const fluxer = scriptedApi("fRot", [{ ok: true, messageId: "dst-rot-1" }]);
+    const worker = makeWorker({
+      getWebhookApi: (platform) => (platform === "fluxer" ? fluxer : null),
+    });
+    await worker.drainAll();
+
+    assert.equal(fluxer.calls.length, 1, "the v1 end still relays");
+    assert.equal(rowState(row.id).state, "done");
+    const raw = db.db
+      .prepare("SELECT webhook_token_enc FROM bridge_ends WHERE bridge_id=? AND position='b'")
+      .get(bridge.id).webhook_token_enc;
+    assert.ok(raw.startsWith("v2."), `#281 end envelope converged to v2, got ${raw.slice(0, 6)}…`);
+    assert.equal(tokenCrypto.decryptWebhookToken(raw, { keyGetter: () => KEY }), "tok-b",
+      "same token, current key");
+    assert.equal(fluxer.calls[0].webhook.token, "tok-b", "the in-flight send used the decrypted token");
+});
+
 });
 
   // -------------------------------------------------------------------------

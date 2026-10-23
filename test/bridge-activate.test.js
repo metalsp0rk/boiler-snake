@@ -793,7 +793,7 @@ describe("bridge service (PR 4)", () => {
 
     // Tokens are AES-256-GCM envelopes at rest; plaintext is nowhere stored.
     for (const end of ends) {
-      assert.ok(String(end.webhook_token_enc).startsWith("v1."), "envelope prefix");
+      assert.ok(String(end.webhook_token_enc).startsWith("v2."), "envelope prefix");
       assert.ok(!String(end.webhook_token_enc).includes("tok-"));
     }
     assert.equal(
@@ -881,7 +881,7 @@ describe("bridge service (PR 4)", () => {
     const envelope = tokenCrypto.encryptWebhookToken("s3cret-token", {
       keyGetter: () => KEY,
     });
-    assert.ok(envelope.startsWith("v1."));
+    assert.ok(envelope.startsWith("v2."));
     assert.ok(!envelope.includes("s3cret"));
     assert.equal(
       tokenCrypto.decryptWebhookToken(envelope, { keyGetter: () => KEY }),
