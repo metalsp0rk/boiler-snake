@@ -221,6 +221,9 @@ function makeGorkMessage(env, opts = {}) {
         member && member.permissions ? member.permissions.has(flag) : false,
     },
     reference: opts.reference || null,
+    // Real discord.js carries the CACHED referenced message (null when not
+    // cached) — the #176 gate line reads this without any fetch.
+    referencedMessage: opts.referencedMessage ?? null,
     // Real discord.js messages always carry `mentions`; role-mention trigger
     // tests (issue #174) pass opts.mentionedRoleIds to seed the role set
     // (the pipeline's normalizeDiscordMessage turns this into id strings).
@@ -3773,6 +3776,189 @@ describe("integration: gork role-mention trigger (issue #174)", () => {
       assert.equal(second.replies.length, 0, "cooldown suppresses the second answer");
       assert.deepEqual(second.reacts, ["🕐"], "cooldown clock reaction lands on the trigger");
       assert.equal(fetchMock.calls.length, 1, "no LLM call during cooldown");
+    } finally {
+      restoreEnv(saved);
+      fetchMock.restore();
+    }
+  });
+});
+
+// ---------- #176: replying to gork's own answer ----------
+// Discord AUTO-PREFIXES a reply with `<@REPLIED_AUTHOR>`. Replying to a gork
+// answer therefore ships content like `<@BOTID> gork what did you say?` —
+// and the keyword-at-start rule (decision 1) used to drop the follow-up the
+// user clearly addressed to gork with ZERO signal (no reply, no 🕐, no row).
+// The reply auto-mention of OUR OWN bot is stripped before trigger matching;
+// the keyword itself is still mandatory (scope discipline), and a silent
+// reply-to-gork now leaves an operator-visible gate line.
+describe("integration: gork reply-to-gork-answer auto-mention (issue #176)", () => {
+  const BOT = {
+    id: IDS.bot,
+    username: "BoilerSnake",
+    bot: true,
+    tag: "BoilerSnake#0000",
+  };
+  const botTok = `<@${IDS.bot}>`;
+
+  /** Chain object standing in for one of gork's own answer posts (plain
+   *  bot-authored channel message — exactly the split-continuation shape). */
+  function gorkAnswerObject(ch, id, content) {
+    return {
+      id,
+      channelId: ch.id,
+      content,
+      author: BOT,
+      reference: null,
+      fetchReference: async () => {
+        throw new Error(`${id} has no reference`);
+      },
+    };
+  }
+
+  /** Capture console.log for the duration of fn. */
+  async function withLogCapture(fn) {
+    const lines = [];
+    const orig = console.log;
+    console.log = (...args) => lines.push(args.map(String).join(" "));
+    try {
+      const result = await fn();
+      return { result, lines };
+    } finally {
+      console.log = orig;
+    }
+  }
+
+  it("reply to gork's own answer with the auto-mention prefix: keyword triggers, gork's prior answer feeds the prompt", async () => {
+    const env = await freshEnv({ guildId: uniqueId("guild-176-hit") });
+    const saved = saveEnv();
+    const fetchMock = mockFetch([
+      chatCompletionResponse("I said your keys are in the fridge, member."),
+    ]);
+    try {
+      enableAiKey();
+      env.db.updateGuildSettings(env.communityId, {
+        gork_keyword: "gork",
+        gork_context_window: 10,
+      });
+      const ch = env.channels.general;
+      const answer = gorkAnswerObject(
+        ch,
+        "gork-a1",
+        "Your keys, member. In the fridge, probably.",
+      );
+      ch.addMessage({
+        id: "gork-a1",
+        content: answer.content,
+        author: BOT,
+        createdTimestamp: Date.now() - 8000,
+      });
+      attachTyping(ch);
+
+      const { message, replies } = makeGorkMessage(env, {
+        id: "t-176-1",
+        // What the Discord client actually sends replying to gork with the
+        // keyword typed — auto-mention token first, keyword after it:
+        content: `${botTok} gork what did you just say?`,
+        reference: { messageId: "gork-a1" },
+        fetchReference: async () => answer,
+      });
+
+      await env.onMessageCreate(message);
+      await gorkIdle();
+
+      assert.equal(
+        replies.length,
+        1,
+        "#176: the auto reply-mention prefix must not swallow the keyword",
+      );
+      assert.equal(fetchMock.calls.length, 1, "exactly one AI round trip");
+      const body = JSON.parse(fetchMock.calls[0].init.body);
+      const userMsg = body.messages.find((m) => m.role === "user");
+      assert.ok(
+        userMsg.content.startsWith("[ASKER @member] what did you just say?"),
+        `question must be the stripped keyword remainder, got: ${userMsg.content.slice(0, 180)}`,
+      );
+      assert.ok(
+        !userMsg.content.includes(botTok),
+        "the bot mention token must not ride along in the prompt",
+      );
+      assert.ok(
+        userMsg.content.includes("fridge"),
+        "gork's own prior answer must reach the context (decision 4: bot messages are context)",
+      );
+    } finally {
+      restoreEnv(saved);
+      fetchMock.restore();
+    }
+  });
+
+  it("reply to gork WITHOUT a keyword stays silent by design — and leaves the gated evidence line", async () => {
+    const env = await freshEnv({ guildId: uniqueId("guild-176-silent") });
+    const saved = saveEnv();
+    const fetchMock = mockFetch([]);
+    try {
+      enableAiKey();
+      env.db.updateGuildSettings(env.communityId, { gork_keyword: "gork" });
+      const ch = env.channels.general;
+      const answer = gorkAnswerObject(ch, "gork-a2", "The capital of France is Paris.");
+      ch.addMessage({
+        id: "gork-a2",
+        content: answer.content,
+        author: BOT,
+        createdTimestamp: Date.now() - 8000,
+      });
+      attachTyping(ch);
+
+      const { message, replies } = makeGorkMessage(env, {
+        id: "t-176-2",
+        content: `${botTok} nice, thanks`,
+        reference: { messageId: "gork-a2" },
+        referencedMessage: answer,
+        fetchReference: async () => answer,
+      });
+
+      const { lines } = await withLogCapture(async () => {
+        await env.onMessageCreate(message);
+        await gorkIdle();
+      });
+
+      assert.equal(replies.length, 0, "no keyword = no answer (decision 3 scope stays)");
+      assert.equal(fetchMock.calls.length, 0, "no LLM call on the silent path");
+      assert.ok(
+        lines.some(
+          (l) =>
+            l.includes("[gork]") &&
+            l.includes("reply to gork") &&
+            l.includes("gork-a2") &&
+            l.includes("did not trigger"),
+        ),
+        `expected the gated evidence line naming the silent reply-to-gork, saw: ${JSON.stringify(lines.filter((l) => l.includes("[gork]")))}`,
+      );
+    } finally {
+      restoreEnv(saved);
+      fetchMock.restore();
+    }
+  });
+
+  it("a leading mention of ANOTHER user still does not trigger (only our own bot token is stripped)", async () => {
+    const env = await freshEnv({ guildId: uniqueId("guild-176-scope") });
+    const saved = saveEnv();
+    const fetchMock = mockFetch([]);
+    try {
+      enableAiKey();
+      env.db.updateGuildSettings(env.communityId, { gork_keyword: "gork" });
+      attachTyping(env.channels.general);
+
+      const { message, replies } = makeGorkMessage(env, {
+        id: "t-176-3",
+        content: `<@${IDS.member2}> gork what do you think?`,
+      });
+
+      await env.onMessageCreate(message);
+      await gorkIdle();
+
+      assert.equal(replies.length, 0, "a non-bot leading mention keeps the keyword off the start (scope discipline)");
+      assert.equal(fetchMock.calls.length, 0);
     } finally {
       restoreEnv(saved);
       fetchMock.restore();

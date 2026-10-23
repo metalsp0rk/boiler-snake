@@ -41,6 +41,7 @@ User: "@gork how do I center a div"  (or "@gork" replying to a message)
 | Default keyword | `@gork` (literal text, styled to look like a mention) |
 | Configurable | Per-guild; staff can set any 1–50 char keyword or clear it (clear = disabled) |
 | Question text | Content after the keyword, trimmed; one optional leading separator (`:`, `-`, `?`, `!`) + whitespace stripped |
+| Reply auto-mention | Replying to one of gork's own messages (an answer or a split continuation chunk) makes the client auto-prefix your message with the bot's own mention (`<@bot>`) — that leading self-mention is **stripped before matching**, so `@gork …` typed as a reply triggers normally. Nothing else is stripped: a keyword after any other leading text (including someone else's mention) is still not a trigger |
 | Role mention trigger | `/gork role <@role>` (staff) additionally makes a **real role mention** of that role anywhere in the message a trigger. The question is the content with that role's mention tokens stripped (same separator rule). A **bare** mention follows the keyword-alone rule below. Off by default; the keyword stays the **master trigger switch** — `/gork keyword clear` silences gork entirely, role path included |
 | Works in | Guild text channels and threads (thread's own history). **Not** DMs |
 | Skipped | Bot messages, webhook messages, **open ticket channels** (silently) |
@@ -444,10 +445,11 @@ Staff can append up to 500 chars of rules via `/gork rules` (added as "Additiona
 1. Is `AI_API_KEY` set (and the bot restarted since)? Without a key, triggers are silently ignored — `/gork status` says "AI provider not configured"
 2. `/gork status` — is **Enabled** on? `/gork enable off` disables the whole feature for the server. Is the keyword set? `/gork keyword clear` also disables gork for the guild
 3. Is the message from a **bot or webhook**, in a **DM**, or in an **open ticket channel**? All are skipped silently
-4. Is the asker still within the per-user cooldown? A cooldown hit gets a **🕐 reaction** on the message and no reply (staff bypass; a 🕐 with no reply means "ask again in a bit")
-5. If **one specific user** always gets the "*brain went to lunch*" reply while others work — check `/gork bans`; banned users are answered with that exact text (no LLM call)
-6. Did a budget get configured (`/gork budget list`)? An over-budget or blocked scope replies with one terse line (then goes silent for an hour per user+scope); resets 00:00 UTC
-7. If the **budget check itself** fails (DB error), triggers fail **closed**: the "*brain went to lunch*" reply, no answers and no counts until the DB recovers (logged as `[gork] budget gate error`)
+4. **Replying to one of gork's answers?** The client auto-prefixes the reply with a bot mention (`<@bot>`) — that leading self-mention is **ignored when matching the keyword**, so typing `@gork what did you mean?` as a reply works like any other trigger. The keyword is still **required**: a follow-up reply *without* it (or the configured role mention) is silent **by design** — gork logs a `[gork] reply to gork's own message … did not trigger … silent by design` line so operators can see exactly that case
+5. Is the asker still within the per-user cooldown? A cooldown hit gets a **🕐 reaction** on the message and no reply (staff bypass; a 🕐 with no reply means "ask again in a bit")
+6. If **one specific user** always gets the "*brain went to lunch*" reply while others work — check `/gork bans`; banned users are answered with that exact text (no LLM call)
+7. Did a budget get configured (`/gork budget list`)? An over-budget or blocked scope replies with one terse line (then goes silent for an hour per user+scope); resets 00:00 UTC
+8. If the **budget check itself** fails (DB error), triggers fail **closed**: the "*brain went to lunch*" reply, no answers and no counts until the DB recovers (logged as `[gork] budget gate error`)
 
 ### Web search / page reading not happening
 

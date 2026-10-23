@@ -381,6 +381,40 @@ const COOLDOWN_REACTION = "🕐";
 const SEPARATORS = new Set([":", "-", "?", "!"]);
 
 /**
+ * Strip the leading REPLY AUTO-MENTION of our own bot user from a message
+ * before trigger matching (issue #176).
+ *
+ * Discord's client auto-prefixes a reply with `<@REPLIED_AUTHOR_ID>`. A
+ * follow-up typed as a reply to one of gork's own answers (first chunk or a
+ * split continuation — both are plain bot messages) therefore ships content
+ * like `<@BOTID> gork what did you say?`. The keyword-at-start rule
+ * (decision 1) then drops the exact message the user addressed to gork, with
+ * zero signal — the #176 report. This is NOT a scope expansion: the keyword
+ * (or the configured role) is still mandatory; only OUR OWN leading mention
+ * tokens, the ones the client inserts for replies to us, are removed before
+ * matching. Mentions of other users (auto or deliberate) and mid-text
+ * mentions are untouched.
+ *
+ * @param {unknown} content raw message content
+ * @param {string|null|undefined} botUserId our own user id (unset = no-op)
+ * @returns {string|unknown} content with leading `<@BOTID>`/`<@!BOTID>`
+ *   tokens and following whitespace removed (non-string passthrough)
+ */
+function stripAutoMentionPrefix(content, botUserId) {
+  if (typeof content !== "string") return content;
+  const uid = typeof botUserId === "string" ? botUserId.trim() : "";
+  if (!uid) return content;
+  const tokens = [`<@${uid}>`, `<@!${uid}>`];
+  let text = content.trim();
+  for (;;) {
+    const hit = tokens.find((t) => text.startsWith(t));
+    if (!hit) break;
+    text = text.slice(hit.length).replace(/^[ \t\u00A0]+/, "");
+  }
+  return text;
+}
+
+/**
  * Match a message against the guild's gork keyword (pure).
  *
  * The trimmed content must start with the keyword, compared
@@ -795,15 +829,42 @@ async function runGorkHook(client, message) {
     //    gork role anywhere (issue #174; role path needs `gork_role_id`).
     //    The keyword wins when both are present. Role-mention triggering is
     //    Discord-surface only — the Fluxer path keeps its own grammar.
-    let { triggered, question } = matchKeyword(message.content, keyword);
+    //    #176: a leading auto-reply-mention of OUR bot (inserted by the
+    //    client when replying to gork) is stripped before matching — it is
+    //    Discord's prefix, not text the user typed at gork.
+    const botUserId = client?.user?.id != null ? String(client.user.id) : null;
+    const triggerText = stripAutoMentionPrefix(message.content, botUserId);
+    let { triggered, question } = matchKeyword(triggerText, keyword);
     if (!triggered) {
       ({ triggered, question } = matchRoleMention(
-        message.content,
+        triggerText,
         mentionedRoleIds(message),
         settings?.gork_role_id,
       ));
     }
-    if (!triggered) return;
+    if (!triggered) {
+      // #176 evidence line, bounded by construction: only fires for replies
+      // targeting gork's OWN cached message that failed the trigger match —
+      // the exact confusion class of the report ("I replied to gork and got
+      // nothing"). Silence stays the DECISION (keyword/role remains the
+      // invocation authority); invisibility was not. Uses the cached
+      // referencedMessage only — never a fetch on the hot path.
+      const ref = message.referencedMessage;
+      if (
+        botUserId &&
+        ref &&
+        ref.author &&
+        String(ref.author.id) === botUserId &&
+        !message.author.bot
+      ) {
+        console.log(
+          `[gork] reply to gork's own message ${ref.id ?? "?"} in channel ${message.channelId} ` +
+            `by user ${message.author.id} did not trigger (no keyword prefix, no role mention) — ` +
+            `silent by design; content was: "${String(message.content ?? "").slice(0, 80)}"`,
+        );
+      }
+      return;
+    }
 
     // 7. Keyword alone (or role mention alone — the mention token is
     //    stripped, leaving an empty question): answer from reply-chain
@@ -2122,6 +2183,7 @@ async function runGorkFluxerEntry(supervisor, message) {
 module.exports = {
   matchKeyword,
   matchRoleMention,
+  stripAutoMentionPrefix,
   mentionedRoleIds,
   splitLongAnswer,
   capAnswerChars,
