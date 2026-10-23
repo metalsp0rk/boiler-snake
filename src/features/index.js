@@ -13,6 +13,7 @@ module.exports = [
   require("./youtube"),
   require("./twitch"),
   require("./githubReleases"),
+  require("./rss"),
   require("./honeypot"),
   require("./reactionRoles"),
   require("./eventReminders"),
