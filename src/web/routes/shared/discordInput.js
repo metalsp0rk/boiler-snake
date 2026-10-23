@@ -77,23 +77,44 @@ function findRoleIdByName(getClient, guildId, name) {
 }
 
 /**
- * Rank a {id,name} suggestion list against a lowercase query: name-prefix
- * beats name-substring beats id-substring; input order preserved per class.
- * Shared by the /lookups endpoints so users/roles rank identically.
+ * Rank a {id,name} suggestion list against a lowercase query:
+ * exact > prefix > substring > id-substring > SUBSEQUENCE ("kd" →
+ * "King Dead", "gdk" → "Gordak"); input order preserved per class
+ * (#715: without the subsequence class cross-word/mid-name candidates
+ * were dropped before the client ever saw them — the only fuzzy layer
+ * lived in app.js's rankItems re-ordering, which can resurrect what
+ * was never returned).
+ * The subsequence class is strictly additive only for queries ≥ 2
+ * chars (every 1-char subsequence is also a substring), so single-letter
+ * junk can't flood the SUGGEST_LIMIT through it, and it sorts LAST, so
+ * it can only fill capacity the tighter classes left over. Junk like
+ * "zzz" still answers empty — the class demands every query char in
+ * order.
+ * Shared by the /lookups endpoints (users/roles/channels) and the
+ * /users name filter so every ranker shares the rule.
  * @param {Array<{id: string, name?: string|null}>} items
  * @param {string} lowerQ
  */
 function rankSuggestions(items, lowerQ) {
+  const q = String(lowerQ ?? "").toLowerCase();
   const score = (it) => {
     const name = String(it.name || "").toLowerCase();
-    if (name.startsWith(lowerQ)) return 0;
-    if (name.includes(lowerQ)) return 1;
-    if (String(it.id).includes(lowerQ)) return 2;
-    return 3;
+    if (name === q) return 0;
+    if (name.startsWith(q)) return 1;
+    if (name.includes(q)) return 2;
+    if (String(it.id).includes(q)) return 3;
+    if (q.length >= 2) {
+      let i = 0;
+      for (let c = 0; c < name.length && i < q.length; c += 1) {
+        if (name[c] === q[i]) i += 1;
+      }
+      if (i === q.length) return 4;
+    }
+    return 5;
   };
   return items
     .map((it, i) => ({ it, i, s: score(it) }))
-    .filter((x) => x.s < 3)
+    .filter((x) => x.s < 5)
     .sort((a, b) => a.s - b.s || a.i - b.i)
     .map((x) => x.it);
 }
