@@ -89,7 +89,7 @@ Subscribed to **Example News**.
 
 ### `/rss remove`
 
-Unsubscribe from a feed. The `feed:` option has **autocomplete** over the community's subscriptions (name = display name, feed title, or the URL; value = the stored URL) — pick from the picker instead of pasting.
+Unsubscribe from a feed. The `feed:` option has **autocomplete** over the community's subscriptions (name = display name, feed title, or the URL; value = the stored URL) — pick from the picker instead of pasting. Feed URLs longer than 100 characters cannot appear in the picker (Discord caps a choice value at 100); for those, type/paste the exact URL manually — the other subscriptions stay pickable.
 
 ```bash
 /rss remove feed:https://example.com/news/feed
@@ -220,7 +220,7 @@ Strict allow-list (#272), the same posture as event reminders and Twitch go-live
 - **Conditional GET**: stored `etag`/`last_modified` ride out as `If-None-Match`/`If-Modified-Since`. A **304** is a free poll: `last_checked` advances and nothing else changes (validators untouched).
 - **Backoff**: consecutive failures grow the retry window `interval × 2^failure_count`, capped at **6 hours**; any successful poll resets the counter, dropping the window back to the plain interval. Each failure logs exactly one line.
 - **Dedup**: per-feed bounded **seen-set** of entry keys — `guid` → Atom `id` → permalink link (a `sha256:` digest past 2048 chars). Keys depend on nothing but those fields, so missing dates and reordering don't break dedup. The set is bounded at **~100 keys per feed**, pruned oldest-first after each poll.
-- **Delivery**: each announced entry is **claimed in the seen-set before sending** (INSERT OR IGNORE) — a tick and a concurrent `/rss check` can never double-announce the same entry. A failed send logs the cause and **stops that feed's tick** (later entries stay unclaimed for a later pass); the claimed entry stays seen, so nothing ever double-posts. One v1 boundary to know: a failure stamps the poll clock, so entries that were visible-but-unclaimed around a failure window are seeded silently instead of announced late — bounded, logged, and deliberate (rss_feeds carries one clock column; splitting cadence from watermark is a migration).
+- **Delivery**: each announced entry is **claimed in the seen-set before sending** (INSERT OR IGNORE) — a tick and a concurrent `/rss check` can never double-announce the same entry. A failed send logs the cause and **stops that feed's tick** (later entries stay unclaimed for a later pass); the claimed entry stays seen, so nothing ever double-posts. The send-failure path **preserves the poll watermark** (it stamps nothing new): un-claimed entries are fresher than the watermark on the next poll and genuinely retry — only the one entry whose send burned its claim is lost. Fetch/parse failures *do* stamp the clock (their retry gate counts from the failure); with one clock column that split is deliberate.
 - **Unconfigured communities cost nothing**: rows whose community has no notify channel are skipped with **zero fetches**, and the skip re-logs at most once per 6 hours per community.
 
 ## Fetch security (SSRF posture)
@@ -288,7 +288,7 @@ Feeds are fetched **from your bot host**, over the open internet: each feed host
 | `[rss] tick: 3/10 feed(s) polled — 2 posted, 5 not-modified, 0 failure(s), 1 skipped` | The once-per-tick aggregate; only logged when real work happened (all-not-due ticks stay quiet) |
 | `[rss] feed poll failed (community=… url=…): <reason>` | One fetch failure; starts/extends that feed's backoff window |
 | `[rss] feed parse failed (community=… url=…): <cause>` | Fetched fine, wasn't parseable XML/JSON a feed should be |
-| `[rss] notification send failed (community=… url=… key=…): <cause> — stopping this feed's tick; …` | Platform send failed (deleted channel, perms, rate-limit); this feed's tick stops, the burned key is named |
+| `[rss] notification send failed (community=… url=… key=…): <cause> — stopping this feed's tick; the claimed key above stays seen …; watermark preserved, so un-claimed entries retry on the next poll` | Platform send failed (deleted channel, perms, rate-limit); this feed's tick stops, the burned key is named, the rest of the backlog retries |
 | `[rss] community <id> has no rss_notification_channel_id — skipping <url> (re-logs at most every 6h)` | Standing config gap — set the channel with `/setrss channel` |
 | `[rss] no ready client for community <id> — skipping <url>` | The community's platform client isn't connected yet; the row retries on later ticks |
 | `[rss] <url> (community=…): 7 new entries, announced 5, skipped 2 (cap 5/poll)` | Flood-cap overflow: the newest entries past the cap were marked seen without posting |
