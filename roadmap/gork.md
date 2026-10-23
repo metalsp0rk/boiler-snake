@@ -1,6 +1,6 @@
 # 7. Gork (AI Keyword Q&A)
 
-> **Tracking moved to GitHub Issues (2026-10-09).** Open work for this feature lives in [GitHub issues labeled `gork`](https://github.com/metalsp0rk/boiler-snake/issues/labels/gork), ordered by [milestones](https://github.com/metalsp0rk/boiler-snake/milestones). This file stays the **design record** — locked decisions, schemas, and history here remain authoritative. Do not add new tracking items here; open an issue instead (see [index.md](index.md)). Open triage/features: #174 (role-mention trigger), #175 (reply/mention crash triage — §7.15 Fix 3), #176 (silence when replying to gork's replies).
+> **Tracking moved to GitHub Issues (2026-10-09).** Open work for this feature lives in [GitHub issues labeled `gork`](https://github.com/metalsp0rk/boiler-snake/issues/labels/gork), ordered by [milestones](https://github.com/metalsp0rk/boiler-snake/milestones). This file stays the **design record** — locked decisions, schemas, and history here remain authoritative. Do not add new tracking items here; open an issue instead (see [index.md](index.md)). Open triage/features: #174 (role-mention trigger), #175 (reply/mention crash triage — §7.15 Fix 3). Resolved: #176 (reply-to-gork silence — §7.23, decision 65, 2026-10).
 
 ### Purpose
 
@@ -1560,3 +1560,48 @@ bodies.
       troubleshooting updates; `npm run docs:build` green
 - [ ] Live verification (issue #227 checklist): dev guild image post →
       answer references actual pixels; audit `Vision` field lands
+
+---
+
+### 7.23 Reply-to-gork auto-mention — #176 (RESOLVED 2026-10 — decision 65)
+
+> **Issue #176** — "no response when a user replies to one of gork's own chat
+> replies (including split continuation chunks)". Reported silence, not a
+> crash. Triage found **no** code anywhere that skips on the *reference
+> author* being the bot (only trigger-author bot/webhook skips, per decision
+> 17), so the suspects collapsed to the three by-design silences plus one
+> real, reportable bug.
+
+**Root cause.** Discord's client auto-prefixes a reply with
+`<@REPLIED_AUTHOR_ID>`. Replying to one of gork's own answers therefore ships
+content like `<@BOTID> gork what did you just say?` — the keyword is no
+longer at position 0, so the keyword-at-start rule (decision 1) drops the
+exact message the user addressed to gork, with zero signal (no reply, no 🕐,
+no interaction row). Split continuation chunks are plain bot-authored
+`channel.send` messages, so a reply to any chunk hits the identical path.
+
+#### Design Decision (LOCKED — decision 65)
+
+| # | Decision |
+|---|----------|
+| 65 | **Leading self-mention strip (not a scope change).** Before trigger matching, any leading `<@BOTID>`/`<@!BOTID>` token — OUR OWN bot user, repeatedly, with following whitespace — is removed from the text `matchKeyword`/`matchRoleMention` see. The keyword (or role) remains **mandatory**: the user still has to type it; only Discord's own inserted reply-prefix is undone. Mentions of OTHER users (leading or mid-text) and our own token in a non-leading position are untouched, so a message whose keyword is genuinely off the start stays silent — the strip recovers exactly the report's shape and no wider surface. A silent reply to a gork-authored message additionally emits ONE bounded `[gork] … did not trigger … silent by design` line (reads the cached `referencedMessage` only, never a fetch on the hot path) — invisible-by-design was the actual defect, silence-by-design is not. |
+
+**Rejected.** Treating a mention of the bot as its own trigger (decision 1
+is literal text, and #174's role path already owns the "invoke by mention"
+surface); stripping leading mentions of ANY user (would trigger on
+"@friend gork …" — a keyword NOT at the start, widening scope).
+
+**Not bugs (confirmed by-design, re-checked).** Cooldown hit → 🕐 reaction
+only (decision 13); budget bounce → deduped terse reply then silent (
+decision 34); keyword/role-alone with no reference/vision → fully silent
+(decision 3). Evidence-capture for these remains the console + settings
+inspect (`gork_enabled`, keyword, `gork_usage`).
+
+**Scope.** Discord only — the Fluxer path carries no reply reference (Phase 0
+MESSAGE_CREATE has no `message_reference`), so its keyword-alone silence is
+unchanged (§7.19). No new commands, settings, env vars, or docs surfaces.
+Tests: `test/gork.test.js` (`stripAutoMentionPrefix` suite, matchKeyword
+combo); `test/integration/gork.test.js` (`issue #176` suite — auto-mentioned
+reply answered + prior gork answer reaches the prompt; keywordless reply
+stays silent AND emits the gated line; a leading NON-bot mention still does
+not trigger).

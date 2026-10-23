@@ -22,6 +22,7 @@ after(cleanupTempDb);
 const {
   matchKeyword,
   matchRoleMention,
+  stripAutoMentionPrefix,
   splitLongAnswer,
   buildUserContent,
   gorkQueue,
@@ -152,6 +153,51 @@ describe("matchKeyword (trigger)", () => {
     assert.deepEqual(matchKeyword(null, "@gork"), { triggered: false, question: "" });
     assert.deepEqual(matchKeyword("@gork", null), { triggered: false, question: "" });
     assert.deepEqual(matchKeyword("@gork", ""), { triggered: false, question: "" });
+  });
+});
+
+// ---------- reply auto-mention strip (issue #176) ----------
+
+describe("stripAutoMentionPrefix (#176 trigger pre-normalization)", () => {
+  const BOT = "700000000000000007";
+  const tok = `<@${BOT}>`;
+  const legacyTok = `<@!${BOT}>`;
+
+  it("strips the client-inserted reply mention of our own bot", () => {
+    assert.equal(stripAutoMentionPrefix(`${tok} gork what did you say?`, BOT), "gork what did you say?");
+    assert.equal(stripAutoMentionPrefix(`${legacyTok} gork hi`, BOT), "gork hi");
+  });
+
+  it("combos with matchKeyword: the reply-prefixed keyword now matches", () => {
+    const stripped = stripAutoMentionPrefix(`${tok} gork: what did you just say?`, BOT);
+    assert.deepEqual(matchKeyword(stripped, "gork"), {
+      triggered: true,
+      question: "what did you just say?",
+    });
+  });
+
+  it("strips repeated leading self-tokens, no-space shape, and leading whitespace", () => {
+    assert.equal(stripAutoMentionPrefix(`${tok} ${tok} gork hi`, BOT), "gork hi");
+    assert.equal(stripAutoMentionPrefix(`${tok}gork hi`, BOT), "gork hi");
+    assert.equal(stripAutoMentionPrefix(`   ${tok}  gork hi  `, BOT), "gork hi");
+  });
+
+  it("does NOT strip mentions of OTHER users or our own token at a non-leading position", () => {
+    assert.equal(
+      stripAutoMentionPrefix("<@800000000000000008> gork hi", BOT),
+      "<@800000000000000008> gork hi",
+    );
+    assert.equal(stripAutoMentionPrefix(`hey ${tok} gork`, BOT), `hey ${tok} gork`);
+    // A non-bot token in front keeps the keyword off the start (scope stays).
+    assert.equal(matchKeyword(stripAutoMentionPrefix("<@800000000000000008> gork hi", BOT), "gork").triggered, false);
+  });
+
+  it("no-op shapes: no bot id, non-string content, empty content", () => {
+    assert.equal(stripAutoMentionPrefix(`${tok} hi`, null), `${tok} hi`);
+    assert.equal(stripAutoMentionPrefix(`${tok} hi`, ""), `${tok} hi`);
+    assert.equal(stripAutoMentionPrefix(null, BOT), null);
+    assert.equal(stripAutoMentionPrefix(undefined, BOT), undefined);
+    assert.equal(stripAutoMentionPrefix("", BOT), "");
   });
 });
 
