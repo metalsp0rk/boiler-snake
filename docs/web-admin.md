@@ -100,7 +100,7 @@ return 404. Pages:
 
 **Dashboard charts** render client-side (vendored Chart.js — pinned file, no CDN) from small JSON endpoints at `/g/{guildId}/api/dashboard/…` (staff tier, unauthenticated callers get the same generic 404 as the pages). **The signed-in console requires JavaScript**: the charts, name/channel typeahead, the archive find box, and the phone sidebar collapse are how the console behaves — they are not optional extras with a no-JS equivalent. The signed-out **sign-in landing stays a static page** (no scripts at all). A single chart failure still says so in its corner instead of breaking the page, and the same numbers always live in the page's tables. These endpoints are the first slice of the console's long-term API surface.
 
-**Background jobs** (dashboard) reflects real ticker state: registered scheduler jobs report honest `ok` / `stale` / `unknown` from their last completed tick — a stalled loop goes `stale`, cron-scheduled jobs never fake a status.
+**Background jobs** (dashboard) reflects real ticker state: every scheduler job reports honest `ok` / `stale` / `unknown` from its last completed tick — a stalled loop goes `stale`, cron-scheduled jobs never fake a status. The rows follow the scheduler **live**: loops owned by subsystems that start after the console (bridge, linking) get their own rows without a restart, and a stopped loop shows as `unknown` ("not wired") instead of vanishing. The bridge contributes one extra aggregate row, **`bridge-relay-backlog`** (relay queue/park depth — see [bridge.md](bridge.md#troubleshooting)).
 
 **Display names vs raw ids:** pages read names from the bot's in-memory member
 cache only — a page never waits on Discord. Cache misses show the raw id (as

@@ -35,14 +35,14 @@
  *  - lastError text NEVER leaves this module (§8.7 fixed strings); a failed
  *    last tick surfaces as the fixed detail "last tick failed".
  *
- * In-memory only, zero DB writes, zero timers here (getters read live job
- * objects at snapshot time). Registration is idempotent: the registry keys
- * by name, and each getter re-looks-up scheduler.getJob(name), so a job
- * re-registered under the same name (or stopped) is reflected without
- * re-running the bridge.
+ * In-memory only, zero DB writes, zero timers here (the provider and its
+ * getters re-read the scheduler at snapshot time). Registration replaces
+ * one provider ("scheduler-jobs"), so a web-server double boot is safe and
+ * jobs appearing AFTER web boot (bridge, linking — the real feature order)
+ * get their rows without anyone re-invoking the bridge (#217).
  */
 
-const { registerTickerHealthSource } = require("./tickerHealth");
+const { registerTickerHealthProvider } = require("./tickerHealth");
 const defaultScheduler = require("../../core/scheduler");
 
 /** Fixed bridge details — never interpolated with scheduler internals. */
@@ -97,29 +97,41 @@ function schedulerJobToTickerResult(job) {
 }
 
 /**
- * Register one registry getter per CURRENTLY registered scheduler job.
- * Called once at web boot (after feature starts — src/features/index.js
- * orders every job-owning feature before `web`). Late jobs (a feature
- * added after `web` in the list) would need the bridge re-invoked; getters
- * themselves always read the LIVE job via getJob(name).
+ * Register one snapshot-time provider projecting EVERY registered scheduler
+ * job into the health registry. THE NAME SET IS LIVE: the provider re-reads
+ * scheduler.listNames() on every snapshot, so jobs registered AFTER web
+ * boot finally get rows. THE REAL ORDER (src/features/index.js): web boots
+ * BEFORE gork/bridge/linking, so bridge-relay, bridge-expiry,
+ * bridge-relay-ttl and linking-code-expiry were invisible to a boot-time
+ * enumeration — the live app rendered none of them (issue #217: the relay
+ * worker had no ticker-health row). Each getter still re-looks-up
+ * scheduler.getJob(name), so re-registered or stopped jobs are reflected
+ * with zero bookkeeping. Registration replaces per provider name ⇒ a
+ * double-boot of the web server is safe.
  *
  * @param {object} [schedulerApi] scheduler instance seam (default: the
  *   process-wide scheduler features register into; tests inject a fake)
- * @param {(name: string, getter: Function) => Function} [register]
- *   registry seam (default: registerTickerHealthSource; test seam)
- * @returns {() => void} unregister-all helper
+ * @param {(name: string, fn: Function) => Function} [registerProvider]
+ *   registry seam (default: registerTickerHealthProvider; test seam)
+ * @returns {() => void} unregister helper
  */
 function registerSchedulerJobHealthSources(
   schedulerApi = defaultScheduler,
-  register = registerTickerHealthSource
+  registerProvider = registerTickerHealthProvider
 ) {
-  const names = schedulerApi.listNames();
-  const offs = names.map((name) =>
-    register(name, () => schedulerJobToTickerResult(schedulerApi.getJob(name)))
-  );
-  return () => {
-    for (const off of offs) off();
-  };
+  // STICKY names: a scheduler job that disappears (stop()) must keep its
+  // row as unknown/"not wired" (honesty rule #1 above) — enumerate the
+  // CURRENT set every snapshot but never forget a name once seen. A job
+  // appearing later (bridge/linking boot after web, #217) self-heals
+  // through the same live enumeration.
+  const seenNames = new Set();
+  return registerProvider("scheduler-jobs", () => {
+    for (const name of schedulerApi.listNames()) seenNames.add(name);
+    return [...seenNames].map((name) => [
+      name,
+      () => schedulerJobToTickerResult(schedulerApi.getJob(name)),
+    ]);
+  });
 }
 
 module.exports = {

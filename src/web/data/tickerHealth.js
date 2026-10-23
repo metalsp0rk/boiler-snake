@@ -26,6 +26,12 @@
  *
  * No timers live here (getters are read at snapshot time), so there is
  * nothing to unref/cleanup — snapshot reads are pure and cheap.
+ *
+ * Name SETS can be dynamic too (#217): a SNAPSHOT-TIME PROVIDER
+ * (registerTickerHealthProvider) contributes [name, getter] pairs at every
+ * snapshot, so a bridge over a live job registry (see schedulerJobHealth)
+ * covers entries registered AFTER web boot. Static registrations win
+ * collisions; failing providers never break a snapshot.
  */
 
 /** Statuses the dashboard view knows how to render. */
@@ -44,6 +50,17 @@ const MAX_DETAIL_LEN = 120;
 
 /** name → getter. Registration is explicit; nothing self-registers. */
 const sources = new Map();
+
+/**
+ * provider name → fn returning [name, getter] pairs, EVALUATED AT SNAPSHOT
+ * TIME (#217). Why: `schedulerJobHealth` must cover jobs whose features
+ * start AFTER web (src/features/index.js order: web → gork → bridge →
+ * linking), and a name enumerated once at web boot can never see them —
+ * the live app rendered no bridge-relay / bridge-expiry / bridge-relay-ttl
+ * / linking-code-expiry rows. Providers keep the NAME SET live the same way
+ * getters already keep the VALUES live.
+ */
+const providers = new Map();
 
 function normalizeDetail(value) {
   if (typeof value !== "string") return undefined;
@@ -144,9 +161,60 @@ function unregisterTickerHealthSource(name) {
   return sources.delete(String(name || "").trim());
 }
 
-/** Registered names (for wiring diagnostics / tests). */
-function listTickerHealthNames() {
-  return [...sources.keys()];
+/**
+ * Register (or replace) a SNAPSHOT-TIME source provider (#217 late-job
+ * class). The provider runs on every snapshotTickerHealth()/
+ * listTickerHealthNames() call and returns [name, getter] pairs following
+ * the exact getter contract above. Static registrations win a name
+ * collision; within providers, first-seen wins. A throwing provider is
+ * logged with a FIXED framing (error text may carry internals) and
+ * skipped; junk results (non-array entries, malformed pairs) are skipped
+ * silently — they can only come from wiring bugs, never runtime state.
+ * @param {string} name stable provider id (replace-per-name: double boot safe)
+ * @param {(() => Array<[string, Function]>)} fn pairs factory
+ * @returns {() => void} unregister helper (no-op once replaced)
+ */
+function registerTickerHealthProvider(name, fn) {
+  const key = String(name || "").trim();
+  if (!key) {
+    throw new TypeError("registerTickerHealthProvider: name is required");
+  }
+  if (typeof fn !== "function") {
+    providers.delete(key);
+    return () => {};
+  }
+  providers.set(key, fn);
+  return () => {
+    if (providers.get(key) === fn) providers.delete(key);
+  };
+}
+
+/** One provider → validated [name, getter] pairs ([] on any problem). */
+function providerEntries(key, fn, { log }) {
+  let raw;
+  try {
+    raw = fn();
+  } catch (err) {
+    if (log) {
+      // Fixed framing; provider error text never reaches the log (§8.7).
+      console.error(`[web] ticker-health provider "${key}" failed on snapshot`);
+    }
+    return [];
+  }
+  if (!Array.isArray(raw)) return [];
+  const out = [];
+  for (const pair of raw) {
+    if (
+      Array.isArray(pair) &&
+      pair.length === 2 &&
+      typeof pair[0] === "string" &&
+      pair[0].trim() !== "" &&
+      typeof pair[1] === "function"
+    ) {
+      out.push([pair[0].trim(), pair[1]]);
+    }
+  }
+  return out;
 }
 
 /**
@@ -157,7 +225,17 @@ function listTickerHealthNames() {
  * @returns {Promise<Array<{name: string, status: string, lastTickAt?: number, ageMs?: number, detail?: string}>>}
  */
 async function snapshotTickerHealth(now = Date.now()) {
+  // Static first, then live provider rows; first-seen name wins.
   const entries = [...sources.entries()];
+  const seen = new Set(sources.keys());
+  for (const [key, fn] of providers) {
+    for (const [name, getter] of providerEntries(key, fn, { log: true })) {
+      if (!seen.has(name)) {
+        seen.add(name);
+        entries.push([name, getter]);
+      }
+    }
+  }
   const results = await Promise.all(
     entries.map(async ([name, get]) => {
       try {
@@ -171,9 +249,26 @@ async function snapshotTickerHealth(now = Date.now()) {
   return results;
 }
 
-/** Test seam: drop all registered sources. */
+/** Registered names (for wiring diagnostics / tests) — snapshot-visible:
+ *  static sources plus whatever the providers currently yield, deduped. */
+function listTickerHealthNames() {
+  const names = [...sources.keys()];
+  const seen = new Set(names);
+  for (const [key, fn] of providers) {
+    for (const [name] of providerEntries(key, fn, { log: false })) {
+      if (!seen.has(name)) {
+        seen.add(name);
+        names.push(name);
+      }
+    }
+  }
+  return names;
+}
+
+/** Test seam: drop all registered sources AND providers. */
 function _clearTickerHealthForTests() {
   sources.clear();
+  providers.clear();
 }
 
 module.exports = {
@@ -182,6 +277,7 @@ module.exports = {
   classifyTickerResult,
   registerTickerHealthSource,
   unregisterTickerHealthSource,
+  registerTickerHealthProvider,
   listTickerHealthNames,
   snapshotTickerHealth,
   _clearTickerHealthForTests,

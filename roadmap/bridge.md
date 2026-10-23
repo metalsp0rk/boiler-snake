@@ -1,12 +1,12 @@
 # 10. Channel bridge (Discord ↔ Fluxer)
 
-> **Tracking moved to GitHub Issues (2026-10-09).** Open work for this feature lives in [GitHub issues labeled `bridge`](https://github.com/metalsp0rk/boiler-snake/issues/labels/bridge), ordered by [milestones](https://github.com/metalsp0rk/boiler-snake/milestones). This file stays the **design record** — locked decisions, schemas, and history here remain authoritative. Do not add new tracking items here; open an issue instead (see [index.md](index.md)). Spike follow-ups (B1/B12/B14) and ticker-health wiring live in the `Fluxer/Bridge live verification` milestone.
+> **Tracking moved to GitHub Issues (2026-10-09).** Open work for this feature lives in [GitHub issues labeled `bridge`](https://github.com/metalsp0rk/boiler-snake/issues/labels/bridge), ordered by [milestones](https://github.com/metalsp0rk/boiler-snake/milestones). This file stays the **design record** — locked decisions, schemas, and history here remain authoritative. Do not add new tracking items here; open an issue instead (see [index.md](index.md)). Spike follow-ups (B1/B12/B14) live in the `Fluxer/Bridge live verification` milestone; the ticker-health wiring (#217) landed 2026-10-23 (§ Observability).
 
 | | |
 |---|---|
 | Author | Boiler Snake |
 | Date | 2026-10-01 (v2 rework; supersedes the 2026-09-25 v1 draft, which is preserved in git history) |
-| Status | **Shipped — PRs 1–8 landed 2026-10-01 → 2026-10-02 (v1.31.0)**. Implementation lives in `src/features/bridge/` (+ adapter deltas in `src/platform/`); operator guide is `docs/bridge.md`. Phase 0 (§10.14) executed live 2026-10-02 — 11 PASS / 3 DOC, no PENDING, KD 21 closed. Still open: the three docs-only spike follow-ups (B1 needs a run against an mfa_level-1 community; B12 needs the CDN avatar template captured from a live client — Fluxer→Discord relay omits avatars until recorded; B14 needs a human capture of `#name` chip serialization) and wiring the relay worker into the web ticker-health UI (§ Observability). Originally drafted as v2 (2026-10-01) against the shipped Fluxer adapter (`src/platform/`, v1.30.0 / v1.30.1). |
+| Status | **Shipped — PRs 1–8 landed 2026-10-01 → 2026-10-02 (v1.31.0)**. Implementation lives in `src/features/bridge/` (+ adapter deltas in `src/platform/`); operator guide is `docs/bridge.md`. Phase 0 (§10.14) executed live 2026-10-02 — 11 PASS / 3 DOC, no PENDING, KD 21 closed. Still open: the three docs-only spike follow-ups (B1 needs a run against an mfa_level-1 community; B12 needs the CDN avatar template captured from a live client — Fluxer→Discord relay omits avatars until recorded; B14 needs a human capture of `#name` chip serialization). Relay-worker ticker-health wiring landed 2026-10-23 (#217, § Observability). Originally drafted as v2 (2026-10-01) against the shipped Fluxer adapter (`src/platform/`, v1.30.0 / v1.30.1). |
 | Roadmap feature | 10 |
 | Depends on | Shipped: `communities` + `assertCommunityId` (migration 034), `src/platform/` adapters, Fluxer prefix dispatch, K2 DM outbound (`sendDm`), `@fluxerjs/core@3.1.0`. Bridge-owned adapter work (DM ingestion, `fetchMessage`, webhook lifecycle) is enumerated in §10.3 and lands in bridge PR 3. |
 
@@ -879,7 +879,7 @@ No metrics backend; logs, `admin_audit`, and `status` are the surface. Prefix `[
 
 **Audit** (KD 23): `bridge.create` / `bridge.connect` / `bridge.disconnect` in `admin_audit` with `community_id`, `details` free of credential/hash/token/bodies.
 
-**Worker health**: relay loop exposes `registerJob` snapshot (`lastTickAt`, `running`); wiring into web ticker-health UI is a follow-up.
+**Worker health**: relay loop exposes `registerJob` snapshot (`lastTickAt`, `running`); wired into the web ticker-health UI 2026-10-23 (#217): per-job `bridge-relay` / `bridge-expiry` / `bridge-relay-ttl` rows via the scheduler→health bridge (now snapshot-live: jobs registered after web boot get rows without a restart — bridge/linking start after `web` in `src/features/index.js`), plus the `bridge-relay-backlog` aggregate (queued/parked depth per bridge, `stale` while anything is parked, honest `unknown` when the worker seam is dark — the C1 #182 silent-park class has an operator-visible axis).
 
 ## Rollout Plan
 
