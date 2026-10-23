@@ -882,6 +882,10 @@ describe("chatWithTools (core/ai)", () => {
   });
 
   it("#434: a tool that outlives the loop deadline aborts the tool phase with reason timeout", async () => {
+    // #703 re-arm: the loop deadline runs on the #197 fake-timer seam, so
+    // this pins the hang-vs-deadline race with ZERO real clocks. The old
+    // real-clock budget let the ROUND-CAP decision race the loop-top
+    // deadline check under CI load and report reason 'cap'.
     const { impl } = makeAiFetch([
       {
         tool_calls: [
@@ -891,22 +895,100 @@ describe("chatWithTools (core/ai)", () => {
       },
     ]);
     let executions = 0;
-    const started = Date.now();
+    let armed = 0;
+    const cleared = [];
+    let fire = null;
     const r = await chatWithTools(AI_CFG, {
       messages: [{ role: "user", content: "hi" }],
       tools: [ws.WEB_SEARCH_TOOL],
       executeTool: async () => {
         executions += 1;
-        return new Promise(() => {}); // hangs past every budget (RED: old code hung HERE forever)
+        // the budget dies mid-first-tool; the second call then hangs past
+        // every budget (RED: old code hung HERE forever)
+        if (executions === 1) fire();
+        return new Promise(() => {});
       },
       maxToolRounds: 3,
-      timeoutMs: 120,
+      timeoutMs: 60000,
       fetchImpl: impl,
+      setTimer: (fn) => {
+        armed += 1;
+        fire = fn;
+        return `fake-handle-${armed}`;
+      },
+      clearTimer: (h) => cleared.push(h),
     });
     assert.ok(!r.ok, "the loop reports failure");
     assert.equal(r.reason, "timeout", "the GORK_LLM_TIMEOUT_MS budget now owns the tool phase");
-    assert.ok(Date.now() - started < 3000, "resolved in bounded time");
     assert.equal(executions, 1, "the second call was stubbed after abort, never executed");
+    assert.ok(armed >= 1, "the loop deadline armed the injected timer");
+    assert.equal(cleared.length, armed, "every armed timer got cleared (no leak)");
+  });
+
+  it("#703: an expired deadline owns the final round over the round-cap decision", async () => {
+    // The exact CI flake: the budget dies WHILE the last allowed tool
+    // round's wire round is in flight — after the loop-top check already
+    // passed. makeAiFetch repeats its final step forever, so without the
+    // precedence fix this fixture lands on reason 'cap'. The deadline is
+    // fired from the cap round's request event: deterministic, zero
+    // real clocks.
+    const toolCall = { id: "c", type: "function", function: { name: "web_search", arguments: '{"query":"x"}' } };
+    const { impl } = makeAiFetch(() => ({ tool_calls: [toolCall] }));
+    let fire = null;
+    const r = await chatWithTools(AI_CFG, {
+      messages: [{ role: "user", content: "hi" }],
+      tools: [ws.WEB_SEARCH_TOOL],
+      executeTool: async () => "r",
+      maxToolRounds: 3,
+      timeoutMs: 60000,
+      fetchImpl: impl,
+      setTimer: (fn) => {
+        fire = fn;
+        return "fake-handle";
+      },
+      clearTimer: () => {},
+      onEvent: (evt) => {
+        // cap round = round index maxToolRounds; fire mid-round, the
+        // window the wall-clock check used to miss
+        if (evt.type === "request" && evt.round === 3) fire();
+      },
+    });
+    assert.ok(!r.ok);
+    assert.equal(r.reason, "timeout", "the expired deadline owns the outcome over 'cap'");
+    assert.equal(r.content, null, "the cap-round message carried no text to deliver");
+  });
+
+  it("#703: the cap-round timeout still delivers the round's real content", async () => {
+    // Same race, but the cap round carried a partial answer: reason flips
+    // to 'timeout' (deadline precedence) while the content must ride for
+    // the trigger's partial-deliver path.
+    const toolCall = { id: "c", type: "function", function: { name: "web_search", arguments: '{"query":"x"}' } };
+    let n = 0;
+    const { impl } = makeAiFetch(() =>
+      n++ === 3
+        ? { content: "partial answer from the cap round", tool_calls: [toolCall] }
+        : { tool_calls: [toolCall] },
+    );
+    let fire = null;
+    const r = await chatWithTools(AI_CFG, {
+      messages: [{ role: "user", content: "hi" }],
+      tools: [ws.WEB_SEARCH_TOOL],
+      executeTool: async () => "r",
+      maxToolRounds: 3,
+      timeoutMs: 60000,
+      fetchImpl: impl,
+      setTimer: (fn) => {
+        fire = fn;
+        return "fake-handle";
+      },
+      clearTimer: () => {},
+      onEvent: (evt) => {
+        if (evt.type === "request" && evt.round === 3) fire();
+      },
+    });
+    assert.ok(!r.ok);
+    assert.equal(r.reason, "timeout");
+    assert.equal(r.content, "partial answer from the cap round");
   });
 
   it("a failing search inside the tool still completes with an answer", async () => {

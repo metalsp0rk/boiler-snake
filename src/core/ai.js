@@ -506,7 +506,14 @@ async function applyToolCalls(conversation, calls, executeTool, onEvent = null, 
  * @param {number} [opts.thinkingTokenBudget] Reasoning cap passthrough
  *   forwarded to every round (sent only when a positive finite number).
  * @param {number} [opts.timeoutMs] Overall timeout for the whole loop (ms).
+ *   An expired deadline owns every later decision, including the round
+ *   cap (#703): while it is expired the loop reports reason "timeout".
  * @param {Function} [opts.fetchImpl] Injectable fetch (tests).
+ * @param {Function} [opts.setTimer] Injectable (fn, ms) → handle scheduler
+ *   for the loop deadline (#197 idiom, tests inject a fake and fire the
+ *   abort themselves). Default: real setTimeout.
+ * @param {Function} [opts.clearTimer] Injectable (handle) → void canceller.
+ *   Default: real clearTimeout.
  * @param {(evt: object) => void} [opts.onEvent] Capture sink, every event
  *   round-tagged: `{type:"request"|"response", round, ...}` per wire round
  *   plus `{type:"tool", round, name, args, output, ok, durationMs}` per
@@ -521,14 +528,34 @@ async function chatWithTools(cfg, opts) {
   const deadline = opts.timeoutMs ? startedAt + opts.timeoutMs : null;
   const controller = new AbortController();
   let timer = null;
+  // Timer seams (default = the real global timers; callers never override
+  // in production): same #197 idiom as requestCompletion, so the loop's
+  // own deadline runs on a fake-timer fixture with zero real clocks (#703).
+  const setTimer =
+    typeof opts.setTimer === "function"
+      ? opts.setTimer
+      : (fn, ms) => setTimeout(fn, ms);
+  const clearTimer =
+    typeof opts.clearTimer === "function"
+      ? opts.clearTimer
+      : (handle) => clearTimeout(handle);
   const armDeadline = () => {
     if (!deadline) return;
-    if (timer) clearTimeout(timer);
+    if (timer) clearTimer(timer);
     const remaining = deadline - Date.now();
     if (remaining <= 0) controller.abort();
-    else timer = setTimeout(() => controller.abort(), remaining);
+    else timer = setTimer(() => controller.abort(), remaining);
   };
   armDeadline();
+  // #703: one authoritative deadline test for every decision point. The
+  // loop's AbortController is internal, so an abort is ONLY ever the
+  // deadline firing — but the libuv timer and the wall-clock boundary can
+  // land a hair apart under load. Reading BOTH (abort fired OR clock past)
+  // makes deadline-vs-round-cap precedence deterministic (the #434 flake:
+  // an expired budget reported as 'cap' when the loop-top check lagged).
+  const deadlineExpired = () =>
+    Boolean(deadline) &&
+    (controller.signal.aborted || Date.now() >= deadline);
   const maxRounds = Math.max(0, Math.trunc(opts.maxToolRounds ?? 3));
   // Capture seam: one round-tagging wrapper around the caller's sink;
   // undefined when no sink was passed so every downstream emit stays inert.
@@ -537,7 +564,7 @@ async function chatWithTools(cfg, opts) {
   let toolCalls = 0;
   try {
     for (let round = 0; ; round += 1) {
-      if (deadline && Date.now() >= deadline) {
+      if (deadlineExpired()) {
         // #469 (F1-7): routed through failure() — the hand-rolled shape
         // omitted url/errorBody/finishReason/usage that EVERY other failure
         // path carries (the typedef promises one shape, not five).
@@ -575,6 +602,23 @@ async function chatWithTools(cfg, opts) {
         );
       }
       if (round >= maxRounds) {
+        // #703: an expired deadline owns the outcome over the round cap.
+        // This branch sits after a FULL wire round, so a budget that died
+        // during it used to be reported as 'cap' whenever the loop-top
+        // check raced the clock (the #434 CI flake). The round's content
+        // still rides — the trigger delivers partial answers from any
+        // content-carrying failure (gork trigger.js partial-deliver path).
+        if (deadlineExpired()) {
+          return {
+            ...failure(
+              { error: "timed out", reason: "timeout" },
+              startedAt,
+              toolCalls,
+            ),
+            content:
+              message.content == null ? null : String(message.content),
+          };
+        }
         return {
           ok: false,
           content: message.content == null ? null : String(message.content),
@@ -598,7 +642,7 @@ async function chatWithTools(cfg, opts) {
       armDeadline();
     }
   } finally {
-    if (timer) clearTimeout(timer);
+    if (timer) clearTimer(timer);
   }
 }
 
