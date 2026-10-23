@@ -66,6 +66,11 @@ const COMMAND_VISIBILITY = Object.freeze({
   testnotification: TIERS.staff,
   twitch: TIERS.staff,
   settwitch: TIERS.staff,
+  // #305: RSS feed notifications — same posture as the youtube/twitch twins
+  // (ManageGuild picker default + staff_roles allow overwrites after sync;
+  // requireStaffFromContext stays the security source of truth).
+  rss: TIERS.staff,
+  setrss: TIERS.staff,
   github: TIERS.staff,
   reactionrole: TIERS.staff,
   honeypot: TIERS.staff,
