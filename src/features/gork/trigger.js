@@ -1248,6 +1248,21 @@ async function runGorkJob(deps) {
         // a wedged CDN. Per-attachment failures degrade to `notes`
         // lines appended to the text (logged with ids inside images.js).
         const visionCandidates = collectImageCandidates(message, ctx.messages || []);
+        // #683: attribute every image part to its uploader. Resolve each
+        // candidate's sender through the roster that already exists for
+        // the context re-render (platform-injected on Fluxer too), then
+        // stamp `senderLabel` — images.js emits the caption adjacent to
+        // the image. Fallback chain mirrors the Fix 7 degradation:
+        // roster label → raw author username → "the asker" for
+        // trigger-origin → generic ordinal (images.js) when nothing is
+        // known. Never silently anonymous when ANY identity is available.
+        for (const cand of visionCandidates) {
+          const resolved = cand.senderId ? ctxOpts.resolveName(cand.senderId) : null;
+          cand.senderLabel =
+            resolved ||
+            cand.senderName ||
+            (cand.origin === "trigger" ? askerLabel || "the asker" : null);
+        }
         let vision = { parts: [], notes: [], sent: 0, skipped: 0, bytes: 0 };
         if (visionCandidates.length && visionLimits().maxImages > 0) {
           dbg(`vision candidates=${visionCandidates.length}`);

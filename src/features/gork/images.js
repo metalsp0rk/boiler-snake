@@ -311,7 +311,13 @@ function visionLimits() {
 /**
  * Flatten candidate attachments — trigger message FIRST, then the
  * context messages (oldest → newest) — into `{url, name, contentType,
- * size, origin}` records: image-typed only, deduped by url.
+ * size, origin, senderId, senderName}` records: image-typed only,
+ * deduped by url.
+ *
+ * #683: every candidate carries its OWNING message's author (`senderId`
+ * + `senderName`, null-safe on platforms with sparse author objects like
+ * Fluxer) so the trigger can resolve a label and `prepareVisionImages`
+ * can attribute each image part to its uploader.
  *
  * @param {object|undefined} triggerMessage discord.js Message (or duck shape)
  * @param {object[]} [contextMessages] context builder messages (oldest → newest)
@@ -320,7 +326,7 @@ function visionLimits() {
 function collectImageCandidates(triggerMessage, contextMessages = []) {
   const out = [];
   const seen = new Set();
-  const push = (att, origin) => {
+  const push = (att, origin, author) => {
     if (!isImageAttachment(att)) return;
     const url = typeof att.url === "string" ? att.url.trim() : "";
     if (!url || seen.has(url)) return;
@@ -331,11 +337,18 @@ function collectImageCandidates(triggerMessage, contextMessages = []) {
       contentType: effectiveContentType(att),
       size: Number.isFinite(Number(att.size)) ? Number(att.size) : null,
       origin,
+      senderId: author?.id != null ? String(author.id) : null,
+      senderName:
+        typeof author?.username === "string" && author.username.trim()
+          ? author.username.trim()
+          : null,
     });
   };
-  for (const att of iterAttachments(triggerMessage?.attachments)) push(att, "trigger");
+  for (const att of iterAttachments(triggerMessage?.attachments)) {
+    push(att, "trigger", triggerMessage?.author);
+  }
   for (const m of Array.isArray(contextMessages) ? contextMessages : []) {
-    for (const att of iterAttachments(m?.attachments)) push(att, "context");
+    for (const att of iterAttachments(m?.attachments)) push(att, "context", m?.author);
   }
   return out;
 }
@@ -348,7 +361,10 @@ function collectImageCandidates(triggerMessage, contextMessages = []) {
  * a specific `[gork] vision …` line with guild/user/message ids and
  * lands in `notes` — the answer never dies on a broken image.
  *
- * @param {object[]} candidates collectImageCandidates() output
+ * @param {object[]} candidates collectImageCandidates() output; an
+ *   optional pre-resolved `senderLabel` per candidate (roster resolution
+ *   lives in the trigger — images.js stays roster-agnostic) is emitted as
+ *   a labeled text part before the image it attributes (#683).
  * @param {object} [opts]
  * @param {object} [opts.limits] visionLimits() override (tests)
  * @param {Function} [opts.fetchImpl] fetch seam
@@ -356,7 +372,10 @@ function collectImageCandidates(triggerMessage, contextMessages = []) {
  * @param {{guildId?: string, userId?: string, messageId?: string}} [opts.ids]
  *   ids for the degradation logs
  * @returns {Promise<{
- *   parts: Array<{type: "image_url", image_url: {url: string}}>,
+ *   parts: Array<
+ *     | {type: "text", text: string}
+ *     | {type: "image_url", image_url: {url: string}}
+ *   >,
  *   notes: string[],
  *   sent: number,
  *   skipped: number,
@@ -436,15 +455,27 @@ async function prepareVisionImages(candidates, opts = {}) {
 
   // Assemble in candidate order applying the TOTAL bytes cap
   // deterministically (a later image never races ahead of an earlier one
-  // for the remaining budget).
+  // for the remaining budget). #683: the walk first collects the images
+  // that actually RIDE, so the label parts can number them 1..sent —
+  // "of N" reflects the budget-skipped reality, never the candidate count.
   const parts = [];
   const notes = [];
   let bytes = 0;
   let skipped = 0;
+  const riding = [];
+  const senderNote = (att) => {
+    const who =
+      (typeof att?.senderName === "string" && att.senderName.trim()) ||
+      (typeof att?.senderLabel === "string" && att.senderLabel.trim()) ||
+      "";
+    return who ? ` from ${who}` : "";
+  };
   for (const r of settled) {
     if (r.fail) {
       log(`${r.att?.name ?? "image"} [${r.att?.origin ?? "?"}]`, r.fail);
-      notes.push(`image "${r.att?.name ?? "image"}" could not be included: ${r.fail}`);
+      notes.push(
+        `image "${r.att?.name ?? "image"}"${senderNote(r.att)} could not be included: ${r.fail}`,
+      );
       skipped += 1;
       continue;
     }
@@ -457,6 +488,25 @@ async function prepareVisionImages(candidates, opts = {}) {
       continue;
     }
     bytes += r.bytes;
+    riding.push(r);
+  }
+  // #683: a labeled text part sits immediately BEFORE the image part it
+  // describes (content parts preserve order, so attribution is adjacent).
+  // When the caller resolved a senderLabel the model reads WHO uploaded;
+  // with nothing known the part still numbers the image ordinally —
+  // never silently anonymous.
+  const total = riding.length;
+  for (const [i, r] of riding.entries()) {
+    const label =
+      typeof r.att?.senderLabel === "string" && r.att.senderLabel.trim()
+        ? r.att.senderLabel.trim()
+        : null;
+    parts.push({
+      type: "text",
+      text: label
+        ? `[Image ${i + 1} of ${total} — uploaded by ${label}]`
+        : `[Image ${i + 1} of ${total}]`,
+    });
     parts.push({ type: "image_url", image_url: { url: r.dataUrl } });
   }
   if (droppedByCap > 0) {
@@ -465,7 +515,7 @@ async function prepareVisionImages(candidates, opts = {}) {
     );
     skipped += droppedByCap;
   }
-  return { parts, notes, sent: parts.length, skipped, bytes };
+  return { parts, notes, sent: riding.length, skipped, bytes };
 }
 
 module.exports = {
