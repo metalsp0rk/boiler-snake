@@ -1686,9 +1686,20 @@ describe("llmParams + describeLlmFailure (trigger, Fix 5)", () => {
         6000,
         "4000 thinking cap + ~2000 visible headroom (Fix 6)",
       );
-      assert.equal(p.timeoutMs, DEFAULT_LLM_TIMEOUT_MS);
-      assert.equal(DEFAULT_LLM_TIMEOUT_MS, 90000, "Fix 6 timeout default");
-      assert.equal(p.maxToolRounds, DEFAULT_LLM_MAX_TOOL_ROUNDS);
+      // #705: DEFAULT_LLM_TIMEOUT_MS is now the BASE of the derived loop
+      // deadline, not the deadline itself; rounds default lifted 3 → 50.
+      assert.equal(DEFAULT_LLM_TIMEOUT_MS, 90000, "derived-deadline base (Fix 6 → #705)");
+      assert.equal(
+        p.maxToolRounds,
+        DEFAULT_LLM_MAX_TOOL_ROUNDS,
+        "no guild row here → the global default",
+      );
+      assert.equal(DEFAULT_LLM_MAX_TOOL_ROUNDS, 50, "#705 default lift");
+      assert.equal(
+        p.timeoutMs,
+        90000 + 40000 * DEFAULT_LLM_MAX_TOOL_ROUNDS,
+        "derived deadline: 90s + 40s×50 = 34.8 min (under the 45-min cap)",
+      );
       assert.equal(
         p.thinkingTokenBudget,
         0,

@@ -6,6 +6,8 @@ const {
 } = require("../../db");
 const { requireStaffFromContext } = require("../../core/permissions");
 const { joinCapped } = require("../../core/text");
+// #705: effective rounds for the Gork settings line (pure helper, no cycle).
+const { resolveMaxToolRounds } = require("../gork/constants");
 const { Color } = require("../../core/theme");
 
 const staffPerms = PermissionFlagsBits.ManageGuild;
@@ -94,7 +96,7 @@ async function handleSettings(commandCtx, featureCtx) {
         name: "Gork",
         value:
           Number(settings.gork_enabled ?? 1) === 1
-            ? `Keyword **${settings.gork_keyword || "disabled"}** · Role **${settings.gork_role_id ? `<@&${settings.gork_role_id}>` : "not set"}** · Window **${settings.gork_context_window}** · Search **${settings.gork_search_enabled ? "on" : "off"}** · STE **${Number(settings.gork_ste_enabled ?? 0) === 1 ? "on" : "off"}** · Memory **${Number(settings.gork_memory_enabled ?? 0) === 1 ? "on" : "off"}** · Summarize **${Number(settings.gork_summarize_input_tokens ?? 80000)} input tokens**`
+            ? `Keyword **${settings.gork_keyword || "disabled"}** · Role **${settings.gork_role_id ? `<@&${settings.gork_role_id}>` : "not set"}** · Window **${settings.gork_context_window}** · Rounds **${resolveMaxToolRounds(settings.gork_max_tool_rounds)}** · Search **${settings.gork_search_enabled ? "on" : "off"}** · STE **${Number(settings.gork_ste_enabled ?? 0) === 1 ? "on" : "off"}** · Memory **${Number(settings.gork_memory_enabled ?? 0) === 1 ? "on" : "off"}** · Summarize **${Number(settings.gork_summarize_input_tokens ?? 80000)} input tokens**`
             : "**disabled** for this server (`/gork enable on` to re-enable)",
         inline: false,
       },

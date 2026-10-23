@@ -105,8 +105,8 @@
     "params": {
       "temperature": 0.8,
       "maxTokens": 6000,
-      "timeoutMs": 90000,
-      "maxToolRounds": 3,
+      "timeoutMs": 2090000,
+      "maxToolRounds": 50,
       "thinkingTokenBudget": 0
     },
     "status": "shipped",

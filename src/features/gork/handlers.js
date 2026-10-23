@@ -69,6 +69,10 @@ const {
   KEYWORD_MAX,
   CONTEXT_MIN,
   CONTEXT_MAX,
+  TOOL_ROUNDS_MIN,
+  TOOL_ROUNDS_MAX,
+  resolveMaxToolRounds,
+  deriveToolTimeoutMs,
   COOLDOWN_MIN,
   COOLDOWN_MAX,
   RULES_MAX,
@@ -291,6 +295,53 @@ async function setContext(commandCtx) {
   }).catch(() => {});
   await commandCtx.reply({
     content: `Gork context window set to **${settings.gork_context_window}** prior messages.`,
+    sensitive: true,
+  });
+}
+
+/**
+ * /gork toolrounds: set the per-guild tool-round budget (5-300, issue #705).
+ * The reply discloses the effective value AND what it does to the answer
+ * deadline — the whole point of the knob is trading rounds for wall clock.
+ * @param {import("../../platform/context").CommandContext} commandCtx
+ */
+async function setToolRounds(commandCtx) {
+  const communityId = commandCtx.communityId;
+  const raw = commandCtx.options.getInteger("rounds");
+  if (!Number.isFinite(raw) || raw < TOOL_ROUNDS_MIN || raw > TOOL_ROUNDS_MAX) {
+    return commandCtx.reply({
+      content: `The tool-round budget must be ${TOOL_ROUNDS_MIN}-${TOOL_ROUNDS_MAX} rounds.`,
+      sensitive: true,
+    });
+  }
+  const settings = updateGuildSettings(communityId, {
+    gork_max_tool_rounds: raw,
+  });
+  const stored = settings.gork_max_tool_rounds;
+  recordSlashAudit({
+    communityId,
+    actorUserId: commandCtx.userId,
+    action: "gork.tool_rounds_set",
+    targetType: "guild",
+    targetId: commandCtx.externalGuildId,
+    details: { max_tool_rounds: stored },
+  });
+  await logConfigChange(commandCtx.outbound, commandCtx.externalGuildId, {
+    title: "Gork tool rounds updated",
+    command: "/gork toolrounds",
+    actor: commandCtx.user,
+    changes: [`Max tool rounds: ${stored}`],
+  }).catch(() => {});
+  // Disclose the deadline the guild just authorized (or flag that a global
+  // timeout override currently outranks the derivation entirely).
+  const explicitOverride = Number(process.env.GORK_LLM_TIMEOUT_MS);
+  const deadlineNote =
+    Number.isFinite(explicitOverride) && explicitOverride > 0
+      ? "a global `GORK_LLM_TIMEOUT_MS` override currently outranks this derivation"
+      : `answers may run up to ~${(deriveToolTimeoutMs(stored) / 60_000).toFixed(1)} min`;
+  await commandCtx.reply({
+    content:
+      `Gork max tool rounds set to **${stored}** — ${deadlineNote}.`,
     sensitive: true,
   });
 }
@@ -1311,6 +1362,15 @@ async function showStatus(commandCtx) {
       },
       { name: "Context window", value: `${settings.gork_context_window} messages`, inline: true },
       {
+        // #705: effective rounds budget — guild value when set, else the
+        // global default (flagged "(global)" so staff know it is inherited).
+        name: "Tool rounds",
+        value: `${resolveMaxToolRounds(settings.gork_max_tool_rounds)}${
+          settings.gork_max_tool_rounds == null ? " (global)" : ""
+        }`,
+        inline: true,
+      },
+      {
         name: "Cooldown",
         value: `${cooldownSec}s per user (staff bypass)`,
         inline: true,
@@ -1958,6 +2018,7 @@ module.exports = {
   setKeyword,
   setRole,
   setContext,
+  setToolRounds,
   setCooldown,
   setRules,
   setSearch,

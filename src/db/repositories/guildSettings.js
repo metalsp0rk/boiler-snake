@@ -7,6 +7,9 @@ const { MAX_CONFIG_COOLDOWN_SEC } = require("../../core/cooldowns");
 const assertCommunityId = (id) => require("../../platform/community").assertCommunityId(id);
 
 const GORK_DEFAULT_CONTEXT_WINDOW = 10;
+// #705 write-clamp range (feature-side truth: gork/constants TOOL_ROUNDS_*).
+const GORK_TOOL_ROUNDS_MIN = 5;
+const GORK_TOOL_ROUNDS_MAX = 300;
 const GORK_DEFAULT_COOLDOWN_SEC = 180;
 const GORK_RULES_MAX_LEN = 500;
 const GORK_KEYWORD_MAX_LEN = 50;
@@ -219,6 +222,7 @@ function updateGuildSettings(communityId, patch) {
     "gork_keyword",
     "gork_role_id",
     "gork_context_window",
+    "gork_max_tool_rounds", // #705 (NULL = never set → env fallback rides)
     "gork_extra_rules",
     "gork_search_enabled",
     "gork_cooldown_sec",
@@ -278,6 +282,19 @@ function updateGuildSettings(communityId, patch) {
       1,
       50,
       GORK_DEFAULT_CONTEXT_WINDOW
+    );
+  }
+  if (safePatch.gork_max_tool_rounds !== undefined) {
+    // #705: nullable by design — NULL is the NEVER-SET state that lets
+    // GORK_LLM_MAX_TOOL_ROUNDS stay the global fallback. clampInt's null
+    // fallback keeps that state representable (explicit null clears;
+    // garbage degrades to never-set = env fallback, same posture as
+    // context_window's garbage → default).
+    safePatch.gork_max_tool_rounds = clampInt(
+      safePatch.gork_max_tool_rounds,
+      GORK_TOOL_ROUNDS_MIN,
+      GORK_TOOL_ROUNDS_MAX,
+      null,
     );
   }
   if (safePatch.gork_cooldown_sec !== undefined) {

@@ -30,6 +30,7 @@ const {
   setKeyword,
   setRole,
   setContext,
+  setToolRounds,
   setCooldown,
   setRules,
   setSearch,
@@ -77,6 +78,8 @@ async function handleGork(commandCtx, featureCtx) {
       return setRole(commandCtx);
     case "context":
       return setContext(commandCtx);
+    case "toolrounds":
+      return setToolRounds(commandCtx);
     case "cooldown":
       return setCooldown(commandCtx);
     case "rules":

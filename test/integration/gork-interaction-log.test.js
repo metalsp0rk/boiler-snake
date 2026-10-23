@@ -324,13 +324,14 @@ describe("integration: gork interaction log", () => {
       assert.ok(qa.user_prompt.includes("Conversation context:"));
       assert.ok(qa.user_prompt.includes("People in this conversation"));
 
-      // Model + params exactly as sent (env pinned → defaults)
+      // Model + params exactly as sent (env pinned → #705 defaults:
+      // rounds 50, deadline DERIVED min(90s + 40s×50, 45min) = 2090000)
       assert.equal(qa.model, "gpt-4o-mini");
       assert.deepEqual(j(qa.params), {
         temperature: 0.8,
         maxTokens: 6000,
-        timeoutMs: 90000,
-        maxToolRounds: 3,
+        timeoutMs: 2090000,
+        maxToolRounds: 50,
         thinkingTokenBudget: 0,
       });
       // read_discord is ALWAYS on (decision 44): even with SEARXNG_URL

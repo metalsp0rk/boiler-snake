@@ -66,6 +66,9 @@ const READ_PATTERNS = [
   new RegExp(`\\bprocess\\.env\\[\\s*["'](${NAME})["']\\s*\\]`, "g"),
   // gork's per-call numeric knob helpers (trigger/summarize/images)
   new RegExp(`\\b(?:envPositiveInt|envNonNegInt)\\(\\s*["'](${NAME})["']`, "g"),
+  // injectable-env reader (positiveIntIn(env, "NAME", fallback) — #705):
+  // the name is the SECOND arg, so it needs its own call-shape pattern.
+  new RegExp(`\\bpositiveIntIn\\(\\s*[\\w.]+\\s*,\\s*["'](${NAME})["']`, "g"),
   // functions taking an injectable env source (`env.FOO` reads)
   new RegExp(`\\benv\\.(${NAME})\\b`, "g"),
   // src/core/tokenCrypto.js factory bindings (bridge + third-party tokens)
@@ -186,7 +189,9 @@ const EXPECTED_VARS = [
   "GORK_LLM_MAX_TOKENS",
   "GORK_LLM_MAX_TOOL_ROUNDS",
   "GORK_LLM_THINKING_TOKEN_BUDGET",
+  "GORK_LLM_TIMEOUT_CAP_MS",
   "GORK_LLM_TIMEOUT_MS",
+  "GORK_LLM_TIMEOUT_PER_ROUND_MS",
   "GORK_MAX_ANSWER_CHARS",
   "GORK_MEMORY_TURN_TIMEOUT_MS",
   "GORK_SUMMARIZE_TURN_TIMEOUT_MS",

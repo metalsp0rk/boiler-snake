@@ -1975,6 +1975,10 @@ describe("integration: gork (AI keyword Q&A)", () => {
     try {
       enableAiKey();
       process.env.SEARXNG_URL = "https://searxng.test";
+      // #705 made the rounds budget per-guild (default 50); this cap test
+      // needs a small budget, so pin the global fallback explicitly rather
+      // than relying on a specific default the four mocked rounds exceed.
+      process.env.GORK_LLM_MAX_TOOL_ROUNDS = "3";
       env.db.updateGuildSettings(env.communityId, {
         gork_keyword: "gork",
         gork_search_enabled: 1,

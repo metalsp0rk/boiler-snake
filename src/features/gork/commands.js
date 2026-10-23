@@ -10,6 +10,8 @@ const {
   KEYWORD_MAX,
   CONTEXT_MIN,
   CONTEXT_MAX,
+  TOOL_ROUNDS_MIN,
+  TOOL_ROUNDS_MAX,
   COOLDOWN_MIN,
   COOLDOWN_MAX,
   RULES_MAX,
@@ -82,6 +84,23 @@ const commands = [
             .setRequired(true)
             .setMinValue(CONTEXT_MIN)
             .setMaxValue(CONTEXT_MAX),
+        ),
+    )
+    .addSubcommand((sc) =>
+      sc
+        .setName("toolrounds")
+        .setDescription(
+          "Set the per-guild tool-round budget (5-300; scales the answer deadline).",
+        )
+        .addIntegerOption((opt) =>
+          opt
+            .setName("rounds")
+            .setDescription(
+              `Tool rounds one answer may spend in this server (${TOOL_ROUNDS_MIN}-${TOOL_ROUNDS_MAX})`,
+            )
+            .setRequired(true)
+            .setMinValue(TOOL_ROUNDS_MIN)
+            .setMaxValue(TOOL_ROUNDS_MAX),
         ),
     )
     .addSubcommand((sc) =>
