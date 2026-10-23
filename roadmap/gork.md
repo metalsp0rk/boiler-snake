@@ -1561,6 +1561,19 @@ bodies.
 - [ ] Live verification (issue #227 checklist): dev guild image post →
       answer references actual pixels; audit `Vision` field lands
 
+**Addendum — #683 image attribution (2026-10-23):** the parts array shipped flat and anonymous —
+the model had to guess which user uploaded which image positionally. Every riding image now
+carries an adjacent caption text part, `[Image i of N — uploaded by <label>]`, immediately BEFORE
+its `image_url` part (content parts preserve order, so attribution is adjacent); with nothing
+known about the sender it degrades to `[Image i of N]` — never silently anonymous when ANY
+identity exists. Labels resolve in `trigger.js` through the existing roster chain (roster label →
+raw author username → `the asker` for trigger-origin → generic ordinal); `images.js` stays
+roster-agnostic (candidates carry `senderId`/`senderName` from the owning message plus an optional
+pre-resolved `senderLabel`). `of N` counts the images that ACTUALLY ride — computed after the
+deterministic budget walk, so skipped images never skew the numbering. Failure notes name the
+uploader: `image "cat.png" from alice could not be included: …`. Text-only turns stay
+byte-identical. No new env vars.
+
 ---
 
 ### 7.23 Reply-to-gork auto-mention — #176 (RESOLVED 2026-10 — decision 65)

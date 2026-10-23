@@ -269,6 +269,37 @@ describe("collectImageCandidates", () => {
     assert.equal(cands[0].size, 1234);
     assert.equal(cands[1].size, null);
   });
+
+  it("#683: stamps the owning message's author on every candidate (duck-safe)", () => {
+    const cands = im.collectImageCandidates(
+      {
+        author: { id: "u1", username: "alice" },
+        attachments: [{ name: "t.png", url: "https://x/t", contentType: "image/png" }],
+      },
+      [
+        {
+          author: { id: 7, username: "  bob  " },
+          attachments: [{ name: "c.jpg", url: "https://x/c", contentType: "image/jpeg" }],
+        },
+        {
+          // Fluxer-shape duck: author present but username is null →
+          // senderName degrades to null, the id still stamps.
+          author: { id: "9", username: null },
+          attachments: [{ name: "f.png", url: "https://x/f" }],
+        },
+        { attachments: [{ name: "n.png", url: "https://x/n" }] },
+      ],
+    );
+    assert.deepEqual(
+      cands.map((c) => [c.senderId, c.senderName]),
+      [
+        ["u1", "alice"],
+        ["7", "bob"],
+        ["9", null],
+        [null, null],
+      ],
+    );
+  });
 });
 
 // ---------- orchestration ----------
@@ -276,7 +307,7 @@ describe("collectImageCandidates", () => {
 describe("prepareVisionImages (data URLs + degradation)", () => {
   const ids = { guildId: "g1", userId: "u1", messageId: "m1" };
 
-  it("builds image_url data-URL parts in candidate order", async () => {
+  it("builds [label, image_url] part pairs in candidate order (#683)", async () => {
     const png = makePng(800, 600); // small → passthrough → source type names it
     const { impl } = fetchReturning(png);
     const out = await im.prepareVisionImages(
@@ -289,12 +320,72 @@ describe("prepareVisionImages (data URLs + degradation)", () => {
     assert.equal(out.sent, 2);
     assert.equal(out.skipped, 0);
     assert.deepEqual(out.notes, []);
-    assert.equal(out.parts[0].type, "image_url");
-    assert.ok(out.parts[0].image_url.url.startsWith("data:image/png;base64,"));
-    assert.ok(out.parts[1].image_url.url.startsWith("data:image/jpeg;base64,"));
+    // #683: no senderLabel known → each image still carries an ordinal
+    // caption (never silently anonymous), adjacent and BEFORE its part.
+    assert.deepEqual(
+      out.parts.map((p) => p.type),
+      ["text", "image_url", "text", "image_url"],
+    );
+    assert.equal(out.parts[0].text, "[Image 1 of 2]");
+    assert.equal(out.parts[2].text, "[Image 2 of 2]");
+    assert.ok(out.parts[1].image_url.url.startsWith("data:image/png;base64,"));
+    assert.ok(out.parts[3].image_url.url.startsWith("data:image/jpeg;base64,"));
     // The base64 payload round-trips to the original (passthrough) bytes.
-    const b64 = out.parts[0].image_url.url.split("base64,")[1];
+    const b64 = out.parts[1].image_url.url.split("base64,")[1];
     assert.ok(Buffer.from(b64, "base64").equals(png));
+  });
+
+  it("#683: a resolved senderLabel rides as an adjacent attribution caption", async () => {
+    const png = makePng(64, 64);
+    const { impl } = fetchReturning(png);
+    const out = await im.prepareVisionImages(
+      [
+        { url: "https://x/a.png", name: "a.png", contentType: "image/png", size: png.length, origin: "trigger", senderLabel: "Main Guy (@member)" },
+        { url: "https://x/b.png", name: "b.png", contentType: "image/png", size: png.length, origin: "context", senderLabel: "Two (@member2)" },
+      ],
+      { fetchImpl: impl, resolveHost: publicResolver, ids },
+    );
+    assert.equal(out.sent, 2);
+    assert.equal(out.parts[0].text, "[Image 1 of 2 — uploaded by Main Guy (@member)]");
+    assert.equal(out.parts[2].text, "[Image 2 of 2 — uploaded by Two (@member2)]");
+    assert.equal(out.parts[1].type, "image_url");
+    assert.equal(out.parts[3].type, "image_url");
+  });
+
+  it("#683: 'of N' numbering survives budget-walk skips (N = images that ride)", async () => {
+    const png = makePng(300, 200);
+    const { impl } = fetchReturning(png);
+    const cands = [1, 2, 3].map((n) => ({
+      url: `https://x/${n}.png`,
+      name: `${n}.png`,
+      contentType: "image/png",
+      size: png.length,
+      origin: "trigger",
+      senderLabel: `user${n}`,
+    }));
+    const out = await im.prepareVisionImages(cands, {
+      fetchImpl: impl,
+      resolveHost: publicResolver,
+      ids,
+      limits: { maxTotalBytes: png.length * 2 }, // third image loses the walk
+    });
+    assert.equal(out.sent, 2);
+    assert.equal(out.skipped, 1);
+    const labels = out.parts.filter((p) => p.type === "text").map((p) => p.text);
+    assert.deepEqual(labels, [
+      "[Image 1 of 2 — uploaded by user1]",
+      "[Image 2 of 2 — uploaded by user2]",
+    ]);
+  });
+
+  it("#683: failure notes name the uploader when any identity is known", async () => {
+    const { impl } = fetchReturning(null); // 404 → every download fails
+    const out = await im.prepareVisionImages(
+      [{ url: "https://x/cat.png", name: "cat.png", contentType: "image/png", size: null, origin: "trigger", senderName: "alice" }],
+      { fetchImpl: impl, resolveHost: publicResolver, ids },
+    );
+    assert.equal(out.sent, 0);
+    assert.match(out.notes[0], /^image "cat\.png" from alice could not be included: /);
   });
 
   it("resizes oversized images BEFORE encoding the data URL (1600×1200 → 1280×960)", async () => {
@@ -305,12 +396,12 @@ describe("prepareVisionImages (data URLs + degradation)", () => {
       { fetchImpl: impl, resolveHost: publicResolver, ids },
     );
     assert.equal(out.sent, 1);
-    const b64 = out.parts[0].image_url.url.split("base64,")[1];
+    const b64 = out.parts[1].image_url.url.split("base64,")[1];
     const decoded = await loadImage(Buffer.from(b64, "base64"));
     assert.equal(decoded.width, 1280);
     assert.equal(decoded.height, 960);
     // A real resize re-encodes to the output mime (png source → png).
-    assert.ok(out.parts[0].image_url.url.startsWith("data:image/png;base64,"));
+    assert.ok(out.parts[1].image_url.url.startsWith("data:image/png;base64,"));
   });
 
   it("skips oversize attachments BEFORE downloading (declared size)", async () => {

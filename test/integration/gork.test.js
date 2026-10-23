@@ -3368,6 +3368,20 @@ describe("integration: gork vision (issue #227)", () => {
         assert.ok(raw.length <= png.length, "passthrough keeps the original bytes");
       }
 
+      // #683: every image part carries an adjacent attribution caption,
+      // sitting right BEFORE the image it describes. Trigger image first
+      // (asker-owned), then the context image from member2.
+      assert.equal(userMsg.content[1].type, "text", "label rides before image 1");
+      assert.match(userMsg.content[1].text, /^\[Image 1 of 2 — uploaded by /);
+      assert.doesNotMatch(userMsg.content[1].text, /member2/, "image 1 belongs to the asker");
+      assert.equal(userMsg.content[2].type, "image_url");
+      assert.match(userMsg.content[3].text, /^\[Image 2 of 2 — uploaded by .*member2/);
+      assert.equal(userMsg.content[4].type, "image_url");
+      const labels = userMsg.content.filter(
+        (p) => p.type === "text" && /^\[Image \d+ of \d+ — uploaded by /.test(p.text ?? ""),
+      );
+      assert.equal(labels.length, 2, "one attribution caption per riding image");
+
       // Audit embed carries the vision tally.
       const vision = auditField(env, "Vision");
       assert.ok(vision, "inline Vision field on the Q&A audit embed");

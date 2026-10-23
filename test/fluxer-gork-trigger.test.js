@@ -479,6 +479,12 @@ describe("fluxer gork vision (issue #227)", () => {
       const user = chat.body.messages.find((m) => m.role === "user");
       assert.ok(Array.isArray(user.content), "multimodal content array");
       assert.equal(user.content[0].type, "text");
+      // #683: the Fluxer trigger image is attributed too — roster name
+      // when resolvable, "the asker" fallback otherwise; either way the
+      // caption rides BETWEEN the question and the image.
+      assert.equal(user.content.length, 3, "question + attribution label + image");
+      assert.match(user.content[1].text, /^\[Image 1 of 1 — uploaded by .+\]$/);
+      assert.equal(user.content[2].type, "image_url");
       const parts = user.content.filter((p) => p.type === "image_url");
       assert.equal(parts.length, 1);
       assert.ok(parts[0].image_url.url.startsWith("data:image/png;base64,"));
