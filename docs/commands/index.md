@@ -1313,6 +1313,7 @@ Gork's `read_discord` tool (reading a pasted message/channel link) is **always o
 /gork role @GorkRole               # role mention also invokes gork (keyword stays master)
 /gork role clear:true
 /gork context 10
+/gork toolrounds 50                # per-guild tool-round budget (5-300) — scales the answer deadline
 /gork cooldown 180
 /gork rules Keep answers about this server
 /gork search on
@@ -1339,6 +1340,7 @@ Gork's `read_discord` tool (reading a pasted message/channel link) is **always o
 | `keyword <text\|clear>` | Set the trigger keyword (1–50 chars); `clear` disables gork for the guild |
 | `role [<@role>\|clear:true]` | Set the role whose **mention** also invokes gork anywhere in a message (`clear:true` removes it). The keyword stays the master switch — a cleared keyword keeps gork fully silent |
 | `context <1-50>` | Prior-message context window (default 10) |
+| `toolrounds <5-300>` | Per-guild **tool-round budget** — how many tool rounds one answer may spend (default **50**); the whole-loop answer deadline is derived from it (`min(90s + 40s×rounds, 45 min)`). Unset guilds fall back to the global `GORK_LLM_MAX_TOOL_ROUNDS` |
 | `cooldown <seconds>` | Per-user cooldown (0–3600; default **180**, 0 = disabled). Staff always bypass |
 | `rules <text\|clear>` | Additional staff prompt rules (≤500 chars); `clear` removes them |
 | `search <on\|off>` | Toggle the SearXNG web-search / page-reading tools for this guild (shared lever) |

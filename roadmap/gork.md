@@ -1618,3 +1618,58 @@ combo); `test/integration/gork.test.js` (`issue #176` suite — auto-mentioned
 reply answered + prior gork answer reaches the prompt; keywordless reply
 stays silent AND emits the gated line; a leading NON-bot mention still does
 not trigger).
+
+### 7.24 Per-guild tool-round budget + derived answer deadline — #705 (LOCKED 2026-10-23 — decision 66; SHIPPED 2026-10-23)
+
+**Problem.** The tool-round budget was a global env knob (`GORK_LLM_MAX_TOOL_ROUNDS`,
+default 3) and the whole-loop deadline a fixed 90 s — guilds running deeper
+multi-tool research could neither raise the rounds nor get a deadline that fit
+the work the rounds authorize.
+
+**Decision 66.** Per-guild budget `gork_max_tool_rounds` (`/gork toolrounds`,
+**5–300**) with precedence **guild → `GORK_LLM_MAX_TOOL_ROUNDS` → 50**, and the
+whole-loop deadline **derived**: `min(90s + 40s × rounds, 45 min)`. Locked
+details:
+
+- **The column is NULLABLE** — deliberately NOT the issue draft's
+  `NOT NULL DEFAULT 50`: "never set" must stay distinguishable from "set to 50"
+  or the acceptance criterion "unset guilds fall back to env / current
+  deployments don't break" is dead on arrival (an env=3 deployment would jump
+  to 50 at ALTER time). NULL means never-set; the effective default is 50 only
+  when neither guild nor env is set.
+- Clamp 5–300 on **write** (guildSettings whitelist, `clampInt` with a NULL
+  fallback so the never-set state stays representable) AND on **read**
+  (`constants.resolveMaxToolRounds`) — the `gork_context_window`
+  clamp-and-disclose twin. A hand-poisoned row can never run away.
+- The env knob keeps its legacy posture as the **global fallback only**: any
+  positive integer still honored there (escape hatch below the guild floor,
+  e.g. test harnesses pinning rounds=1). The guild surface never exposes
+  below-5.
+- **Deadline knobs:** `GORK_LLM_TIMEOUT_PER_ROUND_MS` (avg round cost, default
+  40 s) and `GORK_LLM_TIMEOUT_CAP_MS` (default 45 min) retune the derivation;
+  an explicitly set `GORK_LLM_TIMEOUT_MS` overrides the WHOLE derivation —
+  the pre-#705 meaning, unchanged, so existing pin-90s deployments are
+  unaffected. The 45-min ceiling bounds how long one job can hold the
+  serialized per-guild queue slot (queue headroom).
+- **Cost control stays rounds-first:** the issue's open question about rolling
+  token spend into the daily tally was declined — the daily budget
+  (`/gork budget`, §7.17), per-user cooldown, and the deadline ceiling are the
+  sanctioned backstops; a guild raising rounds opts into longer, costlier
+  answers deliberately. `/gork toolrounds` discloses the deadline its value
+  authorizes; `/gork status` + the `/settings` Gork line show the effective
+  rounds (global inheritance tagged `(global)`).
+
+Helpers live in `src/features/gork/constants.js` (pure, injectable env —
+`positiveIntIn`, `resolveMaxToolRounds`, `deriveToolTimeoutMs`) so trigger,
+handlers and the `/settings` feature share one truth without cross-feature
+requires. `llmParams(settings, env)` takes the guild row at the job seam; the
+interaction log records the effective params (re-recorded goldens:
+`timeoutMs 2090000`, `maxToolRounds 50`).
+
+Tests: `test/gork-toolrounds.test.js` (surface, round-trip + audit +
+disclose, gate refusal, whitelist clamp/NULL preservation, precedence +
+derivation tables, status + /settings surfaces); `test/gork.test.js`
+(llmParams defaults, #705 semantics); `test/migrations-*`, `test/db-layer`
+tripwires at 65; integration `gork-interaction-log` params pin. Docs:
+`docs/gork.md` (Tool rounds & the answer deadline), `docs/configuration.md`
+(2 new knobs + revised rows), `docs/database.md` (065), `docs/commands/index.md`.
