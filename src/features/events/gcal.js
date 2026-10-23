@@ -19,6 +19,7 @@ const {
   decryptToken,
   hasTokenKey,
   keyMissingError,
+  needsTokenReencrypt,
 } = require("../../core/thirdPartyTokens");
 const { createOAuthState, verifyOAuthState, PURPOSES } = require("../commandPermissions/oauthState");
 
@@ -169,6 +170,42 @@ async function fetchPrimaryEmail(accessToken) {
   }
 }
 
+/**
+ * #281 lazy convergence: once stored envelopes decrypt, re-seal them with
+ * the CURRENT TOKEN_ENCRYPTION_KEY so rows migrate forward after a key
+ * rotation. Best-effort — a failed re-seal never breaks calendar work.
+ */
+function resealStaleLinkSecrets(
+  communityId,
+  link,
+  { accessTokenPlain, refreshTokenPlain } = {}
+) {
+  const patch = {};
+  if (
+    link.access_token_enc &&
+    accessTokenPlain != null &&
+    needsTokenReencrypt(link.access_token_enc)
+  ) {
+    patch.accessTokenEnc = encryptToken(accessTokenPlain);
+  }
+  if (
+    link.refresh_token_enc &&
+    refreshTokenPlain != null &&
+    needsTokenReencrypt(link.refresh_token_enc)
+  ) {
+    patch.refreshTokenEnc = encryptToken(refreshTokenPlain);
+  }
+  if (!patch.accessTokenEnc && !patch.refreshTokenEnc) return;
+  try {
+    repo.resealEventGoogleLinkSecrets(communityId, link.user_id, patch);
+  } catch (err) {
+    console.error(
+      `[events] gcal link re-seal failed (community ${communityId} ` +
+        `user ${link.user_id}) (#281): ${err?.message || err}`,
+    );
+  }
+}
+
 /** Fresh access token (refresh once when near expiry). Returns null+error. */
 async function freshToken(communityId, userId) {
   const link = repo.getEventGoogleLink(communityId, userId);
@@ -176,7 +213,20 @@ async function freshToken(communityId, userId) {
   const needsRefresh = link.expiry == null || Date.now() >= Number(link.expiry);
   if (!needsRefresh) {
     try {
-      return { ok: true, token: decryptToken(link.access_token_enc), link };
+      const accessTokenPlain = decryptToken(link.access_token_enc);
+      // #281: converge both envelopes forward while their plaintexts are
+      // reachable (a refresh column the current key-set cannot open is
+      // left alone — decrypt would throw, not corrupt).
+      let refreshTokenPlain = null;
+      if (link.refresh_token_enc && needsTokenReencrypt(link.refresh_token_enc)) {
+        try {
+          refreshTokenPlain = decryptToken(link.refresh_token_enc);
+        } catch {
+          /* leave it; the access path works without it */
+        }
+      }
+      resealStaleLinkSecrets(communityId, link, { accessTokenPlain, refreshTokenPlain });
+      return { ok: true, token: accessTokenPlain, link };
     } catch (err) {
       return { ok: false, error: `Stored token unreadable (key change?): ${err?.message || err}` };
     }
@@ -187,8 +237,9 @@ async function freshToken(communityId, userId) {
   const cfg = getConfig();
   if (!cfg.ready) return { ok: false, error: "Google OAuth is no longer configured server-side." };
   try {
+    const refreshPlain = decryptToken(link.refresh_token_enc);
     const tokens = await postTokenForm({
-      refresh_token: decryptToken(link.refresh_token_enc),
+      refresh_token: refreshPlain,
       client_id: cfg.clientId,
       client_secret: cfg.clientSecret,
       grant_type: "refresh_token",
@@ -197,6 +248,11 @@ async function freshToken(communityId, userId) {
     repo.updateEventGoogleLinkTokens(communityId, userId, {
       accessTokenEnc: encryptToken(String(tokens.access_token)),
       expiry,
+    });
+    // #281: the access column converged above (fresh v2 seal); the refresh
+    // column converges here with the rotated-or-existing plaintext.
+    resealStaleLinkSecrets(communityId, link, {
+      refreshTokenPlain: tokens.refresh_token || refreshPlain,
     });
     return { ok: true, token: String(tokens.access_token), link };
   } catch (err) {

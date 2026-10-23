@@ -14,8 +14,15 @@
  * and SESSION_SECRET so rotating one store's key never strands another's.
  * This module covers BOTH token tables with one key (they share the
  * "operator-provided third-party credential" trust domain and lifecycle).
- * No key rotation in v1 — same posture as the bridge key: rotating strands
- * existing rows (re-authorize / re-add watches).
+ *
+ * ROTATION (#281): TOKEN_ENCRYPTION_KEY is the CURRENT (write) key;
+ * TOKEN_ENCRYPTION_KEY_RETIRED holds the comma-separated list of previous
+ * keys kept readable while rows converge to the new key on read
+ * (needsTokenReencrypt). Rotate: move the old key to RETIRED, set the new
+ * key in the current var, run normally — rows re-seal lazily; delete the
+ * RETIRED entry once nothing references it. Unknown-key rows still fail
+ * loud; a rotation WITHOUT the old key in RETIRED strands rows exactly
+ * like the pre-v2 posture.
  *
  * Migration 039 re-encrypts pre-existing plaintext rows at boot and FAILS
  * LOUD (boot dies) when the key is absent while token material exists —
@@ -31,9 +38,11 @@
 const core = require("./tokenCrypto");
 
 const KEY_ENV = "TOKEN_ENCRYPTION_KEY";
+const KEY_RETIRED_ENV = "TOKEN_ENCRYPTION_KEY_RETIRED";
 
 const api = core.createEnvelopeCrypto({
   envVarName: KEY_ENV,
+  envVarNameRetired: KEY_RETIRED_ENV,
   codePrefix: "third_party_token",
   label: "third-party token",
 });
@@ -51,7 +60,7 @@ function hasTokenKey(opts = {}) {
 }
 
 /**
- * Encrypt a third-party credential into the `v1.…` envelope.
+ * Encrypt a third-party credential into the `v2.<keyid>.…` envelope (current key).
  * @param {string} plaintext
  * @param {{ keyGetter?: () => unknown }} [opts]
  * @returns {string|null} envelope, or null when no usable key
@@ -61,7 +70,8 @@ function encryptToken(plaintext, opts = {}) {
 }
 
 /**
- * Decrypt a stored envelope back to the credential plaintext. Malformed,
+ * Decrypt a stored envelope (v1 or v2) back to the credential plaintext.
+ * Malformed,
  * tampered, foreign-key, or keyless input throws (static message,
  * `third_party_token_*` code).
  *
@@ -71,6 +81,19 @@ function encryptToken(plaintext, opts = {}) {
  */
 function decryptToken(envelope, opts = {}) {
   return api.decrypt(envelope, opts);
+}
+
+/**
+ * Lazy forward-migration signal (#281): does this stored value need a
+ * re-seal with the CURRENT TOKEN_ENCRYPTION_KEY (v1 row, or v2 sealed by a
+ * retired key)? Read sites re-encrypt exactly when this says true.
+ *
+ * @param {string} envelope
+ * @param {{ keyGetter?: () => unknown }} [opts]
+ * @returns {boolean}
+ */
+function needsTokenReencrypt(envelope, opts = {}) {
+  return api.needsReencrypt(envelope, opts);
 }
 
 /**
@@ -93,11 +116,15 @@ function keyMissingError(noun) {
 
 module.exports = {
   KEY_ENV,
+  KEY_RETIRED_ENV,
   ENVELOPE_VERSION: core.ENVELOPE_VERSION,
   ENVELOPE_PREFIX: core.ENVELOPE_PREFIX,
+  ENVELOPE_V2_PREFIX: core.ENVELOPE_V2_PREFIX,
   looksLikeEnvelope: core.looksLikeEnvelope,
+  envelopeVersion: core.envelopeVersion,
   hasTokenKey,
   encryptToken,
   decryptToken,
+  needsTokenReencrypt,
   keyMissingError,
 };

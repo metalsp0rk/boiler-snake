@@ -100,7 +100,7 @@ const DYNAMIC_READ_FILES = new Map([
   ],
   [
     "src/core/tokenCrypto.js",
-    "createEnvelopeCrypto reads process.env[envVarName]; the names come from the envVarName:/KEY_ENV bindings at its two factories",
+    "createEnvelopeCrypto reads process.env[envVarName] and process.env[envVarNameRetired]; the names come from the envVarName/envVarNameRetired and KEY_ENV/KEY_RETIRED_ENV bindings at its two factories (#281)",
   ],
   [
     "src/db/migrations/039_encrypt_third_party_tokens.js",
@@ -160,6 +160,7 @@ const EXPECTED_VARS = [
   "AI_SMALL_MODEL",
   "BRIDGE_ENABLED",
   "BRIDGE_TOKEN_KEY",
+  "BRIDGE_TOKEN_KEY_RETIRED",
   "CLIENT_ID",
   "CLIENT_SECRET",
   "DATA_DIR",
@@ -227,6 +228,7 @@ const EXPECTED_VARS = [
   "TICKET_PUBLIC_BASE_URL",
   "TICKET_SUMMARY_TIMEOUT_MS",
   "TOKEN_ENCRYPTION_KEY",
+  "TOKEN_ENCRYPTION_KEY_RETIRED",
   "TWITCH_CLIENT_ID",
   "TWITCH_CLIENT_SECRET",
   "TWITCH_EVENTSUB_CALLBACK_URL",

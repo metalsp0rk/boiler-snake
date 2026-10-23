@@ -78,10 +78,49 @@ function getCommandPermissionOauth(communityId) {
       )
       .get(communityId) || null;
   if (!row) return null;
+  const refreshTokenPlain = decryptTokenColumn(row.refresh_token, communityId, "refresh_token");
+  const accessTokenPlain = decryptTokenColumn(row.access_token, communityId, "access_token");
+
+  // #281 lazy forward-migration: once both columns decrypt (current key or
+  // a RETIRED entry), re-seal with the CURRENT key so rows converge after
+  // a rotation. A failed re-seal write never breaks the read.
+  if (
+    tokens.needsTokenReencrypt(row.refresh_token) ||
+    tokens.needsTokenReencrypt(row.access_token)
+  ) {
+    const seal = (plain) =>
+      plain == null || plain === "" ? plain : tokens.encryptToken(plain);
+    const refreshEnc = seal(refreshTokenPlain);
+    const accessEnc = seal(accessTokenPlain);
+    if (
+      (row.refresh_token != null && refreshEnc == null) ||
+      (row.access_token != null && accessEnc == null)
+    ) {
+      // No usable current key (or vanished mid-read): nothing to converge
+      // to. The decrypted read stands; leave the row untouched.
+    } else {
+      try {
+        db.prepare(
+          `
+          UPDATE guild_command_permission_oauth
+          SET refresh_token=?, access_token=?, updated_at=?
+          WHERE community_id=?
+        `
+        ).run(refreshEnc, accessEnc, now(), communityId);
+      } catch (err) {
+        console.error(
+          `[oauth] command-permission OAuth token re-encrypt write failed for ` +
+            `community ${communityId} (key rotation #281, read still valid): ` +
+            `${err?.message || err}`,
+        );
+      }
+    }
+  }
+
   return {
     ...row,
-    refresh_token: decryptTokenColumn(row.refresh_token, communityId, "refresh_token"),
-    access_token: decryptTokenColumn(row.access_token, communityId, "access_token"),
+    refresh_token: refreshTokenPlain,
+    access_token: accessTokenPlain,
   };
 }
 

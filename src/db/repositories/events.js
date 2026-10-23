@@ -1767,6 +1767,41 @@ function updateEventGoogleLinkTokens(communityId, userId, { accessTokenEnc, expi
   ).run(accessTokenEnc, expiry, now(), communityId, String(userId));
 }
 
+/**
+ * #281 rotation convergence: re-seal one link's stored envelopes with the
+ * CURRENT TOKEN_ENCRYPTION_KEY without touching expiry or enablement.
+ * Undefined columns stay untouched; call only when the plaintexts are in
+ * hand (successful decrypts).
+ */
+function resealEventGoogleLinkSecrets(
+  communityId,
+  userId,
+  { accessTokenEnc, refreshTokenEnc } = {}
+) {
+  assertCommunityId(communityId);
+  const sets = [];
+  const args = [];
+  if (accessTokenEnc !== undefined) {
+    sets.push("access_token_enc = ?");
+    args.push(accessTokenEnc);
+  }
+  if (refreshTokenEnc !== undefined) {
+    sets.push("refresh_token_enc = ?");
+    args.push(refreshTokenEnc);
+  }
+  if (sets.length === 0) return false;
+  sets.push("updated_at = ?");
+  args.push(now(), communityId, String(userId));
+  return (
+    db
+      .prepare(
+        `UPDATE event_google_links SET ${sets.join(", ")}
+         WHERE community_id = ? AND user_id = ?`
+      )
+      .run(...args).changes > 0
+  );
+}
+
 function disableEventGoogleLink(communityId, userId) {
   assertCommunityId(communityId);
   return (
@@ -2103,6 +2138,7 @@ module.exports = {
   upsertEventGoogleLink,
   getEventGoogleLink,
   updateEventGoogleLinkTokens,
+  resealEventGoogleLinkSecrets,
   disableEventGoogleLink,
   deleteEventGoogleLink,
 

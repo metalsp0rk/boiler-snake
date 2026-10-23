@@ -20,7 +20,11 @@
  * requires no SDK package itself.
  */
 
-const { encryptWebhookToken, decryptWebhookToken } = require("./tokenCrypto");
+const {
+  encryptWebhookToken,
+  decryptWebhookToken,
+  needsBridgeTokenReencrypt,
+} = require("./tokenCrypto");
 const { hideToken } = require("../../core/secrets"); // #470 (H1-7): shared copy
 const { sanitizeOutboundFilename } = require("./media");
 const { NO_PING } = require("./mentions");
@@ -149,6 +153,25 @@ function createDiscordBridgeOutbound(seams = {}) {
         };
       }
       return { ok: true, webhook: hideToken({ id: String(end.webhook_id) }, token) };
+    },
+
+    /**
+     * #281 rotation signal for one stored end envelope (uses THIS port's
+     * key seam — relay must not read env keys directly).
+     */
+    needsEndTokenReseal(envelope) {
+      return needsBridgeTokenReencrypt(envelope, { keyGetter: seams.keyGetter });
+    },
+
+    /**
+     * #281: re-seal a successfully decrypted end token with the CURRENT
+     * key. Returns the v2 envelope, or null when no current key is usable
+     * (a rotation read must never blank the column).
+     */
+    resealEndToken(webhookHandle) {
+      const token = webhookHandle?.token;
+      if (typeof token !== "string" || token === "") return null;
+      return encryptWebhookToken(token, { keyGetter: seams.keyGetter });
     },
 
     /**

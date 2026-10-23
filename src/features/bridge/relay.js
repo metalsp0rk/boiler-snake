@@ -2535,6 +2535,28 @@ function createRelayWorker(deps = {}) {
         repo.setBridgeLastError(bridge.id, wh.error);
         return;
       }
+      // #281 lazy forward-migration: once an end's token decrypts (current
+      // or RETIRED key), re-seal it with the CURRENT key so both ends
+      // converge after a rotation. Persist failures NEVER break the relay —
+      // the decrypted handle in hand is still correct.
+      if (port.needsEndTokenReseal(ends.dstEnd.webhook_token_enc)) {
+        try {
+          const resealed = port.resealEndToken(wh.webhook);
+          if (resealed != null) {
+            repo.setBridgeEndWebhook(bridge.id, ends.dstEnd.position, {
+              webhookId: ends.dstEnd.webhook_id,
+              tokenEnc: resealed,
+              uploadLimitBytes: ends.dstEnd.upload_limit_bytes ?? null,
+            });
+            ends.dstEnd.webhook_token_enc = resealed;
+          }
+        } catch (err) {
+          console.error(
+            `[bridge] worker: end token re-seal persist failed for ${publicId} ` +
+              `pos ${ends.dstEnd.position} (#281, relay continues): ${err?.message || err}`,
+          );
+        }
+      }
       const webhookRef = { current: wh.webhook };
 
       // Recreate persistence shared by all three kinds (§10.10: one recreate

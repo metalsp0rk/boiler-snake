@@ -6,8 +6,9 @@
  * user OAuth grants, migration 016) and `github_watches.token` (GitHub PATs,
  * migration 025) were raw TEXT while strictly weaker material (bridge relay
  * webhook tokens, web session ATs) was already AES-256-GCM-encrypted. From
- * here on those columns hold ONLY the `v1.<iv>.<tag>.<ciphertext>` envelope
- * written by src/core/thirdPartyTokens.js (TOKEN_ENCRYPTION_KEY); this
+ * here on those columns hold ONLY an AES-256-GCM envelope produced by
+ * src/core/tokenCrypto.js (`v1.…` legacy, `v2.<keyid>.…` since #281 — both
+ * stay valid; new writes are always v2) keyed by TOKEN_ENCRYPTION_KEY; this
  * migration converts the pre-existing plaintext rows.
  *
  * Decisions (documented in the #189 PR):
@@ -41,7 +42,9 @@
 const core = require("../../core/tokenCrypto");
 const {
   KEY_ENV,
+  KEY_RETIRED_ENV,
   ENVELOPE_PREFIX,
+  ENVELOPE_V2_PREFIX,
   encryptToken,
   decryptToken,
 } = require("../../core/thirdPartyTokens");
@@ -90,11 +93,17 @@ function up(db, { tableExists }) {
           needsKey.push(label);
           continue;
         }
-        if (typeof value === "string" && value.startsWith(ENVELOPE_PREFIX)) {
-          // Envelope candidate: it must decrypt with THIS key. Success is
-          // the only thing that proves "already migrated" (a shape check
-          // alone cannot tell our envelopes from foreign-key or tampered
-          // ones) — and it makes this whole scan idempotent.
+        if (
+          typeof value === "string" &&
+          (value.startsWith(ENVELOPE_PREFIX) || value.startsWith(ENVELOPE_V2_PREFIX))
+        ) {
+          // Carries an envelope marker (v1 or v2): only a SUCCESSFUL
+          // decrypt against the key SET (current + any TOKEN_ENCRYPTION_
+          // KEY_RETIRED entries, #281) proves "already migrated" — a shape
+          // check alone cannot tell our envelopes from foreign-key,
+          // corrupted, or v2-junk ones, and re-wrapping any of those would
+          // destroy the credential (or entrench garbage). This keeps the
+          // scan idempotent.
           try {
             decryptToken(value);
           } catch (err) {
@@ -120,10 +129,12 @@ function up(db, { tableExists }) {
 
   if (undecryptable.length > 0) {
     throw new Error(
-      `Migration 039 refused: ${undecryptable.length} stored value(s) look like ${core.ENVELOPE_VERSION} ` +
-        `token envelopes but do NOT decrypt with the current ${KEY_ENV} — likely a rotated/foreign ` +
-        `${KEY_ENV} or tampered bytes. Restoring the key that encrypted them is the only safe fix ` +
-        `(v1 has no key rotation); re-wrapping would destroy the credentials. Offenders: ` +
+      `Migration 039 refused: ${undecryptable.length} stored value(s) look like token ` +
+        `envelopes (v1/v2) but do NOT decrypt with the current ${KEY_ENV} or any ` +
+        `${KEY_RETIRED_ENV} entry — likely a rotated/foreign ` +
+        `${KEY_ENV} or tampered bytes. Restore the key that encrypted them (as ${KEY_ENV} or as a ` +
+        `${KEY_RETIRED_ENV} entry, see docs/configuration.md); re-wrapping would destroy the ` +
+        `credentials. Offenders: ` +
         `${undecryptable.slice(0, MAX_REPORTED_ROWS).join("; ")}` +
         `${undecryptable.length > MAX_REPORTED_ROWS ? ` (and ${undecryptable.length - MAX_REPORTED_ROWS} more)` : ""}`
     );

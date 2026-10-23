@@ -616,7 +616,7 @@ src/db/migrations/035_bridges.js
 
 `service.js` imports neither `discord.js` nor `@fluxerjs/core`; outbound functions are injected so unit tests pass fakes. `handlers.js` is the only reply site. The guild prefix path is the **shipped** `dispatch.js` → context handler (registry `handlerApi: { bridge: "context" }` in `src/features/bridge/index.js`); the DM path is the §10.3 ingestion hook → service with `via: "dm"`. Bridge policy never lives under `src/platform/`.
 
-`tokenCrypto.js` follows the AES-256-GCM envelope idea of `src/web/auth/tokens.js` with its **own** key: `BRIDGE_TOKEN_KEY`, 32 bytes base64, `.env` only, placeholder in examples. Rotation is out of v1 (rotating the key strands existing rows; staff disconnect + reconnect). Missing key fails **connect** with the key-missing sentence; create of a pending row does not need it.
+`tokenCrypto.js` follows the AES-256-GCM envelope idea of `src/web/auth/tokens.js` with its **own** key: `BRIDGE_TOKEN_KEY`, 32 bytes base64, `.env` only, placeholder in examples. ~~Rotation is out of v1~~ **Rotation shipped post-v1 (#281, 2026-10):** new seals are `v2.<key-id>.…`; `BRIDGE_TOKEN_KEY_RETIRED` keeps previous keys readable and end envelopes re-seal forward as the relay uses them (disconnect/reconnect remains the fallback when the old key is already lost). Missing key fails **connect** with the key-missing sentence; create of a pending row does not need it.
 
 ## API / Interface Changes
 
