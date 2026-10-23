@@ -69,6 +69,9 @@ const migrations = [
   require("./migrations/059_twitch_sub_overrides"),
   require("./migrations/060_twitch_go_offline"),
   require("./migrations/061_twitch_golive_template"),
+  require("./migrations/062_rss_feeds"),
+  require("./migrations/063_rss_seen"),
+  require("./migrations/064_rss_guild_settings"),
 ];
 
 const helpers = {
