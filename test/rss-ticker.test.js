@@ -9,6 +9,11 @@
 const { describe, it, afterEach } = require("node:test");
 const assert = require("node:assert/strict");
 
+// #609: the rss feature graph reaches src/db (index→commands→db,
+// ticker→poller→db). Bind the sanctioned temp DB at LOAD time, before
+// the first db-bound require, per the db-binding-discipline guard.
+require("./helpers/env").loadDb();
+
 const scheduler = require("../src/core/scheduler");
 const { startRssTicker, RSS_TICK_INTERVAL_MS } = require("../src/features/rss/ticker");
 const feature = require("../src/features/rss");
