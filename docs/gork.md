@@ -28,7 +28,7 @@ User: "@gork how do I center a div"  (or "@gork" replying to a message)
    → queue? (1 in-flight + 5 waiting; full → canned drop reply)
    → typing indicator (refreshed every 8s until the reply lands)
    → context window: reply chain (with backfill) or N prior messages
-   → LLM (temperature 0.8, 90s total timeout; read_discord always on, web_search + read_page when enabled)
+   → LLM (temperature 0.8, deadline derived from the guild's round budget — 90s + 40s×rounds, capped 45 min; read_discord always on, web_search + read_page when enabled)
    → plain-text reply to the keyword message (>2,000 chars → split)
    → audit embed to the audit channel
 ```
@@ -96,7 +96,7 @@ SEARXNG_URL=https://searxng.example.com
 
 `SEARXNG_URL` is the base URL of any SearXNG instance (self-hosted or public) with **JSON format enabled** (`formats: [json]` in the SearXNG settings). **No compose service is added** — the bot simply calls the instance's JSON API.
 
-How it works: gork exposes a plain OpenAI-compatible function tool `web_search(query)`. When the model calls it, the bot runs `GET {SEARXNG_URL}/search?q=<query>&format=json` (~10s timeout) and feeds the top 5 results (title, URL, snippet trimmed to ~300 chars) back into the conversation. The budget is **3 tool rounds per question**, shared with `read_page`. If a search fails, the model is told "search unavailable" and answers from context alone.
+How it works: gork exposes a plain OpenAI-compatible function tool `web_search(query)`. When the model calls it, the bot runs `GET {SEARXNG_URL}/search?q=<query>&format=json` (~10s timeout) and feeds the top 5 results (title, URL, snippet trimmed to ~300 chars) back into the conversation. Each answer gets a **tool-round budget** (per-guild via `/gork toolrounds`, default **50**) shared with `read_page`. If a search fails, the model is told "search unavailable" and answers from context alone.
 
 The tool is a per-guild setting (default on) and only runs when `SEARXNG_URL` is set: `/gork search on|off`.
 
@@ -107,7 +107,7 @@ When a search snippet (or the conversation itself) points at a page that likely 
 | Aspect | Detail |
 |--------|--------|
 | Enabled when | Same lever as search (`SEARXNG_URL` set + `/gork search on`) — no separate toggle |
-| Tool budget | The model gets up to **3 tool rounds** per question total (searches + reads combined); parallel calls in one round cost one round |
+| Tool budget | The model gets up to the guild's **tool-round budget** per question total (searches + reads + link reads combined, default **50**, `/gork toolrounds` 5–300); parallel calls in one round cost one round |
 | Fetch guards | 10s per page, ≤1 MB, `text/html`/`text/plain` only, ≤2 redirects (every hop re-validated) |
 | **SSRF guard** | Refuses **private / internal URLs by design**: loopback, RFC1918, CGNAT, link-local & cloud-metadata (`169.254.169.254`), multicast/reserved, IPv6 ULA/link-local, `localhost`/`.local`/`.internal` — checked at the hostname **and** on resolved IPs |
 | Failure mode | Per-page: `"Could not read: <reason>"` inline — one dead page never kills the answer |
@@ -165,6 +165,7 @@ All `/gork` subcommands are **staff-gated** (Manage Server or a guild [staff rol
 | `/gork keyword <text>` | Set the trigger keyword (1–50 chars). `/gork keyword clear` disables gork for the guild |
 | `/gork role <@role>` | Set the role whose **mention** also invokes gork anywhere in a message; `clear:true` removes it. `@everyone` is refused (its mention never reaches the trigger). The keyword remains the master switch — with the keyword cleared, gork stays fully silent |
 | `/gork context <1-50>` | Context window size (default 10) |
+| `/gork toolrounds <5-300>` | Per-guild **tool-round budget** — how many tool rounds one answer may spend (default **50**). The answer's whole-loop deadline is derived from it; see **Tool rounds & the answer deadline** |
 | `/gork cooldown <seconds>` | Per-user cooldown in seconds (0–3600; default **180**, 0 = disabled). Staff always bypass |
 | `/gork rules <text>` | Set additional staff prompt rules (≤500 chars). `/gork rules clear` removes them |
 | `/gork search <on\|off>` | Toggle the SearXNG `web_search` tool for this guild |
@@ -179,9 +180,9 @@ All `/gork` subcommands are **staff-gated** (Manage Server or a guild [staff rol
 | `/gork logchannel <#channel>` | Send the **Gork Q&A** audit embeds to a dedicated channel so they stop cluttering the [audit log](audit-log.md); `clear:true` puts them back (fallback: the audit log channel) |
 | `/gork summarize <mode>` | Conversation rundown of a message range — see [Conversation rundown](#conversation-rundown) |
 | `/gork summarize-budget <tokens>` | Set the per-guild **input token budget** for `/gork summarize` (8,000–200,000; default 80,000) |
-| `/gork status` | Ephemeral embed: enabled, keyword, role trigger, window, rules, search state, ste state, memory state, budget default + rule count, summarize input token budget, Q&A log channel, AI provider configured?, `SEARXNG_URL` set?, banned-user count |
+| `/gork status` | Ephemeral embed: enabled, keyword, role trigger, window, tool rounds, rules, search state, ste state, memory state, budget default + rule count, summarize input token budget, Q&A log channel, AI provider configured?, `SEARXNG_URL` set?, banned-user count |
 
-`/settings` also shows a **Gork** field (enabled + keyword + role trigger + window + search + ste + memory state + summarize input budget).
+`/settings` also shows a **Gork** field (enabled + keyword + role trigger + window + rounds + search + ste + memory state + summarize input budget).
 
 All values are stored per-guild in `guild_settings`:
 
@@ -191,6 +192,7 @@ All values are stored per-guild in `guild_settings`:
 | `gork_keyword` | Trigger keyword; `NULL` = disabled | `@gork` |
 | `gork_role_id` | Role whose mention also invokes gork (issue #174); `NULL` = role path off. The keyword stays the master switch | `NULL` |
 | `gork_context_window` | Prior-message context size | `10` |
+| `gork_max_tool_rounds` | Per-guild **tool-round budget** (`/gork toolrounds`, 5–300); drives the derived answer deadline. `NULL` = the guild never chose, so the global `GORK_LLM_MAX_TOOL_ROUNDS` (fallback **50**) applies | `NULL` |
 | `gork_extra_rules` | Staff prompt additions (≤500 chars) | *(empty)* |
 | `gork_search_enabled` | SearXNG `web_search` tool toggle | `1` (on) |
 | `gork_ste_enabled` | STE answer-style card toggle (see [Answer style (STE)](#answer-style-ste)) | `0` (off) |
@@ -202,6 +204,24 @@ All values are stored per-guild in `guild_settings`:
 | `gork_log_channel_id` | Dedicated channel for the **Gork Q&A** audit embeds; `NULL` → falls back to `audit_log_channel_id` | `NULL` |
 
 Gork bans live in their own per-guild table, `gork_user_blocks` (`guild_id`, `user_id`, who banned them, when); budget rules and usage counters in `gork_budget_rules` / `gork_usage`.
+
+## Tool rounds & the answer deadline
+
+One gork answer runs a **tool loop**: the model can call `web_search` / `read_page` / `read_discord` over several **rounds**, and each round is a fresh model call. Two budgets bound it — a **round count** (how much work) and a **wall-clock deadline** (how long) — and the deadline now *derives from* the round budget so they scale together (#705).
+
+- **Round budget** — per-guild via `/gork toolrounds <5-300>` (default **50**). Precedence: the guild value wins; a guild that never set one falls back to the global `GORK_LLM_MAX_TOOL_ROUNDS` env (whose own fallback default is **50**), so existing env-pinned deployments keep their number untouched. The stored value is clamped 5–300 on both read and write.
+- **Derived deadline** — the whole loop gets `min(90s + 40s × rounds, 45 min)`. `45 min` is a hard ceiling so the worst case a serialized per-guild queue job can hold its slot stays bounded.
+
+| Rounds | Derived whole-loop deadline |
+|--------|-----------------------------|
+| 5 (floor) | ~4.8 min |
+| 20 | ~14.8 min |
+| 50 (default) | ~34.8 min |
+| 300 (ceiling) | 45 min (capped) |
+
+**Operator knobs:** `GORK_LLM_TIMEOUT_PER_ROUND_MS` (default **40000** — the average round cost the derivation assumes; raise for slow models), `GORK_LLM_TIMEOUT_CAP_MS` (default **2700000** = 45 min). An explicitly set `GORK_LLM_TIMEOUT_MS` **overrides the whole derivation** with a fixed deadline (the pre-#705 escape hatch — meaning unchanged; it wins over both knobs and the derived value). `/gork status` and `/settings` show the effective rounds (a guild that inherited the global is tagged `(global)`), and `/gork toolrounds` replies with the deadline its new value authorizes.
+
+**Cost:** more authorized rounds means a runaway answer can run far longer against the provider. The per-user **cooldown**, the **daily usage budget** (`/gork budget`), and the 45-min deadline ceiling are the backstops; a guild that raises rounds is opting into longer, costlier answers on purpose.
 
 ## Answer style (STE)
 
@@ -390,7 +410,7 @@ Needs an AI provider configured — the **same env as gork Q&A** (`AI_API_KEY` e
 | Daily budget | Optional per-scope cap on **successful answers per user per UTC day** (channel → category → guild default, tri-state `-1`/`0`/`1–1000`, all **off** by default). Checked at enqueue **and** dequeue (no overage), staff **not** exempt, DB-backed counters, reset 00:00 UTC — see [Daily usage budget](#daily-usage-budget) |
 | Gork bans | `/gork ban` blocks a user per-guild. A banned trigger gets the LLM-failure canned reply, so the ban is **indistinguishable from a normal failure** — no LLM call, no audit Q&A entry. Unlike the cooldown, staff roles do **not** bypass a ban. The reply is paced by the normal per-user cooldown |
 | Concurrency / queue | **1 in-flight** gork request per guild; further triggers are **queued FIFO**, up to **5 waiting** (in-memory). When the queue is full, new triggers are **dropped** with the queue-full reply |
-| LLM parameters | Temperature **0.8** (sarcasm), completion budget **6,000** tokens, total timeout **90s** including the tool loop — each overridable via `GORK_LLM_MAX_TOKENS` / `GORK_LLM_TIMEOUT_MS` / `GORK_LLM_MAX_TOOL_ROUNDS`. Budget matters for **thinking models**: they spend it on hidden reasoning first, so the default leaves room for both |
+| LLM parameters | Temperature **0.8** (sarcasm), completion budget **6,000** tokens (`GORK_LLM_MAX_TOKENS`), per-guild **tool-round budget** (`/gork toolrounds`, default 50; global fallback `GORK_LLM_MAX_TOOL_ROUNDS`), and a whole-loop **deadline derived from the rounds** — `min(90s + 40s×rounds, 45 min)`, retunable via `GORK_LLM_TIMEOUT_PER_ROUND_MS` / `GORK_LLM_TIMEOUT_CAP_MS` or pinned outright with `GORK_LLM_TIMEOUT_MS`. Budget matters for **thinking models**: they spend it on hidden reasoning first, so the default leaves room for both |
 | Empty answers | A provider response with no visible text is retried **once** automatically; only a second failure gets the canned reply. Tool-cap rounds that still carry a real (partial) answer are delivered instead of discarded |
 
 The fast checks (settings, match, skips, cooldown, queue admission) run inline in the message pipeline; the slow LLM job is fired as a detached promise so the pipeline never stalls.
@@ -456,7 +476,7 @@ Staff can append up to 500 chars of rules via `/gork rules` (added as "Additiona
 
 - `SEARXNG_URL` must be set **and** the instance must have JSON format enabled (`formats: [json]` in SearXNG settings); otherwise the model is told search is unavailable and answers from context alone
 - `/gork search off` disables **both** tools for the guild (search and page reading share the lever) — `read_discord` is unaffected (always on)
-- `/gork status` shows whether `SEARXNG_URL` is set; the budget is max **3 tool rounds** per question (searches + page reads + link reads combined)
+- `/gork status` shows whether `SEARXNG_URL` is set, and the guild's **tool-round budget** (per question, searches + page reads + link reads combined; default 50, `/gork toolrounds`)
 - `read_page` **cannot open internal URLs** (LAN hosts, `localhost`, cloud metadata) — the SSRF guard refuses them by design; only public web pages are readable
 - Discord links (`discord.com/channels/...`) are read by `read_discord`, **not** `read_page` — if gork says it couldn't open a Discord page, that routing is why it works
 
@@ -479,14 +499,14 @@ Staff can append up to 500 chars of rules via `/gork rules` (added as "Additiona
 
 - Only **one** request is handled at a time per guild; further questions wait in the queue (up to **5**) — the typing indicator keeps refreshing while they wait
 - When the queue is full, the question is dropped with the canned "one (1) brain" reply
-- The total LLM timeout defaults to **90s** (`GORK_LLM_TIMEOUT_MS`); slower local models regularly need more
+- The whole-loop LLM deadline is **derived** from the guild's round budget (`min(90s + 40s×rounds, 45 min)`, tunable — see the **Tool rounds & the answer deadline** section); slower local models raise the per-round assumption via `GORK_LLM_TIMEOUT_PER_ROUND_MS`, or pin the whole deadline with `GORK_LLM_TIMEOUT_MS`
 
 ### Everyone gets "brain went to lunch" (the provider works elsewhere)
 
 Check the bot log: gork logs the exact failure reason (`reason`, HTTP status, model, tool calls, duration). Two common causes with self-hosted providers:
 
 - **Thinking/reasoning models** (Qwen3-style, DeepSeek-R1, o-series) burn the whole `max_tokens` budget on hidden reasoning and return `content: null` — the log says `provider returned an empty answer ... retrying once` then the same with `(finish_reason=...)`. Cap the thinking: `GORK_LLM_THINKING_TOKEN_BUDGET=4000` forwards a reasoning budget to the server — **the serving side must enforce it** (e.g. vLLM started with `--reasoning-parser`); leave it off for strict providers like api.openai.com, which reject the param. Keep `GORK_LLM_MAX_TOKENS` (default 6,000) above the thinking budget + answer headroom, or raise it until answers come through
-- **Slow model + long context** trips the 90s timeout (`GORK_LLM_TIMEOUT_MS`) — raise it
+- **Slow model + long context** trips the derived loop deadline — raise `GORK_LLM_TIMEOUT_PER_ROUND_MS` to match the model, or set `GORK_LLM_TIMEOUT_MS` to pin the whole-loop deadline outright
 - **Runaway visible answers** (the model rambles past a few paragraphs) — `GORK_MAX_ANSWER_CHARS` hard-caps the visible answer with a word-boundary cut + "[truncated]" marker (0 = off; 2000 keeps every answer to one message)
 
 ## Related

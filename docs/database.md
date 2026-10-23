@@ -237,7 +237,7 @@ Connected voice users are read live from the bot's voice-state cache
 
 ### 4. `guild_settings`
 
-One row per guild storing all configuration options. Base columns come from migration `001`; later migrations add columns via `addColumnIfMissing`. Migration `034_communities` re-keyed this table from `guild_id TEXT` to `community_id INTEGER`, and migration `057_level_role_fk` rebuilt it again to declare the PK foreign key `PRIMARY KEY REFERENCES communities(id)`; the newest columns (`rss_notification_channel_id`, `rss_notify_role_id`, `rss_polling_interval_minutes`) arrive with `064_rss_guild_settings`. Resolve snowflakes via `communities.external_guild_id`. The live DDL below is `sqlite_master` text as rebuilt by `057`: post-`001` columns were appended by later migrations, so SQLite records them after `updated_at` in ALTER order — that trailing comma is real, not a typo.
+One row per guild storing all configuration options. Base columns come from migration `001`; later migrations add columns via `addColumnIfMissing`. Migration `034_communities` re-keyed this table from `guild_id TEXT` to `community_id INTEGER`, and migration `057_level_role_fk` rebuilt it again to declare the PK foreign key `PRIMARY KEY REFERENCES communities(id)`; the newest columns arrive with `064_rss_guild_settings` (the RSS trio) and `065_gork_max_tool_rounds` (`gork_max_tool_rounds`, NULL = never set — the state that keeps `GORK_LLM_MAX_TOOL_ROUNDS` the fallback, #705). Resolve snowflakes via `communities.external_guild_id`. The live DDL below is `sqlite_master` text as rebuilt by `057`: post-`001` columns were appended by later migrations, so SQLite records them after `updated_at` in ALTER order — that trailing comma is real, not a typo.
 
 ```sql
 -- Live DDL (migrated schema, from sqlite_master)
@@ -260,7 +260,7 @@ CREATE TABLE "guild_settings" (
   youtube_upload_role_id TEXT,
 
   updated_at INTEGER NOT NULL
-, reaction_xp INTEGER NOT NULL DEFAULT 2, reaction_cooldown_sec INTEGER NOT NULL DEFAULT 10, audit_log_channel_id TEXT, message_log_channel_id TEXT, event_reminder_channel_id TEXT, warn_dm_members INTEGER NOT NULL DEFAULT 1, ticket_category_id TEXT, ticket_archive_channel_id TEXT, ticket_rate_limit_minutes INTEGER NOT NULL DEFAULT 60, warn_log_channel_id TEXT, warn_expiry_days INTEGER NOT NULL DEFAULT 0, twitch_notification_channel_id TEXT, twitch_notify_role_id TEXT, twitch_polling_interval_minutes INTEGER NOT NULL DEFAULT 2, gork_keyword TEXT DEFAULT '@gork', gork_context_window INTEGER NOT NULL DEFAULT 10, gork_extra_rules TEXT NOT NULL DEFAULT '', gork_search_enabled INTEGER NOT NULL DEFAULT 1, gork_cooldown_sec INTEGER NOT NULL DEFAULT 180, gork_enabled INTEGER NOT NULL DEFAULT 1, gork_memory_enabled INTEGER NOT NULL DEFAULT 0, gork_memory_chars INTEGER NOT NULL DEFAULT 12000, gork_daily_limit INTEGER NOT NULL DEFAULT 0, gork_interaction_log_enabled INTEGER NOT NULL DEFAULT 1, gork_ste_enabled INTEGER NOT NULL DEFAULT 0, gork_summarize_input_tokens INTEGER NOT NULL DEFAULT 80000, gork_log_channel_id TEXT, honeypot_paused_at INTEGER, honeypot_pause_reason TEXT, gork_role_id TEXT, twitch_golive_template TEXT, rss_notification_channel_id TEXT, rss_notify_role_id TEXT, rss_polling_interval_minutes INTEGER NOT NULL DEFAULT 15);
+, reaction_xp INTEGER NOT NULL DEFAULT 2, reaction_cooldown_sec INTEGER NOT NULL DEFAULT 10, audit_log_channel_id TEXT, message_log_channel_id TEXT, event_reminder_channel_id TEXT, warn_dm_members INTEGER NOT NULL DEFAULT 1, ticket_category_id TEXT, ticket_archive_channel_id TEXT, ticket_rate_limit_minutes INTEGER NOT NULL DEFAULT 60, warn_log_channel_id TEXT, warn_expiry_days INTEGER NOT NULL DEFAULT 0, twitch_notification_channel_id TEXT, twitch_notify_role_id TEXT, twitch_polling_interval_minutes INTEGER NOT NULL DEFAULT 2, gork_keyword TEXT DEFAULT '@gork', gork_context_window INTEGER NOT NULL DEFAULT 10, gork_extra_rules TEXT NOT NULL DEFAULT '', gork_search_enabled INTEGER NOT NULL DEFAULT 1, gork_cooldown_sec INTEGER NOT NULL DEFAULT 180, gork_enabled INTEGER NOT NULL DEFAULT 1, gork_memory_enabled INTEGER NOT NULL DEFAULT 0, gork_memory_chars INTEGER NOT NULL DEFAULT 12000, gork_daily_limit INTEGER NOT NULL DEFAULT 0, gork_interaction_log_enabled INTEGER NOT NULL DEFAULT 1, gork_ste_enabled INTEGER NOT NULL DEFAULT 0, gork_summarize_input_tokens INTEGER NOT NULL DEFAULT 80000, gork_log_channel_id TEXT, honeypot_paused_at INTEGER, honeypot_pause_reason TEXT, gork_role_id TEXT, twitch_golive_template TEXT, rss_notification_channel_id TEXT, rss_notify_role_id TEXT, rss_polling_interval_minutes INTEGER NOT NULL DEFAULT 15, gork_max_tool_rounds INTEGER);
 ```
 
 **Default Values**:
@@ -289,6 +289,7 @@ CREATE TABLE "guild_settings" (
 | `gork_keyword` | @gork | Trigger keyword; `NULL` = gork trigger disabled |
 | `gork_role_id` | NULL | Role whose @mention also invokes gork (`/gork role`, issue #174); `NULL` = role path off (keyword is the master trigger switch) |
 | `gork_context_window` | 10 | Prior messages used as answer context (1–50) |
+| `gork_max_tool_rounds` | NULL | Per-guild gork tool-round budget (`/gork toolrounds`, 5–300, `065`); NULL = never set → global `GORK_LLM_MAX_TOOL_ROUNDS` (fallback 50) applies; drives the derived answer deadline |
 | `gork_extra_rules` | (empty) | Extra staff rules appended to the answer prompt |
 | `gork_search_enabled` | 1 | Gork web-search tool toggle (also needs `SEARXNG_URL`) |
 | `gork_cooldown_sec` | 180 | Seconds between gork answers per user (`0` = off) |
@@ -1839,7 +1840,7 @@ There is no separate manual migration CLI for normal operation: starting the bot
 
 Since the 2026-10 audit (#202) the database records a schema version in SQLite's `PRAGMA user_version` header field:
 
-- **The version is the registry size.** The ordered list in `src/db/migrate.js` is append-only (same rule as the numbered files); with `001`–`064` registered the version is `64`.
+- **The version is the registry size.** The ordered list in `src/db/migrate.js` is append-only (same rule as the numbered files); with `001`–`065` registered the version is `65`.
 - **Full replay stays the correctness mechanism.** Every migration is idempotent, so `runMigrations()` replays the entire set whenever the recorded version does not match the registry, and stamps `user_version` only after the whole pass succeeds.
 - **`user_version` is a fast-skip record, not a per-migration cursor.** When the recorded version equals the registry size AND the `applied_migrations` ledger agrees (below), the replay is skipped entirely (one boot log line). Databases created before the guard have `user_version = 0`: they get one idempotent full replay and are stamped — every boot after that is a skip.
 - **The `applied_migrations` ledger records WHAT ran (audit #394).** A count can never record a set: a length-preserving registry change (reorder, or a swap that keeps the list the same size) leaves `user_version` identical and would fast-skip a replay the changed registry needs. The ledger (`seq`/`id`/`applied_at`) stores the ORDERED id list of the last complete pass and is rebuilt transactionally with the version stamp — a crashed pass leaves neither honest. The fast-skip requires both records to agree; on disagreement (including legacy DBs with no ledger yet) the idempotent replay runs once and re-stamps both.
@@ -1939,6 +1940,7 @@ Concretely this means:
 | `062_rss_feeds` | `rss_feeds` — per-community RSS feed subscriptions with poll state: conditional-GET validators (`etag`/`last_modified`), watermark pair (`last_entry_key`/`last_checked`), `failure_count` backoff driver; real `ON DELETE CASCADE` FK to `communities` (issue #305) |
 | `063_rss_seen` | `rss_seen` — bounded per-feed seen-set `(community_id, feed_url, entry_key)` for RSS entry dedup (~100 rows/feed, pruned oldest-first via `idx_rss_seen_feed_prune`); the PK doubles as the poller's claim-before-send race guard (#305) |
 | `064_rss_guild_settings` | `guild_settings.rss_notification_channel_id` + `rss_notify_role_id` + `rss_polling_interval_minutes` (default 15) — the RSS notification settings trio behind `/setrss` (#305); NULL channel = the feature idles, NULL role = no mention |
+| `065_gork_max_tool_rounds` | `guild_settings.gork_max_tool_rounds` (nullable) — per-guild gork tool-round budget (`/gork toolrounds`, 5–300) driving the derived answer deadline; NULL = never set so `GORK_LLM_MAX_TOOL_ROUNDS` stays the global fallback (#705) |
 
 Public API remains available via `require("./db")` (facade over repositories).
 

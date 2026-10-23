@@ -145,8 +145,10 @@ FLUXER_COMMAND_PREFIX=!
 | `AI_MODEL` | Model name |
 | `SEARXNG_URL` | Optional base URL of a SearXNG instance with JSON format enabled — enables [Gork](gork.md) web search |
 | `GORK_LLM_MAX_TOKENS` | Gork completion budget (default **6000** = thinking cap + visible-answer headroom). Thinking/reasoning models spend this budget on hidden reasoning **before** the visible answer — raise it if gork logs empty answers |
-| `GORK_LLM_TIMEOUT_MS` | Gork total LLM timeout in ms (default **90000**). Raise for slow local models |
-| `GORK_LLM_MAX_TOOL_ROUNDS` | Gork tool rounds per question (default **3**, shared by `web_search` + `read_page`) |
+| `GORK_LLM_TIMEOUT_MS` | **Fixed** Gork whole-loop LLM deadline in ms — when set, it **overrides the derived deadline wholesale** (the pre-#705 escape hatch). Left unset, the deadline is `min(90s + 40s×rounds, 45 min)`; set it to pin a hard cap for slow local models |
+| `GORK_LLM_MAX_TOOL_ROUNDS` | Gork **global** tool-round budget (fallback default **50**, shared by `web_search` + `read_page` + `read_discord`). Superseded per guild by `/gork toolrounds` (5–300); this is what an unset guild falls back to — existing env-pinned deployments keep their number. See [Gork](gork.md) |
+| `GORK_LLM_TIMEOUT_PER_ROUND_MS` | Average per-round cost (ms) the derived deadline assumes (default **40000**). Raise for slow models to give each round more room |
+| `GORK_LLM_TIMEOUT_CAP_MS` | Hard ceiling on the derived whole-loop deadline in ms (default **2700000** = 45 min) — bounds the worst case a serialized per-guild queue job can hold its slot |
 | `GORK_LLM_THINKING_TOKEN_BUDGET` | Cap Gork's hidden reasoning tokens — forwarded to the provider as `thinking_token_budget` (default **0 = never sent**, required for strict providers like api.openai.com). Set on thinking-model servers that enforce it (e.g. vLLM with `--reasoning-parser`); keep `GORK_LLM_MAX_TOKENS` above the cap + answer headroom |
 | `GORK_MAX_ANSWER_CHARS` | Hard cap for Gork's visible answer in chars (default **0 = off**). Word-boundary truncate + "[truncated]" marker; **2000** keeps any answer to one message |
 
