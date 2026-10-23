@@ -209,6 +209,13 @@ function updateGuildSettings(communityId, patch) {
     "twitch_notify_role_id",
     "twitch_polling_interval_minutes",
     "twitch_golive_template",
+    // RSS trio (issue #305, migration 064) — same treatment as the youtube/
+    // twitch twins: plain id strings pass through unnormalized, the interval
+    // default (15) is the schema DEFAULT, and the 1–60 clamp lives in the
+    // /setrss command. Channel/role NULL = feature idles / no mention.
+    "rss_notification_channel_id",
+    "rss_notify_role_id",
+    "rss_polling_interval_minutes",
     "gork_keyword",
     "gork_role_id",
     "gork_context_window",

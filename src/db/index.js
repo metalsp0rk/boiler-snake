@@ -29,6 +29,7 @@ const userChannelActivity = require("./repositories/userChannelActivity");
 const commandPermissionOauth = require("./repositories/commandPermissionOauth");
 const twitch = require("./repositories/twitch");
 const twitchEventsub = require("./repositories/twitchEventsub");
+const rss = require("./repositories/rss");
 const githubWatches = require("./repositories/githubWatches");
 const gorkAccess = require("./repositories/gorkAccess");
 const gorkMemory = require("./repositories/gorkMemory");
@@ -161,6 +162,25 @@ module.exports = {
   upsertTwitchEventsubSub: twitchEventsub.upsertTwitchEventsubSub,
   markTwitchEventsubSubStatus: twitchEventsub.markTwitchEventsubSubStatus,
   deleteTwitchEventsubSub: twitchEventsub.deleteTwitchEventsubSub,
+
+  // RSS feed notifications (issue #305: rss_feeds + bounded rss_seen; the
+  // youtube repository shape, facade names carry the Rss prefix)
+  RSS_SEEN_CAP: rss.SEEN_CAP,
+  addRssFeed: rss.addFeed,
+  removeRssFeed: rss.removeFeed,
+  getRssFeed: rss.getFeed,
+  rssFeedExists: rss.feedExists,
+  listRssFeedsForCommunity: rss.listFeedsForCommunity,
+  listAllRssFeeds: rss.listAllFeeds,
+  countRssFeedsForCommunity: rss.countFeedsForCommunity,
+  updateRssFeedWatermark: rss.updateFeedWatermark,
+  recordRssFeedSuccess: rss.recordFeedSuccess,
+  recordRssFeedFailure: rss.recordFeedFailure,
+  addRssSeenEntry: rss.addSeenEntry,
+  isRssSeen: rss.isSeenEntry,
+  listRssSeenKeysForFeed: rss.listSeenKeysForFeed,
+  pruneRssSeenForFeed: rss.pruneSeenForFeed,
+  clearRssSeenForFeed: rss.clearSeenForFeed,
 
   // GitHub releases
   normalizeGithubRepo: githubWatches.normalizeGithubRepo,

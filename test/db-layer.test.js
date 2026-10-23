@@ -663,6 +663,7 @@ describe("db layer", () => {
       "USER_LINK_CODE_LIFETIME_MS",
       "ARCHIVE_CLAIM_LEASE_MS",
       "ERASED_NOTE_CONTENT", // #469 (F2-11): the delete-tombstone marker string
+      "RSS_SEEN_CAP", // #305: the bounded per-feed rss_seen cap
     ]);
 
     it("exports no undefined value", () => {
