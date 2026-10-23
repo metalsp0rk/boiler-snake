@@ -9,8 +9,9 @@ const { loadDb, communityKey } = require("./helpers/env");
  * guildSettings whitelist trio from migration 064. Feature-layer behavior
  * (SSRF validation, ticker gating, embed shapes) lives in the sibling test
  * files; this file carries the DB layer plus — appended below — the PURE
- * feed-state unit section for src/features/rss/feedState.js (subtask 04),
- * which needs no DB at all.
+ * feed-state unit section for src/features/rss/feedState.js (subtask 04)
+ * and the notification-format unit for src/features/rss/format.js
+ * (subtask 05), neither of which needs a DB at all.
  */
 describe("rss repository", () => {
   let api;
@@ -776,5 +777,495 @@ describe("rss feedState — interval gate (isRssPollDue)", () => {
       true,
       "the cap-bound 6h window is what elapses, not the raw counter",
     );
+  });
+});
+
+// ===========================================================================
+// Pure notification-format unit (issue #305, subtask 05):
+// src/features/rss/format.js — payload shape for outbound.sendChannel, the
+// HTML/entity snippet pipeline with the ≤300 clamp, thumbnail duck shapes
+// (rss-parser v3.13 native + raw passthroughs), the content line, and the
+// #272 strict-allowedMentions table. NO DB involved: format.js requires
+// nothing at all (pure module), so the file-load require below is
+// test-env-guard safe, exactly like feedState above.
+// ===========================================================================
+
+const rssFormat = require("../src/features/rss/format");
+
+// Invisible-character constants via String.fromCharCode: the test source
+// stays pure ASCII while the module keeps its literal ZWSP/NBSP bytes —
+// every assertion below is behavior-based, never byte-source-based.
+const ZWSP = String.fromCharCode(0x200b);
+const NBSP = String.fromCharCode(0xa0);
+
+const RSS_ROLE_ID = "500000000000000002";
+const RSS_CHANNEL_ID = "500000000000000001";
+
+const rssFeed = () => ({
+  community_id: 7,
+  url: "https://blog.example.com/rss",
+  display_name: "Example News",
+  feed_title: "Example Blog",
+  feed_link: "https://blog.example.com/",
+});
+
+const rssEntry = (overrides = {}) => ({
+  title: "Ship the thing",
+  link: "https://blog.example.com/posts/ship",
+  guid: "ship-1",
+  pubDate: "Wed, 22 Oct 2026 10:00:00 GMT",
+  contentSnippet: "We shipped it.",
+  enclosure: { url: "https://blog.example.com/img/ship.png", type: "image/png" },
+  ...overrides,
+});
+
+describe("rss format — neutralizeRichText (html strip, entity decode, mention disarm)", () => {
+  it("strips markup and decodes entities EXACTLY once", () => {
+    assert.equal(
+      rssFormat.neutralizeRichText("<p>Hello <b>world</b> &amp; friends</p>"),
+      "Hello world & friends",
+    );
+    assert.equal(rssFormat.neutralizeRichText("a&mdash;b"), "a\u2014b");
+    assert.equal(
+      rssFormat.neutralizeRichText("&amp;lt;@1&amp;gt;"),
+      "&lt;@1&gt;",
+      "double-encoded markup decodes to LITERAL text once — never re-decoded into markup, and never into a mention token",
+    );
+  });
+
+  it("block tags separate words instead of gluing them; inline tags splice tight", () => {
+    assert.equal(rssFormat.neutralizeRichText("<div>one</div><div>two</div>"), "one two");
+    assert.equal(rssFormat.neutralizeRichText("un<em>be</em>lievable"), "unbelievable");
+  });
+
+  it("drops every Discord mention token", () => {
+    assert.equal(rssFormat.neutralizeRichText("ping <@123> <@!456> <@&789> <#101> done"), "ping done");
+    assert.equal(rssFormat.neutralizeRichText("<@&500000000000000002>"), "");
+    assert.equal(rssFormat.neutralizeRichText("<@not-a-snowflake>"), "", "residual sweep kills odd <@ markup too (bridge/mentions.js hard rule)");
+  });
+
+  it("defeats SINGLE-ENCODED mention smuggling (decode runs before the mention sweep)", () => {
+    assert.equal(
+      rssFormat.neutralizeRichText("&lt;@&amp;999999999999999999&gt; news"),
+      "news",
+      "an entity-encoded role token decodes into a real token and the post-decode sweep then strips it",
+    );
+    const defended = rssFormat.neutralizeRichText("&#64;here &#64;everyone");
+    assert.ok(!defended.includes("@here"), "@here decoded from a numeric entity is still disarmed");
+    assert.ok(!defended.includes("@everyone"), "@everyone decoded from a numeric entity is still disarmed");
+    assert.ok(defended.includes(`@${ZWSP}here`), "the word stays readable, the ping token dies (bridge posture)");
+  });
+
+  it("collapses whitespace — including decoded NBSP and injected newlines — to single spaces", () => {
+    assert.equal(rssFormat.neutralizeRichText(`a${NBSP}b&nbsp;c`), "a b c");
+    assert.equal(rssFormat.neutralizeRichText("one\ntwo\r\nthree"), "one two three");
+  });
+
+  it("script/style ELEMENT bodies never leak into the text", () => {
+    const out = rssFormat.neutralizeRichText('Hello <script>alert("x")</script>world <style>body{color:red}</style>!');
+    assert.ok(!out.includes("alert"), "script bodies are removed whole, not just their tags");
+    assert.ok(!out.includes("color:red"));
+    assert.ok(out.includes("Hello") && out.includes("world"));
+  });
+});
+
+describe("rss format — snippet sources and the ≤300 clamp boundary", () => {
+  it("299 and 300 chars pass through verbatim; 301 truncates to EXACTLY 300 ending in the ellipsis", () => {
+    const at299 = rssFormat.buildSnippet({ content: "a".repeat(299) });
+    assert.equal(at299.length, 299, "299 stays verbatim");
+    assert.ok(!at299.endsWith("\u2026"), "no marker on un-truncated text");
+
+    const at300 = rssFormat.buildSnippet({ content: "a".repeat(300) });
+    assert.equal(at300.length, 300, "exactly 300 is legal and NOT truncated (≤300 spec)");
+    assert.ok(!at300.endsWith("\u2026"));
+
+    const at301 = rssFormat.buildSnippet({ content: "a".repeat(301) });
+    assert.equal(at301.length, 300, "the marker counts INSIDE the 300 budget");
+    assert.ok(at301.endsWith("\u2026"));
+    assert.equal(at301, "a".repeat(299) + "\u2026");
+  });
+
+  it("entity decoding happens BEFORE the clamp: length is measured on decoded text", () => {
+    const decodesTo300 = rssFormat.buildSnippet({ content: "&amp;" + "x".repeat(299) });
+    assert.equal(decodesTo300.length, 300, "raw 304 chars decode to exactly 300 → verbatim, no marker");
+    assert.ok(!decodesTo300.endsWith("\u2026"));
+
+    const decodesTo301 = rssFormat.buildSnippet({ content: "&amp;" + "x".repeat(300) });
+    assert.equal(decodesTo301.length, 300, "decoded 301 clamps to 300");
+    assert.ok(decodesTo301.endsWith("\u2026"));
+    assert.ok(decodesTo301.startsWith("&xxx"));
+  });
+
+  it("source precedence: raw content → summary → contentSnippet → nested itunes body", () => {
+    assert.equal(
+      rssFormat.buildSnippet({ content: "<p>From content</p>", contentSnippet: "from snippet" }),
+      "From content",
+      "the RAW field wins so OUR strip/decode/clamp rules are what the reader sees",
+    );
+    assert.equal(rssFormat.buildSnippet({ summary: "atom summary" }), "atom summary");
+    assert.equal(
+      rssFormat.buildSnippet({ content: "   ", summary: " real body " }),
+      "real body",
+      "whitespace-only candidates are skipped, not preferred",
+    );
+    assert.equal(
+      rssFormat.buildSnippet({ contentSnippet: "  snippet fallback  " }),
+      "snippet fallback",
+      "parser-provided contentSnippet (decoded but UN-truncated by rss-parser 3.13) still goes through our clamp",
+    );
+    assert.equal(
+      rssFormat.buildSnippet({ itunes: { summary: "itunes summary" } }),
+      "itunes summary",
+    );
+    assert.equal(rssFormat.buildSnippet({}), "");
+    assert.equal(rssFormat.buildSnippet(null), "");
+  });
+
+  it("snippets carry no markup", () => {
+    assert.equal(
+      rssFormat.buildSnippet({ content: "<div>Line one</div><div>Line two</div>" }),
+      "Line one Line two",
+    );
+  });
+});
+
+describe("rss format — buildNotification payload shape", () => {
+  it("full payload is EXACTLY the plain-JSON sendChannel shape (one embed, no extra keys)", () => {
+    const payload = rssFormat.buildNotification(rssEntry(), rssFeed(), {
+      channelId: RSS_CHANNEL_ID,
+      notifyRoleId: RSS_ROLE_ID,
+    });
+    assert.deepEqual(payload, {
+      content: `<@&${RSS_ROLE_ID}> **Example News** \u2014 new post`,
+      embeds: [
+        {
+          title: "Ship the thing",
+          url: "https://blog.example.com/posts/ship",
+          description: "We shipped it.",
+          thumbnail: { url: "https://blog.example.com/img/ship.png" },
+          footer: { text: "Example News \u00b7 Example Blog" },
+          timestamp: "2026-10-22T10:00:00.000Z",
+        },
+      ],
+      allowedMentions: { roles: [RSS_ROLE_ID] },
+    });
+    // The deepEqual above already pins every key; these restate the contract
+    // the poller (subtask 08) composes against.
+    assert.equal(payload.embeds.length, 1, "one message per new entry — no batching");
+    assert.equal("parse" in payload.allowedMentions, false, "#272: roles arm carries NO parse key");
+    assert.equal(typeof payload.embeds[0].toJSON, "undefined", "plain JSON already — toPlainEmbed is a pass-through");
+  });
+
+  it("enclosure entry fixture shape matches rss-parser native output (item.enclosure = attr object)", () => {
+    const entry = rssEntry({
+      contentSnippet: undefined,
+      enclosure: { url: "https://blog.example.com/img/ship.png", type: "image/png", length: "1234" },
+      content: "We <b>shipped</b> it.",
+    });
+    const payload = rssFormat.buildNotification(entry, rssFeed(), {});
+    assert.equal(payload.embeds[0].thumbnail.url, "https://blog.example.com/img/ship.png");
+    assert.equal(payload.embeds[0].description, "We shipped it.", "description comes from the stripped raw content");
+  });
+
+  it("link chain: entry.link wins; feed_link is the fallback; nothing → title stays plain", () => {
+    assert.equal(
+      rssFormat.buildNotification(rssEntry(), rssFeed(), {}).embeds[0].url,
+      "https://blog.example.com/posts/ship",
+    );
+    const noEntryLink = rssFormat.buildNotification(rssEntry({ link: undefined }), rssFeed(), {});
+    assert.equal(noEntryLink.embeds[0].url, "https://blog.example.com/", "feed_link fallback");
+
+    const feedBare = { url: "https://blog.example.com/rss" };
+    const unlinked = rssFormat.buildNotification({ title: "Plain headline" }, feedBare, {});
+    assert.equal("url" in unlinked.embeds[0], false, "no http(s) URL anywhere → embed url key omitted entirely");
+  });
+
+  it("non-http(s) links are never linkified (javascript:/data: dropped)", () => {
+    const sneaky = rssFormat.buildNotification(
+      rssEntry({ link: "javascript:alert(1)" }),
+      { url: "https://blog.example.com/rss" },
+      {},
+    );
+    assert.equal("url" in sneaky.embeds[0], false, "javascript: link dropped (entry AND not replaced by anything bogus)");
+    assert.equal(sneaky.embeds[0].title, "Ship the thing", "the entry stays postable — only the link is refused");
+    const dataUri = rssFormat.buildNotification(
+      rssEntry({ link: "data:text/html,<script>1</script>" }),
+      { url: "https://blog.example.com/rss", feed_link: "data:evil" },
+      {},
+    );
+    assert.equal("url" in dataUri.embeds[0], false);
+  });
+
+  it("headline rule: missing title falls back to the entry permalink; no permalink → null", () => {
+    const linkHeaded = rssFormat.buildNotification(
+      rssEntry({ title: undefined }),
+      rssFeed(),
+      { notifyRoleId: RSS_ROLE_ID },
+    );
+    assert.equal(linkHeaded.embeds[0].title, "https://blog.example.com/posts/ship");
+    assert.equal(linkHeaded.embeds[0].url, "https://blog.example.com/posts/ship");
+
+    assert.equal(
+      rssFormat.buildNotification({ guid: "g", description: "no title, entry-less link only" }, rssFeed(), {}),
+      null,
+      "feed_link is NEVER a headline (feed home page != this post) → nothing postable",
+    );
+    assert.equal(
+      rssFormat.buildNotification({ title: "<@&123>", guid: "g" }, rssFeed(), {}),
+      null,
+      "a title that neutralizes to empty with no permalink is not postable either",
+    );
+    assert.equal(rssFormat.buildNotification(null, rssFeed(), {}), null);
+    assert.equal(rssFormat.buildNotification(undefined, rssFeed(), {}), null);
+    assert.equal(rssFormat.buildNotification("nope", rssFeed(), {}), null);
+  });
+
+  it("snippet equal to the headline is dropped (feeds echo the title as the body)", () => {
+    const payload = rssFormat.buildNotification(
+      { title: "Only words", link: "https://blog.example.com/x", contentSnippet: "Only words" },
+      rssFeed(),
+      {},
+    );
+    assert.equal("description" in payload.embeds[0], false);
+  });
+
+  it("titles are neutralized and clamped to the 256-char embed-title cap", () => {
+    const long = rssFormat.buildNotification(rssEntry({ title: "t".repeat(300) }), rssFeed(), {});
+    assert.equal(long.embeds[0].title.length, 256);
+    assert.ok(long.embeds[0].title.endsWith("\u2026"));
+
+    const multiline = rssFormat.buildNotification(rssEntry({ title: "Line1\nLine2 <b>!</b>" }), rssFeed(), {});
+    assert.equal(multiline.embeds[0].title, "Line1 Line2 !");
+  });
+
+  it("timestamp rides ONLY a real pubDate/isoDate — never a fabricated now", () => {
+    const isoOnly = rssFormat.buildNotification(
+      rssEntry({ pubDate: "not a date", isoDate: "2026-10-21T08:30:00.000Z" }),
+      rssFeed(),
+      {},
+    );
+    assert.equal(isoOnly.embeds[0].timestamp, "2026-10-21T08:30:00.000Z", "isoDate is the parser fallback");
+
+    const pubWins = rssFormat.buildNotification(
+      rssEntry({ pubDate: "Wed, 22 Oct 2026 10:00:00 GMT", isoDate: "2020-01-01T00:00:00.000Z" }),
+      rssFeed(),
+      {},
+    );
+    assert.equal(pubWins.embeds[0].timestamp, "2026-10-22T10:00:00.000Z", "pubDate checked first");
+
+    const dateless = rssFormat.buildNotification(rssEntry({ pubDate: undefined, isoDate: undefined }), rssFeed(), {});
+    assert.equal("timestamp" in dateless.embeds[0], false, "no real date → key omitted (embed timestamps claim WHEN)");
+    const garbage = rssFormat.buildNotification(rssEntry({ pubDate: "yesterday-ish", isoDate: "" }), rssFeed(), {});
+    assert.equal("timestamp" in garbage.embeds[0], false);
+  });
+
+  it("footer = display name · feed title, collapsing to a single label when there is nothing to add", () => {
+    assert.equal(
+      rssFormat.buildNotification(rssEntry(), rssFeed(), {}).embeds[0].footer.text,
+      "Example News \u00b7 Example Blog",
+    );
+    const twins = rssFeed();
+    twins.feed_title = twins.display_name;
+    assert.equal(
+      rssFormat.buildNotification(rssEntry(), twins, {}).embeds[0].footer.text,
+      "Example News",
+      "identical title is not echoed twice",
+    );
+    const titled = { url: "https://blog.example.com/rss", feed_title: "Example Blog" };
+    assert.equal(
+      rssFormat.buildNotification(rssEntry(), titled, {}).embeds[0].footer.text,
+      "Example Blog",
+      "no display name → feed_title IS the label, footer stays single",
+    );
+    const hostOnly = { url: "https://news.example.org/feed?x=1" };
+    assert.equal(
+      rssFormat.buildNotification(rssEntry(), hostOnly, {}).embeds[0].footer.text,
+      "news.example.org",
+      "hostname fallback for a name-less row",
+    );
+    const broken = { url: "not even a url" };
+    assert.equal(
+      rssFormat.buildNotification(rssEntry(), broken, {}).embeds[0].footer.text,
+      rssFormat.FALLBACK_FEED_NAME,
+    );
+  });
+});
+
+describe("rss format — thumbnail duck shapes (rss-parser native + raw passthroughs)", () => {
+  const THUMB = "https://img.example/thumb.png";
+
+  it("media:thumbnail in every passthrough shape incl. media:group nesting", () => {
+    assert.equal(rssFormat.resolveThumbnailUrl({ "media:thumbnail": { $: { url: THUMB } } }), THUMB);
+    assert.equal(rssFormat.resolveThumbnailUrl({ "media:thumbnail": [{ $: { url: THUMB } }] }), THUMB);
+    assert.equal(rssFormat.resolveThumbnailUrl({ "media:thumbnail": { url: THUMB } }), THUMB);
+    assert.equal(
+      rssFormat.resolveThumbnailUrl({ "media:group": [{ "media:thumbnail": [{ $: { url: THUMB } }] }] }),
+      THUMB,
+    );
+  });
+
+  it("mediaContent/media:content only count when claimed as an IMAGE", () => {
+    assert.equal(rssFormat.resolveThumbnailUrl({ mediaContent: { url: THUMB, medium: "image" } }), THUMB);
+    assert.equal(rssFormat.resolveThumbnailUrl({ mediaContent: { url: THUMB, type: "image/png" } }), THUMB);
+    assert.equal(
+      rssFormat.resolveThumbnailUrl({ mediaContent: { url: "https://vid.example/v.mp4", medium: "video" } }),
+      null,
+      "a video URL as thumbnail is always wrong — skipped",
+    );
+  });
+
+  it("enclosure: image mime wins; audio/octet-stream refused; typeless needs an image-extension URL", () => {
+    assert.equal(
+      rssFormat.resolveThumbnailUrl({ enclosure: { url: THUMB, type: "image/jpeg" } }),
+      THUMB,
+    );
+    assert.equal(
+      rssFormat.resolveThumbnailUrl({ enclosure: { url: "https://cdn.example/ep3.mp3", type: "audio/mpeg" } }),
+      null,
+      "podcast audio enclosures never become pictures",
+    );
+    assert.equal(
+      rssFormat.resolveThumbnailUrl({ enclosure: { url: "https://cdn.example/pics/photo.JPG" } }),
+      "https://cdn.example/pics/photo.JPG",
+      "typeless + image extension = accepted (extension check is case-insensitive)",
+    );
+    assert.equal(
+      rssFormat.resolveThumbnailUrl({ enclosure: { url: "https://cdn.example/download", type: "application/octet-stream" } }),
+      null,
+    );
+  });
+
+  it("itunes image: native href string and raw passthrough forms", () => {
+    assert.equal(rssFormat.resolveThumbnailUrl({ itunes: { image: THUMB } }), THUMB);
+    assert.equal(rssFormat.resolveThumbnailUrl({ "itunes:image": [{ $: { href: THUMB } }] }), THUMB);
+  });
+
+  it("precedence: media:thumbnail > mediaContent > enclosure > itunes", () => {
+    assert.equal(
+      rssFormat.resolveThumbnailUrl({
+        "media:thumbnail": { $: { url: THUMB } },
+        mediaContent: { url: "https://img.example/content.png", medium: "image" },
+        enclosure: { url: "https://img.example/enc.png", type: "image/png" },
+        itunes: { image: "https://img.example/art.png" },
+      }),
+      THUMB,
+    );
+    assert.equal(
+      rssFormat.resolveThumbnailUrl({
+        enclosure: { url: "https://img.example/enc.png", type: "image/png" },
+        itunes: { image: "https://img.example/art.png" },
+      }),
+      "https://img.example/enc.png",
+      "enclosure outranks the podcast art",
+    );
+  });
+
+  it("nothing image-shaped, or an unsafe URL, reads as no thumbnail key on the embed", () => {
+    assert.equal(rssFormat.resolveThumbnailUrl({}), null);
+    assert.equal(rssFormat.resolveThumbnailUrl({ "media:thumbnail": { url: "javascript:evil" } }), null);
+    const payload = rssFormat.buildNotification({ title: "No art", link: "https://blog.example.com/x" }, rssFeed(), {});
+    assert.equal("thumbnail" in payload.embeds[0], false);
+  });
+});
+
+describe("rss format — content line and feed display name", () => {
+  it("role set: exact `<@&ROLE> **Feed Name** — new post` one-liner", () => {
+    const payload = rssFormat.buildNotification(rssEntry(), rssFeed(), {
+      channelId: RSS_CHANNEL_ID,
+      notifyRoleId: RSS_ROLE_ID,
+    });
+    assert.equal(payload.content, `<@&${RSS_ROLE_ID}> **Example News** \u2014 new post`);
+    assert.match(payload.content, /^<@&[0-9]+> \*\*.+\*\* \u2014 new post$/, "bold label inside the bold, colon-dash tail per spec");
+  });
+
+  it("role unset: no prefix at all, still the bold-label line", () => {
+    const payload = rssFormat.buildNotification(rssEntry(), rssFeed(), { channelId: RSS_CHANNEL_ID });
+    assert.equal(payload.content, "**Example News** \u2014 new post");
+    assert.ok(!payload.content.includes("<@&"), "no role → no mention markup of any kind");
+  });
+
+  it("the ONLY pinging token in content is the prefix built from the validated role id", () => {
+    const smuggled = rssFeed();
+    smuggled.display_name = "Evil <@&999999999999999999> @everyone \"news\"";
+    smuggled.feed_title = "Pew\nnew";
+    const payload = rssFormat.buildNotification(rssEntry(), smuggled, {
+      channelId: RSS_CHANNEL_ID,
+      notifyRoleId: RSS_ROLE_ID,
+    });
+    assert.ok(!payload.content.includes("<@&999999999999999999"), "role-token smuggling through the feed name is stripped");
+    assert.ok(!payload.content.includes("@everyone"), "@everyone through the feed name is ZWSP-broken");
+    assert.ok(!payload.content.includes("\n"), "content is ONE line even with a newline-poisoned feed title");
+    assert.equal(payload.content.split("<@&").length - 1, 1, "exactly one mention token: our own prefix");
+  });
+
+  it("display name precedence: display_name || feed_title || hostname(url) || fallback", () => {
+    assert.equal(rssFormat.resolveFeedDisplayName(rssFeed()), "Example News");
+    assert.equal(
+      rssFormat.resolveFeedDisplayName({ url: "https://blog.example.com/rss", feed_title: "Example Blog" }),
+      "Example Blog",
+    );
+    assert.equal(
+      rssFormat.resolveFeedDisplayName({ url: "https://news.example.org/rss" }),
+      "news.example.org",
+    );
+    assert.equal(rssFormat.resolveFeedDisplayName({ url: "garbage" }), rssFormat.FALLBACK_FEED_NAME);
+    assert.equal(rssFormat.resolveFeedDisplayName(null), rssFormat.FALLBACK_FEED_NAME);
+    assert.equal(
+      rssFormat.resolveFeedDisplayName({ display_name: "My &amp; Blog" }),
+      "My & Blog",
+      "stored names ride the same decode pipeline (titles resolved from hostile feeds are attacker text)",
+    );
+  });
+
+  it("whitespace and non-snowflake stored role ids are treated as UNSET everywhere", () => {
+    for (const junk of ["", "   ", null, undefined, "@everyone", "roles", "9".repeat(26)]) {
+      const payload = rssFormat.buildNotification(rssEntry(), rssFeed(), { notifyRoleId: junk });
+      assert.ok(!payload.content.includes("<@&"), `no prefix for notifyRoleId=${JSON.stringify(junk)}`);
+      assert.deepEqual(payload.allowedMentions, { parse: [] });
+    }
+    const padded = rssFormat.buildNotification(rssEntry(), rssFeed(), { notifyRoleId: `  ${RSS_ROLE_ID}  ` });
+    assert.equal(padded.content, `<@&${RSS_ROLE_ID}> **Example News** \u2014 new post`, "valid ids are trimmed, not rejected");
+    const numeric = rssFormat.buildNotification(rssEntry(), rssFeed(), { notifyRoleId: 12345 });
+    assert.deepEqual(numeric.allowedMentions, { roles: ["12345"] }, "numeric column reads coerce to the string form");
+  });
+});
+
+describe("rss format — allowedMentions strictness table (#272)", () => {
+  const table = [
+    ["configured role → strict id arm", { notifyRoleId: RSS_ROLE_ID }, { roles: [RSS_ROLE_ID] }],
+    ["numeric-string id coerced", { notifyRoleId: "42" }, { roles: ["42"] }],
+    ["unset → parse-off arm", {}, { parse: [] }],
+    ["null → parse-off arm", { notifyRoleId: null }, { parse: [] }],
+    ["blank → parse-off arm", { notifyRoleId: "   " }, { parse: [] }],
+    ["@everyone literal → parse-off arm", { notifyRoleId: "@everyone" }, { parse: [] }],
+    ["role-name junk → parse-off arm", { notifyRoleId: "roles" }, { parse: [] }],
+    ["oversized digits → parse-off arm", { notifyRoleId: "9".repeat(26) }, { parse: [] }],
+    ["missing settings object → parse-off arm", undefined, { parse: [] }],
+  ];
+
+  for (const [label, settings, expected] of table) {
+    it(label, () => {
+      const am = rssFormat.toAllowedMentions(settings);
+      assert.deepEqual(am, expected, "exact shape — no third arm, no merged form");
+      const wire = JSON.stringify(am);
+      assert.ok(!wire.includes("everyone"), "the payload can never mention everyone");
+      assert.ok(!wire.includes('"roles"') || "roles" in expected, "the parse-off arm carries no roles key either way");
+      if ("roles" in expected) {
+        assert.equal("parse" in am, false, "#272: the strict arm is MUTUALLY EXCLUSIVE with parse — {parse:[...], roles:[...]} is a Discord validation error");
+      } else {
+        assert.equal("roles" in am, false);
+      }
+    });
+  }
+
+  it("buildNotification and the content prefix agree on the SAME single role id", () => {
+    const payload = rssFormat.buildNotification(rssEntry(), rssFeed(), {
+      channelId: RSS_CHANNEL_ID,
+      notifyRoleId: RSS_ROLE_ID,
+    });
+    assert.deepEqual(payload.allowedMentions.roles, [RSS_ROLE_ID]);
+    assert.ok(payload.content.startsWith(`<@&${payload.allowedMentions.roles[0]}> `), "the pinged role == the allow-listed role, always");
+    const unset = rssFormat.buildNotification(rssEntry(), rssFeed(), {});
+    assert.deepEqual(unset.allowedMentions, { parse: [] }, "the unset path can NEVER mention anything");
   });
 });
