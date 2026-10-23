@@ -152,11 +152,25 @@ describe("rss commands", () => {
       deferred: false,
       replied: false,
       reply: async (payload) => {
+        // Mirror the real interaction contract: reply() AFTER defer()
+        // throws InteractionAlreadyReplied. RSS network subcommands defer
+        // (review fix B1) — this turns any missed editReply conversion
+        // into a loud test failure instead of a silent no-answer.
+        if (ctx.deferred) {
+          throw new TypeError("InteractionAlreadyReplied: reply() after defer() — use editReply");
+        }
+        ctx.replied = true;
         replies.push(payload);
       },
-      editReply: async () => {},
+      editReply: async (payload) => {
+        // Normalize string payloads (house style of editReply call sites)
+        // so assertions keep reading replies[0].content.
+        replies.push(typeof payload === "string" ? { content: payload } : payload);
+      },
       followUp: async () => {},
-      defer: async () => {},
+      defer: async () => {
+        ctx.deferred = true;
+      },
       outbound,
     };
     return { ctx, replies };
@@ -242,6 +256,52 @@ describe("rss commands", () => {
     const { TIERS, visibilityTier } = require("../src/core/commandVisibility");
     assert.equal(visibilityTier("rss"), TIERS.staff);
     assert.equal(visibilityTier("setrss"), TIERS.staff);
+  });
+
+  it("network subcommands DEFER first and answer via editReply; pure ones reply directly (review fix B1)", async () => {
+    // Discord kills any interaction unanswered after 3 s; add/test/check
+    // fetch (up to ~40 s worst case) by DESIGN. The harness THROWS on
+    // reply-after-defer, so these three runs also prove every late answer
+    // went through editReply (a missed conversion dies loudly here).
+    const cid = configured("rss-defer-pin");
+    const url = "https://feeds.example.com/blog.xml";
+    api.addRssFeed(cid, url, { feedTitle: "Example News" });
+
+    const add = makeCtx({
+      communityId: cid,
+      commandName: "rss",
+      sub: "add",
+      options: { url: "https://feeds.example.com/defer-add.xml" },
+    });
+    await runRss(add.ctx, diBox({ fetchImpl: fetchStub(httpOk(BLOG_XML)) }));
+    assert.equal(add.ctx.deferred, true, "/rss add defers before the fetch");
+    assert.equal(add.replies.length, 1, "one answer via editReply");
+
+    const test = makeCtx({
+      communityId: cid,
+      commandName: "rss",
+      sub: "test",
+      options: { feed: url },
+      outbound: makeOutbound(),
+    });
+    await runRss(test.ctx, diBox({ fetchImpl: fetchStub(httpOk(BLOG_XML)), now: T0 }));
+    assert.equal(test.ctx.deferred, true, "/rss test defers before the fetch");
+
+    const check = makeCtx({
+      communityId: cid,
+      commandName: "rss",
+      sub: "check",
+      options: { feed: url },
+      outbound: makeOutbound(),
+    });
+    await runRss(check.ctx, diBox({ fetchImpl: fetchStub(httpOk(BLOG_XML)), now: T0 }));
+    assert.equal(check.ctx.deferred, true, "/rss check defers before the poll loop");
+
+    // Pure subcommands stay on the direct-reply fast path (no defer).
+    const list = makeCtx({ communityId: cid, commandName: "rss", sub: "list" });
+    await runRss(list.ctx, diBox({}));
+    assert.equal(list.ctx.deferred, false, "/rss list never defers");
+    assert.equal(list.ctx.replied, true, "answered via reply()");
   });
 
   it("rejects non-staff invokers before doing anything (requireStaffFromContext)", async () => {
@@ -777,7 +837,7 @@ describe("rss commands", () => {
     return { interaction, responses };
   }
 
-  it("autocomplete names display_name → feed_title → truncated url, values are urls", async () => {
+  it("autocomplete names display_name → feed_title; >100-char urls are skipped, not offered (S2)", async () => {
     const guildId = "960001";
     const cid = communityKey(guildId);
     const longUrl = `https://long.example.com/${"a".repeat(120)}`;
@@ -791,14 +851,19 @@ describe("rss commands", () => {
     const { interaction, responses } = makeAutocomplete(guildId, "");
     await commands.autocomplete.rss(interaction);
     const choices = responses[0];
-    assert.equal(choices.length, 3);
+    // Review fix S2: choice VALUES carry a hard 100-char API cap — an
+    // oversized URL must be SKIPPED (offering it fails the whole respond
+    // with error 50035 and wipes every suggestion). One long subscription
+    // must never disable the picker for the others.
+    assert.equal(choices.length, 2);
+    assert.ok(
+      !choices.some((c) => c.value === longUrl),
+      "the oversized url is skipped while the others stay pickable",
+    );
+    assert.ok(choices.every((c) => c.value.length <= 100 && c.name.length <= 100), "wire caps hold");
     const byUrl = Object.fromEntries(choices.map((c) => [c.value, c.name]));
     assert.equal(byUrl["https://d.example/feed.xml"], "Display Weekly", "display_name wins");
     assert.equal(byUrl["https://t.example/feed.xml"], "Title Only Blog", "then feed_title");
-    const truncated = byUrl[longUrl];
-    assert.ok(truncated.length <= 100, "truncated into Discord's 100-char name cap");
-    assert.ok(truncated.endsWith("…"), "ellipsis marks the truncation");
-    assert.ok(longUrl.startsWith(truncated.slice(0, -1)), "it IS the url, shortened");
 
     // Focused filtering matches the name OR the url.
     const focused = makeAutocomplete(guildId, "title only");

@@ -83,16 +83,26 @@ function coerceNowMs(value) {
 /**
  * Canonical interval minutes for one community. Accepts whatever the
  * guildSettings column holds (INTEGER, string, null on legacy reads): a
- * finite positive number is used as-is, everything else falls back to 15.
- * Stricter than youtube's `Number(x) || 5` (which would honor a stored
- * negative) — a nonsensical stored value must never disable the gate.
+ * finite number inside the command surface's 1–60 range is used as-is,
+ * everything else falls back to 15. Stricter than youtube's
+ * `Number(x) || 5` (which honors any positive value AND negatives fall
+ * through) and now range-matched to the /setrss picker + the display
+ * twin (review fix N1) — a row poisoned out-of-band can never poll on a
+ * cadence the command surface can neither show nor police.
  *
  * @param {unknown} intervalMinutes raw `rss_polling_interval_minutes` value
- * @returns {number} minutes to poll on (>= 0, default 15)
+ * @returns {number} minutes to poll on (1–60, default 15)
  */
 function resolveRssIntervalMinutes(intervalMinutes) {
+  // Review fix N1: ONE truth for the interval. /setrss interval exposes
+  // 1–60, the display twin falls back for anything outside 1–60 — the
+  // gate follows the same range so a row poisoned out-of-band (e.g. a
+  // hand-stored 1440) can never poll on a cadence the UI can neither
+  // show nor police. Out of range → the schema default, not a clamp.
   const n = Number(intervalMinutes);
-  return Number.isFinite(n) && n > 0 ? n : DEFAULT_RSS_POLL_INTERVAL_MINUTES;
+  return Number.isFinite(n) && n >= 1 && n <= 60
+    ? n
+    : DEFAULT_RSS_POLL_INTERVAL_MINUTES;
 }
 
 /**

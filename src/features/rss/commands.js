@@ -34,7 +34,7 @@ const { discordCommunityId } = require("../../platform/community");
 const { joinCapped } = require("../../core/text");
 const { recordSlashAudit } = require("../../core/auditTrail");
 const { logConfigChange } = require("../logs/auditLog");
-const { resolveFeedDisplayName } = require("./format");
+const { resolveFeedDisplayName, neutralizeRichText } = require("./format");
 const subscriptions = require("./subscriptions");
 const {
   DEFAULT_RSS_POLL_INTERVAL_MINUTES,
@@ -250,6 +250,13 @@ async function handleRss(commandCtx, featureCtx) {
     const rawUrl = commandCtx.options.getString("url", true);
     const displayName = commandCtx.options.getString("name");
 
+    // Network subcommand: DNS + guarded fetch + parse can outlive Discord's
+    // 3 s interaction window (worst case ~40 s on slow hosts) — defer first,
+    // report via editReply (/twitch add precedent). Without this the DB
+    // insert would COMMIT while the staff member gets an "Unknown
+    // interaction" error — silent-success class (AGENTS.md rule 3).
+    await commandCtx.defer({ sensitive: true });
+
     const res = await subscriptions.addFeed({
       communityId,
       rawUrl,
@@ -266,10 +273,7 @@ async function handleRss(commandCtx, featureCtx) {
       console.error(
         `[rss] /rss add refused (community=${communityId} url=${rawUrl}): ${res.error}`,
       );
-      await commandCtx.reply({
-        content: `Could not add feed: ${res.error}`,
-        sensitive: true,
-      });
+      await commandCtx.editReply(`Could not add feed: ${res.error}`);
       return;
     }
 
@@ -297,10 +301,12 @@ async function handleRss(commandCtx, featureCtx) {
     const lines = [
       `Subscribed to **${label}**.`,
       `**Feed:** <${feed.url}>`,
-      `**Feed title:** ${feed.feed_title || "_not provided by the feed_"}`,
+      // Review fix N2: feed-controlled text runs through the same
+      // neutralizer as the notification body (markdown-deception defense).
+      `**Feed title:** ${neutralizeRichText(feed.feed_title) || "_not provided by the feed_"}`,
       `**Notify channel:** <#${res.settings.rss_notification_channel_id}>`,
     ];
-    await commandCtx.reply({ content: lines.join("\n"), sensitive: true });
+    await commandCtx.editReply(lines.join("\n"));
     return;
   }
 
@@ -369,7 +375,7 @@ async function handleRss(commandCtx, featureCtx) {
     const lines = res.feeds.map((f) => {
       const label = resolveFeedDisplayName(f);
       const suffix = f.display_name && f.feed_title && f.display_name !== f.feed_title
-        ? ` (*${f.feed_title}*)`
+        ? ` (*${neutralizeRichText(f.feed_title)}*)` // review fix N2
         : "";
       return `• **${label}**${suffix}\n  URL: <${f.url}>`;
     });
@@ -400,6 +406,10 @@ async function handleRss(commandCtx, featureCtx) {
     const feed = rows[rows.length - 1];
     const usedNote = feedOpt ? "" : " *(most recent subscription)*";
 
+    // Network subcommand (fetch + parse + send): defer before the work —
+    // local validation above stays on the direct-reply fast path.
+    await commandCtx.defer({ sensitive: true });
+
     const res = await subscriptions.testPostLatest({
       communityId,
       feed,
@@ -414,19 +424,14 @@ async function handleRss(commandCtx, featureCtx) {
       console.error(
         `[rss] /rss test failed (community=${communityId} url=${feed.url}): ${res.error}`,
       );
-      await commandCtx.reply({
-        content: `Test notification failed: ${res.error}`,
-        sensitive: true,
-      });
+      await commandCtx.editReply(`Test notification failed: ${res.error}`);
       return;
     }
-    await commandCtx.reply({
-      content:
-        `Posted a test notification to <#${res.channelId}>.\n` +
+    await commandCtx.editReply(
+      `Posted a test notification to <#${res.channelId}>.\n` +
         `**Feed:** <${feed.url}>${usedNote}\n` +
         `**Entry:** ${res.entryLabel}`,
-      sensitive: true,
-    });
+    );
     return;
   }
 
@@ -457,6 +462,11 @@ async function handleRss(commandCtx, featureCtx) {
       });
       return;
     }
+
+    // Network subcommand: the per-feed loop can span minutes in the worst
+    // case (each feed up to ~40 s of guarded fetch) — the 3 s window is
+    // exceeded by DESIGN, so defer before the loop (review fix B1).
+    await commandCtx.defer({ sensitive: true });
 
     // Per-row loop (rule 5): one feed's failure never hides the others'
     // results; every failure line names its feed and carries the cause.
@@ -499,7 +509,7 @@ async function handleRss(commandCtx, featureCtx) {
         `**Failures:**\n${joinCapped(agg.failures, 1500, "\n")}`,
       );
     }
-    await commandCtx.reply({ content: summary.join("\n"), sensitive: true });
+    await commandCtx.editReply(summary.join("\n"));
     return;
   }
 }
@@ -680,6 +690,13 @@ async function handleRssAutocomplete(interaction) {
       const name = autocompleteName(feed);
       const haystack = `${name} ${String(feed.url ?? "")}`.toLowerCase();
       if (focusedValue && !haystack.includes(focusedValue)) continue;
+      // Review fix S2: choice VALUES carry a hard 100-char API cap (the
+      // name cap alone is not enough — discord.js does not validate
+      // locally, the API rejects the whole respond with error 50035 and
+      // EVERY suggestion vanishes). Skip oversized URLs so the rest of
+      // the subscriptions stay pickable; removal for those still works
+      // by pasting the exact URL (docs).
+      if (String(feed.url ?? "").length > 100) continue;
       choices.push({ name, value: feed.url });
       if (choices.length === 25) break; // Discord choice cap
     }
