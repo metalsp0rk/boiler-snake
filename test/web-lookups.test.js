@@ -97,6 +97,35 @@ describe("discordInput parsers (§8.15-15.10)", () => {
     assert.deepEqual(ranked.map((r) => r.id), ["1", "2"]);
     assert.deepEqual(rankSuggestions(items, "zzz"), []);
   });
+
+  it("suggestions add a LAST subsequence class — cross-word and mid-name match (#715)", () => {
+    const items = [
+      { id: "11", name: "King Dead" }, // cross-word: k…d in order
+      { id: "12", name: "Gordak" }, // mid-name: g…d…k
+      { id: "13", name: "Dead King" }, // d before k — NOT a "kd" subsequence
+      { id: "14", name: "Kdk" }, // prefix — outranks the fuzzy class
+      { id: "15", name: "Zebra" }, // no q chars — dropped
+    ];
+    // Cross-word, prefix stays first, non-matching order drops out:
+    assert.deepEqual(rankSuggestions(items, "kd").map((r) => r.id), ["14", "11"]);
+    // Mid-name:
+    assert.deepEqual(rankSuggestions(items, "gdk").map((r) => r.id), ["12"]);
+    // Exact beats the fuzzy class for the same name:
+    assert.deepEqual(rankSuggestions(items, "kdk").map((r) => r.id), ["14"]);
+    // Junk with chars no name carries in order still answers empty:
+    assert.deepEqual(rankSuggestions(items, "zzz"), []);
+    // Single-char queries never need the fuzzy class (it ⊆ substring) —
+    // they resolve entirely in the strict classes:
+    assert.deepEqual(rankSuggestions(items, "d").map((r) => r.id), ["13", "11", "12", "14"]);
+    // Fuzzy hits sort AFTER every strict class, so they only ever fill
+    // the capacity the tight matches leave:
+    const mixed = [
+      { id: "a", name: "Premod" }, // substring only — not a prefix
+      { id: "b", name: "Molt Dreg" }, // m…o…d subsequence only
+      { id: "c", name: "mod" }, // exact
+    ];
+    assert.deepEqual(rankSuggestions(mixed, "mod").map((r) => r.id), ["c", "a", "b"]);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -325,6 +354,28 @@ describe("web identifier lookups + tolerant writes (§8.15-15.10)", () => {
     assert.deepEqual(unknown.json.users, []);
     const empty = await getJson(`/g/${CID_A}/lookups/users`, cookieOf.staff);
     assert.deepEqual(empty.json.users, []);
+  });
+
+  it("#715: the server ranker's subsequence class reaches all three lookup surfaces", async () => {
+    // The pre-fix server ranker dropped cross-word candidates before the
+    // client's fuzzy rankItems ever ran — these pin the shared rule on
+    // the real endpoints (contract shape unchanged: {id,name} lists).
+    const users = await getJson(`/g/${CID_A}/lookups/users?q=kd`, cookieOf.staff);
+    assert.deepEqual(users.json.users, [{ id: USER_KING, name: "King Dead" }]);
+
+    const roles = await getJson(`/g/${CID_A}/lookups/roles?q=ms`, cookieOf.staff);
+    assert.deepEqual(roles.json.roles, [{ id: ROLE_SARAH, name: "Mod Sarah" }]);
+
+    const channels = await getJson(`/g/${CID_A}/lookups/channels?q=gnrl`, cookieOf.staff);
+    assert.deepEqual(channels.json.channels, [
+      { id: "950000000000000001", name: "general" },
+    ]);
+
+    // Junk stays junk under the fuzzy class — no name carries these chars
+    // in order (and the SUGGEST_LIMIT cap is untouched by the new class,
+    // it just sorts last; the mirror-cap test above pins the limit).
+    const junk = await getJson(`/g/${CID_A}/lookups/roles?q=zzz`, cookieOf.staff);
+    assert.deepEqual(junk.json.roles, []);
   });
 
   it("lookups gates like every other /g surface: anon 302, plain 404, cross-guild 404", async () => {
