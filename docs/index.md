@@ -17,6 +17,7 @@ Boiler Snake is a feature-rich community bot that helps you gamify your server w
 - **GitHub releases**: Watch repositories and announce new releases
 - **Music player**: `/play` in voice (Spotify catalog via Lavalink; YouTube/SoundCloud streams)
 - **Twitch stream notifications**: Get alerted when any number of subscribed streamers go live
+- **RSS feed notifications**: Poll RSS/Atom feeds and announce new entries to a channel, optionally pinging one role
 - **Honeypot channels**: Auto-ban users who post in decoy channels (with staff role exemptions)
 - **Community events & reminders**: Bot-owned `/event` signup flows plus scheduled-event pings for Discord events
 - **Gork**: the in-channel AI assistant with memory, search, and interaction logging
@@ -68,6 +69,7 @@ See [Setup Guide](setup.md) for detailed installation instructions.
 - [GitHub Release Announcements](github-releases.md) - Watch repos and announce releases
 - [Music Player](music.md) - Voice playback with Spotify catalog + Lavalink
 - [Twitch Stream Notifications](twitch-notifications.md) - Go-live alerts for any number of subscribed streamers
+- [RSS Feed Notifications](rss-notifications.md) - Announce new entries from RSS/Atom feeds (SSRF-guarded polling, strict role ping)
 - [Honeypot Channels](honeypot.md) - Auto-ban decoy-channel posters; exempt staff roles
 - [Community Events](community-events.md) - Bot-owned `/event` + `/eventsignup` / `/eventconfig` / `/eventchannels` with button RSVP, waitlists, reminders, series
 - [Scheduled Event Reminders](event-reminders.md) - Pre-event pings for Interested members
@@ -114,6 +116,7 @@ See [Setup Guide](setup.md) for detailed installation instructions.
 | **Command Channels** | Restrict where commands can be used per guild |
 | **YouTube Alerts** | Monitor subscribed channels for live streams and uploads |
 | **Twitch Alerts** | Go-live alerts for any number of subscribed streamers |
+| **RSS Feed Notifications** | New-entry announcements from RSS/Atom feeds with bounded dedup and flood caps |
 | **Honeypot Channels** | Ban users who post in configured decoy channels; exempt roles for staff |
 | **Staff Roles** | Junior/senior trusted roles for the staff gate and ticket visibility |
 | **Staff Notes** | Private staff-only notes about members (never shown to the subject) |

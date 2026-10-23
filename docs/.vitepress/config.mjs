@@ -83,6 +83,7 @@ export default defineConfig({
           { text: 'YouTube', link: '/youtube-notifications' },
           { text: 'Music', link: '/music' },
           { text: 'Twitch', link: '/twitch-notifications' },
+          { text: 'RSS feeds', link: '/rss-notifications' },
           { text: 'GitHub releases', link: '/github-releases' },
           { text: 'Gork', link: '/gork' },
           { text: 'Gork Logging', link: '/gork-logging' },
