@@ -178,6 +178,8 @@ describe(
         // #174: role-mention trigger row (unset on a fresh guild).
         "Role trigger": "not set",
         "Context window": "10 messages",
+        // #705: tool-round budget — fresh guild never set → "(global)" tag.
+        "Tool rounds": "50 (global)",
         Cooldown: "180s per user (staff bypass)",
         Rules: "none",
         "Search (SearXNG)": "on",
