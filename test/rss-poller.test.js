@@ -22,9 +22,10 @@ const { loadDb, communityKey } = require("./helpers/env");
  *                    spies / a smaller RSS_SEEN_CAP.
  *
  * Documented behaviors this file pins (poller.js module header #1/#2):
- * a failed send KEEPS the claimed seen-row (burn named in the log) and,
- * because a failure stamps last_checked, entries that were visible-but-
- * unsent are seeded silently on the recovery poll, never re-announced.
+ * a failed send KEEPS the claimed seen-row (burn named in the log) but
+ * PRESERVES last_checked (review fix S1), so the un-attempted backlog
+ * genuinely retries on the next poll; fetch/parse failures still stamp
+ * the retry clock.
  */
 describe("rss poller", () => {
   let api;
@@ -581,16 +582,21 @@ describe("rss poller", () => {
 
     const row = api.getRssFeed(cid, url);
     assert.equal(row.failure_count, 1, "one failure recorded for the send");
-    assert.equal(row.last_checked, T0, "failure stamps the retry clock (documented decision #2)");
+    assert.equal(
+      row.last_checked,
+      null,
+      "send failure PRESERVES the watermark (review fix S1): never-checked stays NULL, the backlog retries",
+    );
 
     const seen = api.listRssSeenKeysForFeed(cid, url);
     assert.ok(seen.includes("k1"), "delivered entry is seen");
     assert.ok(seen.includes("k2"), "the FAILED send keeps its claim (documented decision #1)");
     assert.ok(!seen.includes("k3"), "entries after the stop point are left unclaimed");
 
-    // Recovery poll: k3 was visible at failure time but predates the
-    // failure stamp, so feedState's later-poll rule SEEDS it silently —
-    // the documented consequence of the single last_checked column.
+    // Recovery poll (review fix S1): the watermark survived the send
+    // failure, so k3 (published 41 min before this poll — inside the
+    // first-hour window of a NULL watermark) is GENUINELY RETRIED instead
+    // of being silently seeded past.
     const recovery = await pollOne({
       row: api.getRssFeed(cid, url),
       settings: settingsFor(cid),
@@ -598,8 +604,9 @@ describe("rss poller", () => {
       fetchImpl: fetchStub(feedFixture),
       outbound: makeOutbound(),
     });
-    assert.equal(recovery.outcome, "no-change", "no re-announcement of pre-stamp entries (documented)");
-    assert.ok(api.listRssSeenKeysForFeed(cid, url).includes("k3"), "k3 seeded silently on recovery");
+    assert.equal(recovery.outcome, "posted", "the un-attempted backlog retries on the next poll (review fix S1)");
+    assert.equal(recovery.posted, 1, "k3 is announced on recovery");
+    assert.ok(api.listRssSeenKeysForFeed(cid, url).includes("k3"), "k3 claimed + delivered on recovery");
     assert.equal(api.getRssFeed(cid, url).failure_count, 0, "the clean pass reset the counter");
   });
 

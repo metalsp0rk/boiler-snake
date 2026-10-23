@@ -170,6 +170,13 @@ describe("rss repository", () => {
     api.updateRssFeedWatermark(cid, URL_A, { etag: null });
     assert.equal(api.getRssFeed(cid, URL_A).etag, null, "null clears the column");
 
+    // …and for STAMP fields too — null must clear, never land as epoch 0
+    // via Number(null). The #305 S1 send-failure path hands the row's NULL
+    // watermark straight back through recordRssFeedFailure.
+    api.updateRssFeedWatermark(cid, URL_A, { lastChecked: null });
+    assert.equal(api.getRssFeed(cid, URL_A).last_checked, null, "null clears the stamp, not 0");
+    api.updateRssFeedWatermark(cid, URL_A, { lastChecked: 1761100600000 });
+
     // no-op patch returns the row without a write and never throws
     const same = api.updateRssFeedWatermark(cid, URL_A, {});
     assert.equal(same.last_checked, 1761100600000);
@@ -718,6 +725,22 @@ describe("rss feedState — interval gate (isRssPollDue)", () => {
       feedState.isRssPollDue({ lastChecked: NOW - 15 * MIN, intervalMinutes: null, now: NOW }),
       true,
       "unknown setting still gates on the 15-minute default",
+    );
+  });
+
+  it("resolveRssIntervalMinutes honors the command surface's 1–60 range (review fix N1)", () => {
+    assert.equal(feedState.resolveRssIntervalMinutes(1), 1, "1 is in range");
+    assert.equal(feedState.resolveRssIntervalMinutes(60), 60, "60 is in range");
+    assert.equal(feedState.resolveRssIntervalMinutes(61), 15, "61 → schema default (not clamped to 60)");
+    assert.equal(
+      feedState.resolveRssIntervalMinutes(1440),
+      15,
+      "out-of-band 1440 cannot gate on a cadence the UI can neither show nor police",
+    );
+    assert.equal(
+      feedState.isRssPollDue({ lastChecked: NOW - 20 * MIN, intervalMinutes: 1440, now: NOW }),
+      true,
+      "the gate itself falls back to the 15-minute default for the poisoned row",
     );
   });
 

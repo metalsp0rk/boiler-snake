@@ -217,6 +217,13 @@ async function readFeedBody(res, maxBytes) {
     }
     return { tooLarge: true, actualBytes: received };
   }
+  // No streaming body — test fakes / exotic transports only (production
+  // undici ALWAYS exposes body.getReader, so the cap above is the real
+  // one). This branch necessarily buffers before measuring: the caller's
+  // declared-Content-Length refusal already ran, and the post-measure
+  // refusal below pins the reported size; an absent lying header could
+  // only buffer up to whatever the host actually sends. Commented rather
+  // than pretends-guarded (review N3).
   const bytes = Buffer.from(await res.arrayBuffer());
   if (bytes.length > maxBytes) return { tooLarge: true, actualBytes: bytes.length };
   return { bytes };
@@ -373,6 +380,14 @@ async function guardedFetchForFeedInner(rawUrl, opts) {
         // policy + guard resolution re-runs on the next hop, so "redirect
         // chain lands on a private/reserved address" is refused there,
         // BEFORE that hop is ever connected to.
+        // Review fix N4: conditional-GET validators belong to the host that
+        // ISSUED them (RFC 9110 §8.4.1 origin scope) — a cross-host hop
+        // loses the stored If-None-Match/If-Modified-Since instead of
+        // leaking host A's validators to host B.
+        if (next.hostname.toLowerCase() !== new URL(current).hostname.toLowerCase()) {
+          delete conditional["If-None-Match"];
+          delete conditional["If-Modified-Since"];
+        }
         current = next.toString();
         continue;
       }

@@ -71,16 +71,21 @@
  *     advance past failed sends outright). So the claim stays, the
  *     [rss] log names the burned key, and the loss is bounded by the
  *     claim-before-send ordering to exactly the one entry that failed.
- *  2. A FAILURE STAMPS last_checked (the merged repository's documented
- *     intent: "stamp the poll clock so the retry gate counts from THIS
- *     failure") — rss_feeds has ONE clock column, unlike youtube's split
- *     last_checked_at (cadence) / last_checked (ordinal floor, #379/#380).
- *     Consequence, stated so it is never rediscovered as a bug: entries
- *     that were visible-but-unsent when a feed failed are older than the
- *     failure stamp on every later poll, and feedState's later-poll rule
- *     (`fresh iff publishedMs > last_checked`) seeds them SILENTLY instead
- *     of announcing them. Removing that hole needs the cadence/watermark
- *     column split (a migration) — out of scope for subtask 06.
+ *  2. FAILURE vs THE ONE CLOCK COLUMN. rss_feeds has a single
+ *     `last_checked` column (unlike youtube's split last_checked_at
+ *     cadence / last_checked ordinal floor, #379/#380), so failure paths
+ *     use it deliberately per FAULT CLASS: FETCH/PARSE failures stamp
+ *     `now` — the documented repository intent ("the retry gate counts
+ *     from THIS failure"); the body was already retrieved, and a persistent
+ *     bad feed should back off from the failure, not from the old poll.
+ *     SEND failures (a Discord-side fault) PRESERVE the prior watermark —
+ *     stamping past it would make feedState's later-poll rule
+ *     (`fresh iff publishedMs > last_checked`) silently seed the whole
+ *     un-attempted backlog on the next poll. With the watermark preserved
+ *     the backlog genuinely retries; only the claimed key is burned
+ *     (decision #1). The tradeoff against the single column is a send
+ *     failure gating off the OLD clock — the exponential failure_count
+ *     still dominates (base×2^fc), so a flapping channel backs off anyway.
  *
  * `RSS_MAX_FEEDS_PER_COMMUNITY` is deliberately NOT read here — the cap
  * gates SUBSCRIPTIONS at `/rss add` (subtask 07); the poller polls every
@@ -370,11 +375,19 @@ async function pollFeedRow({
         }
       } catch (err) {
         const cause = String(err?.message || err);
-        db.recordRssFeedFailure(communityId, url, { lastChecked: nowMs });
+        // REVIEW FIX (#305, S1): a SEND-side failure must not stamp
+        // last_checked past the un-attempted backlog — with the watermark
+        // preserved, every un-claimed entry is fresher than last_checked on
+        // the next poll and genuinely retries (claim-before-send still
+        // bounds the loss to the one burned key). Fetch/parse failures keep
+        // stamping `now` (the transport retry gate counts from those).
+        db.recordRssFeedFailure(communityId, url, {
+          lastChecked: row.last_checked ?? null,
+        });
         console.error(
           `[rss] notification send failed (community=${communityId} url=${url} key=${item.key}): ${cause} — ` +
-            "stopping this feed's tick; the claimed key above stays seen (seen-set has no single-key release), " +
-            "unclaimed entries are not re-claimed this tick",
+            "stopping this feed's tick; the claimed key above stays seen (seen-set has no single-key release); " +
+            "watermark preserved, so un-claimed entries retry on the next poll",
         );
         return {
           ok: false,

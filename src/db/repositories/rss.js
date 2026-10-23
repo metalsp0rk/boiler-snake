@@ -39,6 +39,10 @@ function normalizeEntryKey(entryKey) {
 
 /** Coerce a wall-clock ms stamp; anything non-finite becomes null (clear). */
 function toStampMs(value) {
+  // Tri-state contract (buildFetchStateSet doc): null means CLEAR — it
+  // must not become 0 through Number(null). (Surfaced by the #305 review
+  // S1 fix: the send-failure path passes the row's NULL watermark back.)
+  if (value === null) return null;
   const n = Number(value);
   return Number.isFinite(n) ? Math.trunc(n) : null;
 }
