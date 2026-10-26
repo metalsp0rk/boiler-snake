@@ -1574,6 +1574,45 @@ deterministic budget walk, so skipped images never skew the numbering. Failure n
 uploader: `image "cat.png" from alice could not be included: …`. Text-only turns stay
 byte-identical. No new env vars.
 
+**Live E2E verification (recorded 2026-10-26 — issue #683).** Tier-4 harness: the REAL
+bot (real gateway handshake, router, gates, context fetch, roster resolution, budget
+walk, SSRF-guarded download path, SQLite) against fauxcord mock Discord (ns 22) with the
+SCRIPTED loopback mock LLM from the #705 block capturing the WIRE payload. Image bytes
+ride the sanctioned `setVisionSeamsForTests` download seam (the Tier-2 idiom);
+attachment URLs are https CDN stubs injected on HUMAN messages via the new
+`POST /_test/channels/:id/messages` `attachments` patch hunk (real Discord CDN urls are
+https too — the mock's own http urls could never pass the vision download guard).
+Environment: `main` + this branch's patch hunk + `test/e2e/e2e-gork.test.js` #683 block,
+Node v26.12.0, fauxcord at the pinned patch base. Per checklist item:
+
+- [x] User A posts an image, user B posts another INSIDE the context window, A triggers
+      → the model-visible user turn is exactly `[question, caption, image, caption,
+      image]`: captions `[Image 1 of 2 — uploaded by @E2EOperator]` /
+      `[Image 2 of 2 — uploaded by @E2ETarget]` sit adjacent to their image, name the
+      RIGHT uploader through the roster chain, and the base64 payloads byte-equal each
+      upload (pixels AND attribution verified, not just shape). `GORK_VISION_MODEL`
+      replaced the request model exactly because parts rode.
+- [x] Forced download failure on B's image → the answer still ships (`status: shipped`)
+      and the prompt carries `(Image notes: image "b.png" from E2ETarget could not be
+      included: download failed (HTTP 404))`; the surviving image renumbers to
+      `[Image 1 of 1 …]` — `of N` counts what RODE, no orphan captions.
+- [x] `GORK_VISION_MAX_IMAGES=0` with an attached image → user content stays a plain
+      string (byte-identical text-only path) on the plain model — the override stays
+      dormant while nothing rides.
+- [ ] Real Fluxer instance arm: the mock harness carries no Fluxer gateway; the
+      trigger-attachment ride + label on the duck wire stay Tier-2-pinned by
+      `test/fluxer-gork-trigger.test.js`. Real-instance confirmation belongs to the
+      Fluxer/Bridge live-verification milestone; the #227 dev-guild image arm likewise
+      remains open on #227.
+
+Suite evidence: gork e2e 18 pass / 8 todo / 0 fail (ns 22); full Tier-4 run **242 pass /
+0 fail / 22 todo** across 24 suites; `npm test` **5933/5933**; fauxcord patch-internal
+vitest 6/6 + `tsc --noEmit` clean on the new hunks; `npm run docs:build` clean.
+Artifacts: vision seams + env restored in-scenario; temp DB dirs + mock namespaces torn
+down by the harness. Observed while verifying (harness, not bot): a stale mock surviving
+`stop-mock.sh`'s pidfile kill can squat port 3100 behind a healthy marker restart —
+`FRESH=1` after a manual process sweep resolved it; the patch/pin self-check stays sound.
+
 ---
 
 ### 7.23 Reply-to-gork auto-mention — #176 (RESOLVED 2026-10 — decision 65)
