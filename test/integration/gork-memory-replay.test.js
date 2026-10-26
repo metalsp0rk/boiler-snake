@@ -347,7 +347,6 @@ describe("gork memory replay: golden fixture regression", () => {
         member,
         memberPermissions: member.permissions,
         reference: null,
-        referencedMessage: null,
         fetchReference: async () => {
           throw new Error("no reference");
         },
@@ -493,7 +492,6 @@ describe("gork memory replay: golden fixture regression", () => {
           member,
           memberPermissions: member.permissions,
           reference: null,
-          referencedMessage: null,
           fetchReference: async () => {
             throw new Error("no reference");
           },

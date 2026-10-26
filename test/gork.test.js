@@ -551,6 +551,26 @@ describe("buildContext (context)", () => {
     assert.equal(r2.mode, "reply-chain");
   });
 
+  it("a SYNCHRONOUSLY throwing fetchReference (#175) is caught by the walk's try — buildContext never rejects", async () => {
+    const trig = makeMsg({
+      id: "m0102",
+      content: "@gork",
+      username: "asker",
+      reference: { messageId: "m0098" },
+      // NOT async — a synchronous throw out of fetchReference() itself, the
+      // version-specific case the #175 triage asked to pin. The CALL SITE
+      // lives inside walkReplyChain's try, so a sync throw is reject-
+      // equivalent for the walk: the link is skipped and backfill runs.
+      fetchReference() {
+        throw new Error("sync boom during reference parse");
+      },
+    });
+    trig.channel = makeChannel([makeMsg({ id: "m0098", content: "hi", username: "u" })]);
+    const r = await buildContext(trig, 5); // would reject if the sync throw escaped
+    assert.equal(r.mode, "reply-chain");
+    assert.equal(r.collected, 1, "the broken link is skipped, backfill feeds the prompt");
+  });
+
   it("pure helpers: hasReference / hasContent / clampWindowSize", () => {
     assert.ok(hasReference({ reference: { messageId: "x" } }));
     assert.ok(!hasReference({ reference: null }));

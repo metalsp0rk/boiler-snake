@@ -271,7 +271,6 @@ describe("export-gork-log: memory chain assembly", () => {
         member,
         memberPermissions: member.permissions,
         reference: null,
-        referencedMessage: null,
         fetchReference: async () => {
           throw new Error("no reference");
         },

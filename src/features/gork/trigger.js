@@ -874,9 +874,17 @@ async function runGorkHook(client, message) {
       // targeting gork's OWN cached message that failed the trigger match —
       // the exact confusion class of the report ("I replied to gork and got
       // nothing"). Silence stays the DECISION (keyword/role remains the
-      // invocation authority); invisibility was not. Uses the cached
-      // referencedMessage only — never a fetch on the hot path.
-      const ref = message.referencedMessage;
+      // invocation authority); invisibility was not. #175 triage: the old
+      // read (`message.referencedMessage`) does NOT exist in any discord.js
+      // v14 — the property is v13-era — so this line could never fire in
+      // production. The faithful v14 read is the CHANNEL CACHE the Message
+      // constructor itself fills from `referenced_message` (Message#_patch);
+      // still cached-only — never a fetch on the hot path.
+      const refMessageId =
+        message.reference?.messageId ?? message.reference?.message_id ?? null;
+      const ref = refMessageId
+        ? (message.channel?.messages?.cache?.get(refMessageId) ?? null)
+        : null;
       if (
         botUserId &&
         ref &&

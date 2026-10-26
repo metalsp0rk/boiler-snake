@@ -221,9 +221,9 @@ function makeGorkMessage(env, opts = {}) {
         member && member.permissions ? member.permissions.has(flag) : false,
     },
     reference: opts.reference || null,
-    // Real discord.js carries the CACHED referenced message (null when not
-    // cached) — the #176 gate line reads this without any fetch.
-    referencedMessage: opts.referencedMessage ?? null,
+    // #175: v14 discord.js has NO `referencedMessage` property — production
+    // reads the CHANNEL CACHE (seeded via channel.addMessage). Fakes seed
+    // their reply targets there.
     // Real discord.js messages always carry `mentions`; role-mention trigger
     // tests (issue #174) pass opts.mentionedRoleIds to seed the role set
     // (the pipeline's normalizeDiscordMessage turns this into id strings).
@@ -242,6 +242,10 @@ function makeGorkMessage(env, opts = {}) {
     system: false,
     createdTimestamp: opts.createdTimestamp || Date.now(),
     attachments: opts.attachments || new Map(),
+    // Real normalizeDiscordMessage overlays a plain-array messageSnapshots
+    // (v14 Message#messageSnapshots Collection → array) — forwarded/snapshot
+    // fixtures (#175 c) seed it here.
+    messageSnapshots: opts.messageSnapshots || [],
     embeds: [],
     reply: async (payload) => {
       const sent = await channel.send(payload);
@@ -1812,6 +1816,118 @@ describe("integration: gork (AI keyword Q&A)", () => {
         "the guild slot must be free after the degraded job",
       );
       gorkQueue.release({ communityId: env.communityId });
+    } finally {
+      restoreEnv(saved);
+      fetchMock.restore();
+    }
+  });
+
+  it("#175(c): trigger replying to a forwarded/snapshot target degrades to backfill — the snapshot body NEVER rides the prompt", async () => {
+    const env = await freshEnv();
+    const saved = saveEnv();
+    const fetchMock = mockFetch([
+      chatCompletionResponse("Forwarded originals can be gone; context survives."),
+    ]);
+    try {
+      enableAiKey();
+      env.db.updateGuildSettings(env.communityId, {
+        gork_keyword: "gork",
+        gork_cooldown_sec: 0,
+      });
+      const ch = env.channels.general;
+      ch.addMessage({
+        id: "c1",
+        content: "Readable context next to the forward",
+        author: { id: IDS.member2, username: "member2", tag: "member2#0000" },
+        createdTimestamp: Date.now() - 5000,
+      });
+      attachTyping(ch);
+
+      const { message, replies } = makeGorkMessage(env, {
+        id: "t-forwarded-1",
+        content: "gork: what was said here?",
+        // A forwarded/snapshot reference: the ORIGINAL lives in another
+        // channel (or is gone) — the walk's fetchReference rejects exactly
+        // like the deleted arm (discord.js rejects; no synchronous throw is
+        // possible out of the async method — pinned at unit tier).
+        reference: { messageId: "fwd-original", type: 0 },
+        messageSnapshots: [
+          {
+            id: "fwd-original",
+            content: "FORWARDED BODY — content gap: never fed to the LLM today",
+            author: { id: IDS.member2, username: "member2" },
+          },
+        ],
+        fetchReference: async () => {
+          throw new Error("404 Unknown Message");
+        },
+      });
+      await env.onMessageCreate(message);
+      await gorkIdle();
+      assert.ok(
+        replies.length >= 1,
+        "an unfetchable forward reference must degrade to backfill, not crash"
+      );
+      const body = JSON.parse(fetchMock.calls[0].init.body);
+      const userMsg = body.messages.find((m) => m.role === "user");
+      assert.ok(
+        userMsg.content.includes("[@member2] Readable context next to the forward"),
+        "backfill context feeds the prompt",
+      );
+      assert.ok(
+        !userMsg.content.includes("FORWARDED BODY"),
+        "#175 content-gap pin: snapshot bodies are not assembled into the prompt (recorded, not a crash)",
+      );
+
+      const { gorkQueue } = require("../../src/features/gork/trigger");
+      assert.equal(
+        gorkQueue.admit({ communityId: env.communityId }).queued,
+        false,
+        "the guild slot must be free after the degraded job",
+      );
+      gorkQueue.release({ communityId: env.communityId });
+    } finally {
+      restoreEnv(saved);
+      fetchMock.restore();
+    }
+  });
+
+  it("#175(f): plain-text '@name' is literal text — no roster entry, no crash, question rides byte-identical", async () => {
+    const env = await freshEnv();
+    const saved = saveEnv();
+    const fetchMock = mockFetch([
+      chatCompletionResponse("Plain @names are words, not pings."),
+    ]);
+    try {
+      enableAiKey();
+      env.db.updateGuildSettings(env.communityId, {
+        gork_keyword: "gork",
+        gork_cooldown_sec: 0,
+      });
+      attachTyping(env.channels.general);
+
+      const { message, replies } = makeGorkMessage(env, {
+        id: "t-plaintext-at-1",
+        // NO <@id> token anywhere: @alice is prose. The roster mention scan
+        // (USER_MENTION_RE) must stay blind to it.
+        content: "gork: why is @alice quiet today?",
+      });
+      await env.onMessageCreate(message);
+      await gorkIdle();
+      assert.ok(replies.length >= 1, "plain-text @name must not derail the trigger");
+      assert.equal(replies[0].content, "Plain @names are words, not pings.");
+
+      const body = JSON.parse(fetchMock.calls[0].init.body);
+      const userMsg = body.messages.find((m) => m.role === "user");
+      const systemMsg = body.messages.find((m) => m.role === "system");
+      assert.ok(
+        userMsg.content.includes("why is @alice quiet today?"),
+        "the question rides byte-identical (nothing strips plain @tokens)",
+      );
+      assert.ok(
+        !/@alice/.test(systemMsg.content),
+        "no phantom alice roster line from prose (roster is <@id>-token + author driven)",
+      );
     } finally {
       restoreEnv(saved);
       fetchMock.restore();
@@ -3931,7 +4047,9 @@ describe("integration: gork reply-to-gork-answer auto-mention (issue #176)", () 
         id: "t-176-2",
         content: `${botTok} nice, thanks`,
         reference: { messageId: "gork-a2" },
-        referencedMessage: answer,
+        // The gate line reads the CHANNEL CACHE — gork-a2 was seeded there
+        // (author BOT) by ch.addMessage above, exactly like real Discord
+        // fills Message#_add for a referenced_message (#175).
         fetchReference: async () => answer,
       });
 
