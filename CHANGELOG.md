@@ -1,5 +1,30 @@
 # Changelog
 
+## [1.38.0](https://github.com/metalsp0rk/boiler-snake/compare/v1.37.0...v1.38.0) (2026-10-26)
+
+
+### Features
+
+* **db:** rss feed + seen tables and rss guild settings columns ([#305](https://github.com/metalsp0rk/boiler-snake/issues/305) subtask 01) ([57e841c](https://github.com/metalsp0rk/boiler-snake/commit/57e841c7558f910033a8a0b6781feacaab295734))
+* **db:** rss repository + facade + settings whitelist ([#305](https://github.com/metalsp0rk/boiler-snake/issues/305) subtask 02) ([4b55b7c](https://github.com/metalsp0rk/boiler-snake/commit/4b55b7cd782e591b45f6536ce1525a665a0934af))
+* **gork:** attribute vision image parts to their uploaders ([#683](https://github.com/metalsp0rk/boiler-snake/issues/683)) ([44140de](https://github.com/metalsp0rk/boiler-snake/commit/44140de2a56b0270c17056450d5c3d86ea1c11b9))
+* **gork:** per-guild tool-round budget + derived loop deadline ([#705](https://github.com/metalsp0rk/boiler-snake/issues/705)) ([37e1622](https://github.com/metalsp0rk/boiler-snake/commit/37e1622f9a0c1b5f756cb4e484f448d9d1d17b94))
+* **rss:** /rss + /setrss staff command families with feed autocomplete ([#305](https://github.com/metalsp0rk/boiler-snake/issues/305) subtask 07) ([31907b2](https://github.com/metalsp0rk/boiler-snake/commit/31907b23e40917b92cafd80e9c1db0775b55861a))
+* **rss:** notification format — embeds, snippet safety, strict [#272](https://github.com/metalsp0rk/boiler-snake/issues/272) mentions ([#305](https://github.com/metalsp0rk/boiler-snake/issues/305) subtask 05) ([0a50e1b](https://github.com/metalsp0rk/boiler-snake/commit/0a50e1bae47a9d58d388c448024dcfa90cf8ccfb))
+* **rss:** poller core — conditional GET, seen-set claims, flood cap ([#305](https://github.com/metalsp0rk/boiler-snake/issues/305) subtask 06) ([e126a92](https://github.com/metalsp0rk/boiler-snake/commit/e126a926433740664f499bb210470a75ebf0f078))
+* **rss:** pure feed-state decisions — entry keys, first-hour mirror, backoff, interval gate ([#305](https://github.com/metalsp0rk/boiler-snake/issues/305) subtask 04) ([1e44e8d](https://github.com/metalsp0rk/boiler-snake/commit/1e44e8da22678996f00e976e493982c7d3be40a6))
+* **rss:** scheduler ticker + feature registration ([#305](https://github.com/metalsp0rk/boiler-snake/issues/305) subtask 08) ([6a9b33a](https://github.com/metalsp0rk/boiler-snake/commit/6a9b33a8819bc4e5982cbedacb0cab0b7435d1d5))
+* **rss:** SSRF-guarded feed fetch unit with conditional GET ([#305](https://github.com/metalsp0rk/boiler-snake/issues/305) subtask 03) ([e5535ac](https://github.com/metalsp0rk/boiler-snake/commit/e5535ac05affc6a4937ad73e06d9b2f44c695e34))
+
+
+### Bug Fixes
+
+* **core:** gateway payload guard v2 — the [#175](https://github.com/metalsp0rk/boiler-snake/issues/175) reply/snapshot crash class ([0269c47](https://github.com/metalsp0rk/boiler-snake/commit/0269c4721168ce65bb6e5b18652762d5bcf8dad1))
+* **core:** the tool-loop deadline owns the outcome over the round cap ([#703](https://github.com/metalsp0rk/boiler-snake/issues/703)) ([179ae26](https://github.com/metalsp0rk/boiler-snake/commit/179ae2602bac18d000a8999fcdebe88c7fb0d7a3))
+* **gork:** [#176](https://github.com/metalsp0rk/boiler-snake/issues/176) evidence line read the nonexistent v14 referencedMessage — real channel-cache read now ([fffa60e](https://github.com/metalsp0rk/boiler-snake/commit/fffa60eeaf8fa964382451dfdd7693a848fcc19c))
+* **rss:** review pass — defer network commands, honest failure semantics, picker + gate fixes ([a68825f](https://github.com/metalsp0rk/boiler-snake/commit/a68825fdf4a6fe7f94c4914cfd3bfa3221261e68))
+* **web:** the lookup ranker gains the subsequence class ([#715](https://github.com/metalsp0rk/boiler-snake/issues/715)) ([bf907d6](https://github.com/metalsp0rk/boiler-snake/commit/bf907d6343060a145e4884ffdcb6d9d5602a1492))
+
 ## [1.37.0](https://github.com/metalsp0rk/boiler-snake/compare/v1.36.0...v1.37.0) (2026-10-23)
 
 
