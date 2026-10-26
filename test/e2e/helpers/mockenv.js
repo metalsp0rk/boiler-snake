@@ -236,18 +236,22 @@ class MockEnv {
    * @param {string} content
    * @param {string} authorId
    * @param {string} [channelId]
-   * @param {{atMs?: number, embeds?: object[]}} [opts] `embeds` injects rich
-   *   embeds on the message (#365/#460: the relay flip asserts the COPIED
-   *   message carries them — content-only assertions let an embed-stripping
-   *   relay pass green).
+   * @param {{atMs?: number, embeds?: object[], attachments?: object[]}} [opts]
+   *   `embeds` injects rich embeds on the message (#365/#460: the relay flip
+   *   asserts the COPIED message carries them — content-only assertions let
+   *   an embed-stripping relay pass green). `attachments` injects attachment
+   *   STUBS (#683: vision attribution needs a HUMAN message with images —
+   *   entries `{filename, content_type?, size?, url?}`; the `url` override
+   *   hydrates verbatim, e.g. an https CDN stub the test seam serves).
    */
-  async inject(content, authorId, channelId = this.ids.general, { atMs, embeds } = {}) {
+  async inject(content, authorId, channelId = this.ids.general, { atMs, embeds, attachments } = {}) {
     return j(`${this.base}/_test/channels/${channelId}/messages`, {
       method: "POST",
       body: JSON.stringify({
         content,
         author: { id: authorId },
         ...(Array.isArray(embeds) && embeds.length > 0 && { embeds }),
+        ...(Array.isArray(attachments) && attachments.length > 0 && { attachments }),
         ...(atMs != null && { created_timestamp: atMs }),
       }),
     });
