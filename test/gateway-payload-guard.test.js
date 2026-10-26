@@ -122,3 +122,170 @@ test("regression: without the guard the payload shape crashes (documents the inc
   );
   client.destroy();
 });
+
+// ---------------------------------------------------------------------------
+// #175 crash class: malformed reply/snapshot fields throw SYNCHRONOUSLY
+// inside the discord.js Message constructor — before any handler, pipeline
+// try/catch, or the emit itself — reaching only the process net. The guard
+// repairs the shape BEFORE construction; the message then hydrates as
+// unreferenced with every other field intact.
+// ---------------------------------------------------------------------------
+
+test("sanitizeMessagePayload drops non-object message_reference values", () => {
+  const nullRef = { id: "30", message_reference: null };
+  assert.equal("message_reference" in sanitizeMessagePayload(nullRef), false);
+  const undefRef = { id: "30", message_reference: undefined };
+  assert.equal("message_reference" in sanitizeMessagePayload(undefRef), false);
+  const strRef = { id: "30", message_reference: "40" };
+  assert.equal("message_reference" in sanitizeMessagePayload(strRef), false);
+});
+
+test("sanitizeMessagePayload keeps snapshots only when an array rides with a usable reference", () => {
+  const snapshots = [{ message: { content: "forwarded" } }];
+  const orphan = { id: "30", message_snapshots: snapshots };
+  assert.equal("message_snapshots" in sanitizeMessagePayload(orphan), false);
+
+  const notArray = {
+    id: "30",
+    message_reference: { channel_id: "20", guild_id: "10", message_id: "40", type: 1 },
+    message_snapshots: "yes",
+  };
+  assert.equal("message_snapshots" in sanitizeMessagePayload(notArray), false);
+
+  const usable = {
+    id: "30",
+    message_reference: { channel_id: "20", guild_id: "10", message_id: "40", type: 1 },
+    message_snapshots: snapshots,
+  };
+  assert.equal(
+    sanitizeMessagePayload(usable),
+    usable,
+    "well-formed snapshot payloads pass through by identity",
+  );
+});
+
+test("sanitizeMessagePayload repairs mentions beyond the string-array incident", () => {
+  const bare = { id: "30", mentions: "1223661663560142963" };
+  assert.equal("mentions" in sanitizeMessagePayload(bare), false, "non-array mentions dropped");
+
+  const mixed = sanitizeMessagePayload({
+    id: "30",
+    mentions: ["1223661663560142963", 123, null, [1], { id: "99", username: "ok" }],
+  });
+  assert.deepEqual(mixed.mentions, [
+    { id: "1223661663560142963" },
+    { id: "123" },
+    { id: "99", username: "ok" },
+  ]);
+});
+
+function createPayload(extra) {
+  return {
+    id: "31",
+    channel_id: "20",
+    guild_id: "10",
+    content: "hi",
+    author: { id: "5", username: "a", discriminator: "0001" },
+    timestamp: "2026-10-26T12:00:00.000Z",
+    ...extra,
+  };
+}
+
+test("regression #175: a NULL message_reference no longer throws (crash class pinned first)", () => {
+  const bare = makeClient();
+  // Pins the installed discord.js behavior: the constructor enters the
+  // reference block on the KEY and reads `.channel_id` off null.
+  assert.throws(
+    () => bare.actions.MessageCreate.handle(createPayload({ message_reference: null })),
+    (err) => err instanceof TypeError && /channel_id/.test(err.message),
+  );
+  bare.destroy();
+
+  const client = makeClient();
+  installGatewayPayloadGuard(client);
+  const { message } = client.actions.MessageCreate.handle(createPayload({ message_reference: null }));
+  assert.equal(message.reference, null, "hydrates as unreferenced");
+  assert.equal(message.content, "hi", "every other field survives");
+  client.destroy();
+});
+
+test("regression #175: message_snapshots WITHOUT a reference no longer throws", () => {
+  const bare = makeClient();
+  assert.throws(
+    () =>
+      bare.actions.MessageCreate.handle(
+        createPayload({ message_snapshots: [{ message: { content: "forwarded" } }] }),
+      ),
+    (err) => err instanceof TypeError && /channelId/.test(err.message),
+  );
+  bare.destroy();
+
+  const client = makeClient();
+  installGatewayPayloadGuard(client);
+  const { message } = client.actions.MessageCreate.handle(
+    createPayload({ message_snapshots: [{ message: { content: "forwarded" } }] }),
+  );
+  assert.equal(message.messageSnapshots.size, 0, "orphan snapshots are dropped, not fatal");
+  assert.equal(message.content, "hi");
+  client.destroy();
+});
+
+test("regression #175: snapshots WITH a usable reference ride the real constructor (fidelity)", () => {
+  const client = makeClient();
+  installGatewayPayloadGuard(client);
+  const { message } = client.actions.MessageCreate.handle(
+    createPayload({
+      message_reference: { channel_id: "20", guild_id: "10", message_id: "40", type: 1 },
+      message_snapshots: [
+        {
+          message: {
+            content: "the forwarded text",
+            author: { id: "7", username: "orig", discriminator: "0001" },
+            timestamp: "2026-10-25T12:00:00.000Z",
+          },
+        },
+      ],
+    }),
+  );
+  assert.equal(message.messageSnapshots.size, 1);
+  assert.equal(message.messageSnapshots.first().content, "the forwarded text");
+  assert.equal(message.reference.messageId, "40");
+  assert.equal(message.reference.type, 1);
+  client.destroy();
+});
+
+test("regression #175: non-array mentions (bare string payload) no longer throws", () => {
+  const bare = makeClient();
+  assert.throws(
+    () => bare.actions.MessageCreate.handle(createPayload({ mentions: "1223661663560142963" })),
+    TypeError,
+  );
+  bare.destroy();
+
+  const client = makeClient();
+  installGatewayPayloadGuard(client);
+  const { message } = client.actions.MessageCreate.handle(
+    createPayload({ mentions: "1223661663560142963" }),
+  );
+  assert.equal(message.mentions.users.size, 0);
+  client.destroy();
+});
+
+test("regression #175: MESSAGE_UPDATE carries the same repairs", () => {
+  const client = makeClient();
+  seedCachedMessage(client);
+  installGatewayPayloadGuard(client);
+  const { updated } = client.actions.MessageUpdate.handle({
+    id: "30",
+    channel_id: "20",
+    guild_id: "10",
+    content: "edited",
+    message_reference: null,
+    message_snapshots: [{ message: { content: "orphan" } }],
+    mentions: ["1223661663560142963"],
+    edited_timestamp: "2026-10-26T12:05:00.000Z",
+  });
+  assert.equal(updated.content, "edited");
+  assert.equal(updated.mentions.users.first().id, "1223661663560142963");
+  client.destroy();
+});
