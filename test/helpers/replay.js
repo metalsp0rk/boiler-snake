@@ -431,10 +431,10 @@ async function replayInteraction(env, fixture, opts = {}) {
       member,
       memberPermissions: member.permissions,
       reference: replyTo ? { messageId: replyTo } : null,
-      // discord.js Message#referencedMessage: resolved reply target (null
-      // when there is no reference). Kept consistent with `reference` so
-      // both collection strategies (walk vs cache read) see the same thing.
-      referencedMessage: replyTarget,
+      // #175: v14 has no Message#referencedMessage — production reads the
+      // channel cache (this harness's fake channel keeps none, so the
+      // reply-to-gork gate line stays dark here by design); the walk path
+      // below (fetchReference) is what feeds the reply-chain context.
       fetchReference: async () => replyTarget,
       deletable: true,
       deleted: false,
