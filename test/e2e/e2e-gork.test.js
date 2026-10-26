@@ -30,6 +30,9 @@ const { poll, namespaceIds } = require("./helpers/mockenv");
  * Since #705 the live-verification block at the END drives the REAL tool loop
  * against a SCRIPTED loopback mock LLM (same base-URL seam, fake key
  * "lv705-fake") — rounds, derived deadline, env override, clamp disclosure.
+ * Since #683 the same block verifies VISION ATTRIBUTION: human-authored
+ * injected images (fauxcord inject-attachments patch hunk) ride as caption-
+ * labeled parts — every assertion reads the mock LLM's recorded wire.
  *
  * Tier-2 parity cites: test/integration/gork.test.js (keyless silence :673,
  * ban flow :1370, queue/gates), gork-budget.test.js, gork-summarize.test.js,
@@ -39,7 +42,7 @@ const { poll, namespaceIds } = require("./helpers/mockenv");
  * env seams driving degradation through the real gateway pipeline.
  */
 describe(
-  "e2e: gork — config subcommand matrix, audit roster, bans/memory/budget round-trips, keyless silence + fake-key network degradation, #705 tool-round live-verification",
+  "e2e: gork — config subcommand matrix, audit roster, bans/memory/budget round-trips, keyless silence + fake-key network degradation, #705 tool-round + #683 vision-attribution live-verification",
   { concurrency: 1 },
   () => {
     /** @type {Awaited<ReturnType<typeof createE2eEnv>>} */
@@ -67,6 +70,12 @@ describe(
       "GORK_LLM_THINKING_TOKEN_BUDGET",
       "GORK_MAX_ANSWER_CHARS",
       "GORK_SUMMARIZE_TURN_TIMEOUT_MS",
+      // #683 vision env is re-read per job — scrubbed for the same reason.
+      "GORK_VISION_MODEL",
+      "GORK_VISION_MAX_IMAGES",
+      "GORK_VISION_MAX_IMAGE_BYTES",
+      "GORK_VISION_MAX_TOTAL_BYTES",
+      "GORK_VISION_DOWNLOAD_TIMEOUT_MS",
     ];
     const savedEnv = {};
 
@@ -1050,11 +1059,263 @@ describe(
       );
     });
 
+    // ---- #683 live-verification block ----------------------------------------
+    //
+    // Dated live-verification record for issue #683 (record in
+    // roadmap/gork.md §7.22). Every VISION image part that rides must carry
+    // an adjacent uploader caption on the WIRE — verified through the real
+    // router → gates → context fetch → roster resolution → SSRF-guarded
+    // download → parts assembly path. Attachment URLs ride as https stubs
+    // (the fauxcord inject-attachments patch hunk; real Discord CDN urls are
+    // https too — the mock's own http URLs can never pass the vision
+    // download guard); the bytes ride the sanctioned
+    // `setVisionSeamsForTests` seam exactly like the Tier-2 suite does. The
+    // loop, not the CDN, is what's under test.
+
+    const VISION_URL_A = "https://cdn.e2e.invalid/ns22-a.png";
+    const VISION_URL_B = "https://cdn.e2e.invalid/ns22-b.png";
+
+    /** Real decodable PNG (canvas-encoded) — 32px rides unchanged (fits the 1280 box). */
+    function visionPng([r, g, b]) {
+      const { createCanvas } = require("@napi-rs/canvas");
+      const canvas = createCanvas(32, 32);
+      const ctx = canvas.getContext("2d");
+      ctx.fillStyle = `rgb(${r}, ${g}, ${b})`;
+      ctx.fillRect(0, 0, 32, 32);
+      return canvas.toBuffer("image/png");
+    }
+
+    /**
+     * Vision download seams (the Tier-2 idiom): bytes are served for the
+     * https stub URLs behind the guard's public-IP DNS seam. `failUrls`
+     * force per-image download failures for the degraded arm.
+     */
+    function visionSeams({ serve, failUrls = [] } = {}) {
+      return {
+        fetchImpl: async (url) => {
+          const bytes = serve.get(url);
+          if (!bytes || failUrls.includes(url)) {
+            return {
+              ok: false,
+              status: 404,
+              headers: { get: () => null },
+              arrayBuffer: async () => new ArrayBuffer(0),
+            };
+          }
+          return {
+            ok: true,
+            status: 200,
+            headers: { get: () => null },
+            arrayBuffer: async () => bytes,
+          };
+        },
+        // Public-IP DNS seam answer (mirrors integration/gork.test.js) — the
+        // stub hostname never resolves anywhere; the guard check passes.
+        resolveHost: async () => ["93.184.216.34"],
+      };
+    }
+
+    /** Pull the user turn out of the mock LLM's recorded wire payload. */
+    const wireUserTurn = (call) =>
+      (call?.messages ?? []).find((m) => m.role === "user") ?? {};
+
+    it("#683 LV attribution: A's trigger image + B's context image ride as [question, label, image, label, image] with each caption naming its uploader", async () => {
+      const trigger = require("../../src/features/gork/trigger");
+      const pngA = visionPng([220, 40, 40]);
+      const pngB = visionPng([40, 80, 220]);
+      process.env.GORK_VISION_MAX_IMAGES = "4";
+      process.env.GORK_VISION_MODEL = "e2e-vision-model";
+      trigger.setVisionSeamsForTests(
+        visionSeams({
+          serve: new Map([
+            [VISION_URL_A, pngA],
+            [VISION_URL_B, pngB],
+          ]),
+        }),
+      );
+      const llm = await startLlmMock(() => ({
+        content: "LV683-VISION each image names its uploader",
+      }));
+      pointLlmAt(llm.baseUrl);
+      try {
+        // B posts an image INSIDE the context window first — keyword-free, so
+        // only A's message triggers.
+        await env.mock.inject(
+          "my screenshot from the same meeting too",
+          ids.target,
+          ids.general,
+          {
+            attachments: [
+              { filename: "b.png", content_type: "image/png", size: pngB.length, url: VISION_URL_B },
+            ],
+          },
+        );
+        const before = qaRows().length;
+        await env.mock.inject(
+          "gork what differs between these two screenshots",
+          ids.human,
+          ids.general,
+          {
+            attachments: [
+              { filename: "a.png", content_type: "image/png", size: pngA.length, url: VISION_URL_A },
+            ],
+          },
+        );
+        await awaitAnswer("LV683-VISION");
+        assert.equal(llm.state.calls.length, 1, "single wire round (no tools scripted)");
+        const call = llm.state.calls[0];
+        assert.equal(
+          call.model,
+          "e2e-vision-model",
+          "GORK_VISION_MODEL replaces the model exactly when image parts ride",
+        );
+        const user = wireUserTurn(call);
+        assert.ok(Array.isArray(user.content), "multimodal parts array on the wire");
+        const parts = user.content;
+        assert.equal(parts[0].type, "text");
+        assert.match(parts[0].text, /what differs between these two screenshots/);
+        // Deterministic order: the TRIGGER image rides first, caption first,
+        // adjacent to the image part it describes — labeled with the ASKER's
+        // roster identity and provably NOT the other uploader.
+        assert.match(parts[1].text, /^\[Image 1 of 2 — uploaded by @?E2EOperator\]$/, parts[1].text);
+        assert.doesNotMatch(parts[1].text, /E2ETarget/);
+        assert.equal(parts[2].type, "image_url");
+        assert.match(parts[2].image_url.url, /^data:image\/png;base64,/);
+        assert.equal(
+          Buffer.from(parts[2].image_url.url.split(",")[1], "base64").equals(pngA),
+          true,
+          "A's actual bytes rode (32px PNG passes the downscaler unchanged)",
+        );
+        // Context image second — caption names B through the roster chain.
+        assert.match(parts[3].text, /^\[Image 2 of 2 — uploaded by @?E2ETarget\]$/, parts[3].text);
+        assert.equal(parts[4].type, "image_url");
+        assert.equal(
+          Buffer.from(parts[4].image_url.url.split(",")[1], "base64").equals(pngB),
+          true,
+          "B's actual bytes rode",
+        );
+        await poll(() => qaRows().length > before, { label: "qa row for the vision turn" });
+        assert.equal(lastQa().status, "shipped");
+      } finally {
+        await llm.close();
+        clearLlmEnv();
+        trigger.setVisionSeamsForTests(null);
+        delete process.env.GORK_VISION_MAX_IMAGES;
+        delete process.env.GORK_VISION_MODEL;
+      }
+    });
+
+    it("#683 LV degraded arm: one download fails → the (Image notes:) line names the uploader and `of N` renumbers to what RODE", async () => {
+      const trigger = require("../../src/features/gork/trigger");
+      const pngA = visionPng([220, 40, 40]);
+      const pngB = visionPng([40, 80, 220]);
+      process.env.GORK_VISION_MAX_IMAGES = "4";
+      trigger.setVisionSeamsForTests(
+        visionSeams({
+          serve: new Map([
+            [VISION_URL_A, pngA],
+            [VISION_URL_B, pngB],
+          ]),
+          failUrls: [VISION_URL_B],
+        }),
+      );
+      const llm = await startLlmMock(() => ({
+        content: "LV683-DEGRADED one image and a named skip",
+      }));
+      pointLlmAt(llm.baseUrl);
+      try {
+        await env.mock.inject(
+          "another screenshot for the comparison",
+          ids.target,
+          ids.general,
+          {
+            attachments: [
+              { filename: "b.png", content_type: "image/png", size: pngB.length, url: VISION_URL_B },
+            ],
+          },
+        );
+        const before = qaRows().length;
+        await env.mock.inject(
+          "gork compare these two screenshots",
+          ids.human,
+          ids.general,
+          {
+            attachments: [
+              { filename: "a.png", content_type: "image/png", size: pngA.length, url: VISION_URL_A },
+            ],
+          },
+        );
+        await awaitAnswer("LV683-DEGRADED");
+        const parts = wireUserTurn(llm.state.calls[0]).content;
+        assert.ok(Array.isArray(parts));
+        assert.equal(
+          parts.length,
+          3,
+          "skipped image leaves ONLY the riding pair + question — never a caption without its image",
+        );
+        // The note names the file AND the uploader (actionable copy, rule 3).
+        assert.match(
+          parts[0].text,
+          /\(Image notes: image "b\.png" from E2ETarget could not be included: /,
+          parts[0].text,
+        );
+        assert.match(parts[1].text, /^\[Image 1 of 1 — uploaded by @?E2EOperator\]$/, parts[1].text);
+        assert.equal(parts[2].type, "image_url");
+        await poll(() => qaRows().length > before, { label: "qa row on the degraded vision turn" });
+        assert.equal(lastQa().status, "shipped", "a broken image never kills the answer");
+      } finally {
+        await llm.close();
+        clearLlmEnv();
+        trigger.setVisionSeamsForTests(null);
+        delete process.env.GORK_VISION_MAX_IMAGES;
+      }
+    });
+
+    it("#683 LV text-only parity: an attached image with GORK_VISION_MAX_IMAGES=0 keeps the plain-string content path (and the plain model)", async () => {
+      process.env.GORK_VISION_MAX_IMAGES = "0";
+      process.env.GORK_VISION_MODEL = "e2e-vision-model";
+      const llm = await startLlmMock(() => ({
+        content: "LV683-TEXTONLY plain string still",
+      }));
+      pointLlmAt(llm.baseUrl);
+      try {
+        await env.mock.inject(
+          "gork does this arrive as plain text",
+          ids.human,
+          ids.general,
+          {
+            attachments: [
+              { filename: "c.png", content_type: "image/png", size: 64, url: "https://cdn.e2e.invalid/ns22-c.png" },
+            ],
+          },
+        );
+        await awaitAnswer("LV683-TEXTONLY");
+        const call = llm.state.calls[0];
+        const user = wireUserTurn(call);
+        assert.equal(
+          typeof user.content,
+          "string",
+          "vision off → byte-identical plain-string content, attachment or not",
+        );
+        assert.match(user.content, /does this arrive as plain text/);
+        assert.notEqual(
+          call.model,
+          "e2e-vision-model",
+          "the vision-model override only replaces the model when parts RIDE",
+        );
+      } finally {
+        await llm.close();
+        clearLlmEnv();
+        delete process.env.GORK_VISION_MAX_IMAGES;
+        delete process.env.GORK_VISION_MODEL;
+      }
+    });
+
     // ---- honest gaps --------------------------------------------------------------------
 
     it.todo("/gork summarize HAPPY rundown (real generation + embed render) needs a live AI key + fixtures — gate/read/booking math pinned offline by test/integration/gork-summarize.test.js");
 
-    it.todo("gork web_search/read_page/vision happy paths need live model + SearXNG fixtures (golden replays pin the offline math: test/integration/gork-replay.test.js); the read_discord tool chain + real answer shipping are now driven in-process by the scripted mock-LLM #705 block above");
+    it.todo("gork web_search/read_page happy paths need live model + SearXNG fixtures (golden replays pin the offline math: test/integration/gork-replay.test.js); the read_discord tool chain + real answer shipping are driven in-process by the scripted mock-LLM #705 block above, and the vision attribution happy path + degraded arm by the #683 block");
 
     it.todo("memory EXTRACTION turn (post-answer durable-fact write) is a model call — replay fixtures cover it offline (test/integration/gork-memory-replay.test.js)");
 
