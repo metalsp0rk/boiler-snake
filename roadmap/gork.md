@@ -1673,3 +1673,46 @@ derivation tables, status + /settings surfaces); `test/gork.test.js`
 tripwires at 65; integration `gork-interaction-log` params pin. Docs:
 `docs/gork.md` (Tool rounds & the answer deadline), `docs/configuration.md`
 (2 new knobs + revised rows), `docs/database.md` (065), `docs/commands/index.md`.
+
+**Live E2E verification (recorded 2026-10-26 — issue #705).** Tier-4 harness:
+the REAL bot (real gateway handshake, router, per-guild queue, SQLite) against
+fauxcord mock Discord (ns 22) with a SCRIPTED loopback mock LLM on the
+call-time `AI_BASE_URL` seam (clearly-fake key `lv705-fake`, loopback-only —
+the point is the loop mechanics, not model quality). Environment: `main` +
+`test/e2e/e2e-gork.test.js` #705 block, Node v26.12.0, fauxcord at the pinned
+patch base. Per checklist item, all PASS:
+
+- [x] `/gork toolrounds 20` → the reply names the authorized deadline
+      (`answers may run up to ~14.8 min`); `/gork status` shows `20` without
+      the `(global)` tag; `guild_settings` + `gork.tool_rounds_set` audit
+      round-trip; the handler refuses 4/301 with the `5-300` copy, writing
+      nothing.
+- [x] Never-set guild → status `Tool rounds 50 (global)`; `/settings` Gork
+      line carries `Rounds **50**`; the 065 column stays NULL (never-set
+      semantics distinct from "set to 50").
+- [x] Multi-tool question survives past the historical 3-round cap on a
+      default guild: 4 REAL `read_discord` executions (the fed-back tool
+      messages carry the actual channel window with the `[LINKED MESSAGE]`
+      anchor) + final answer on wire round **5** — impossible pre-#705 —
+      shipped `status: shipped` (not `partial`), recorded params
+      `maxToolRounds 50`, `timeoutMs 2090000` (= 90s + 40s×50, 34.8 min).
+- [x] `GORK_LLM_TIMEOUT_MS=1500` forces the hard deadline against a
+      REACHABLE model: round 2 died mid-flight (fetch abort, not
+      ECONNREFUSED), locked canned reply posted, qa row `status: failure`
+      with the `timeout:` cause recorded; params show the override replaced
+      the derivation (`timeoutMs 1500`) but NOT the rounds budget (20).
+- [x] Poisoned row (raw-SQL `100000`, past the write clamp) → status
+      discloses `300` (read-side clamp); the job's params are
+      `maxToolRounds 300`, `timeoutMs 2700000` — the 45-min cap absorbs it,
+      no runaway; resetting NULL restores `50 (global)`.
+
+Suite evidence: `test/e2e/e2e-gork.test.js` 15/15 green (ns 22); full Tier-4
+run 239 pass / 0 fail / 22 todo across 24 suites; `npm test` 5933/5933;
+`npm run docs:build` clean. Artifacts: the poisoned column is reset
+in-scenario; temp DB dirs + mock namespaces torn down by the harness.
+Observed while verifying (no bot fix needed): (a) a long-lived mock booted
+before the current patch commit made the honeypot multipart arm time out —
+`start-mock.sh`'s stale patch/pin self-check resolved it, the suite itself
+never regressed; (b) the interaction-log's event capture truncates long tool
+outputs (`[interaction-log-truncated]`) while the model-side wire keeps them
+whole — LV assertions read the wire, not the capture.
