@@ -45,16 +45,21 @@ index fda0398..1ff7d3f 100644
      app.route(prefix, createStageInstanceRoutes(db))
      app.route(prefix, createCatalogRoutes(db))
 diff --git a/src/db.ts b/src/db.ts
-index b4549a7..f2e758e 100644
+index b4549a7..44eac1e 100644
 --- a/src/db.ts
 +++ b/src/db.ts
-@@ -43,6 +43,43 @@ const CHANNELS_FEATURE_COLUMNS: Record<string, string> = {
+@@ -43,6 +43,48 @@ const CHANNELS_FEATURE_COLUMNS: Record<string, string> = {
    typing_at: 'TEXT',
  }
  
 +/** E2E-fidelity columns (boiler-snake spike): persisted components + attached message. */
 +const MESSAGES_E2E_COLUMNS: Record<string, string> = {
 +  components: 'TEXT',
++  /** Reference type (reply vs forward/default) — real payloads carry it. */
++  reference_type: 'INTEGER',
++  /** Raw message_snapshots JSON (verbatim passthrough — including shapes
++   * that a real gateway proxy might mangle; the mock never normalizes). */
++  message_snapshots: 'TEXT',
 +}
 +const INTERACTIONS_E2E_COLUMNS: Record<string, string> = {
 +  message_id: 'TEXT',
@@ -92,7 +97,7 @@ index b4549a7..f2e758e 100644
  /**
   * Adds channel feature columns (currently just voice_status) to an
   * existing `channels` table when missing. Kept separate from
-@@ -802,6 +839,7 @@ export function initializeDatabase(dbPath: string): Database {
+@@ -802,6 +844,7 @@ export function initializeDatabase(dbPath: string): Database {
  
    migrateChannelsThreadColumns(db)
    migrateChannelsFeatureColumns(db)
@@ -101,7 +106,7 @@ index b4549a7..f2e758e 100644
    return db
  }
 diff --git a/src/e2e-control-api.test.ts b/src/e2e-control-api.test.ts
-index b122764..c7c93f8 100644
+index b122764..a5ab8a1 100644
 --- a/src/e2e-control-api.test.ts
 +++ b/src/e2e-control-api.test.ts
 @@ -1,6 +1,7 @@
@@ -112,7 +117,7 @@ index b122764..c7c93f8 100644
  import { createRealServer } from './test-helpers'
  
  const token = 'Bot control-api-token'
-@@ -294,4 +295,172 @@ describe('Fauxcord control APIs over a real server', () => {
+@@ -294,4 +295,282 @@ describe('Fauxcord control APIs over a real server', () => {
        d: { data: { name: 'ping' } },
      })
    })
@@ -284,6 +289,116 @@ index b122764..c7c93f8 100644
 +    )
 +    expect(empty.status).toBe(400)
 +  })
++
++  it('injects reply references and verbatim snapshots (boiler-snake patch #175)', async () => {
++    const server = await createRealServer()
++    close = server.close
++
++    const setup = await fetch(`${server.baseUrl}/_test/setup`, {
++      method: 'POST',
++      headers: { 'Content-Type': 'application/json' },
++      body: JSON.stringify({
++        token,
++        user: { id: applicationId, username: 'ControlBot' },
++        guilds: [
++          {
++            id: guildId,
++            name: 'Control Guild',
++            channels: [{ id: channelId, name: 'control', type: 0 }],
++          },
++        ],
++      }),
++    })
++    expect(setup.status).toBe(201)
++
++    const userResponse = await fetch(`${server.baseUrl}/_test/users`, {
++      method: 'POST',
++      headers: { 'Content-Type': 'application/json' },
++      body: JSON.stringify({ username: 'ReplyUser' }),
++    })
++    const user = (await userResponse.json()) as { id: string }
++
++    const anchor = await fetch(
++      `${server.baseUrl}/_test/channels/${channelId}/messages`,
++      {
++        method: 'POST',
++        headers: { 'Content-Type': 'application/json' },
++        body: JSON.stringify({
++          content: 'anchor to be replied to',
++          author: { id: user.id },
++        }),
++      }
++    )
++    const anchorMsg = (await anchor.json()) as { id: string }
++
++    // A reply: the emitted reference carries channel_id + type so real
++    // discord.js hydration + fetchReference() work against the mock.
++    const reply = await fetch(
++      `${server.baseUrl}/_test/channels/${channelId}/messages`,
++      {
++        method: 'POST',
++        headers: { 'Content-Type': 'application/json' },
++        body: JSON.stringify({
++          content: 'the reply',
++          author: { id: user.id },
++          message_reference: { message_id: anchorMsg.id, type: 1 },
++        }),
++      }
++    )
++    expect(reply.status).toBe(201)
++    const replyMsg = (await reply.json()) as {
++      message_reference?: { channel_id?: string; message_id?: string; type?: number }
++    }
++    expect(replyMsg.message_reference).toEqual({
++      channel_id: channelId,
++      message_id: anchorMsg.id,
++      type: 1,
++    })
++
++    // fetchReference() hydration: the referenced message answers over REST.
++    const fetched = await fetch(
++      `${server.baseUrl}/channels/${channelId}/messages/${anchorMsg.id}`,
++      { headers: { Authorization: token } }
++    )
++    expect(fetched.status).toBe(200)
++
++    // Snapshots ride VERBATIM — including the malformed orphan shape a
++    // mangled gateway proxy would produce (the client guard is what's
++    // under test, so the mock must NOT normalize it away).
++    const forwarded = await fetch(
++      `${server.baseUrl}/_test/channels/${channelId}/messages`,
++      {
++        method: 'POST',
++        headers: { 'Content-Type': 'application/json' },
++        body: JSON.stringify({
++          content: 'forwarded with snapshots',
++          author: { id: user.id },
++          message_snapshots: [{ message: { content: 'forwarded body' } }],
++        }),
++      }
++    )
++    expect(forwarded.status).toBe(201)
++    const fwdMsg = (await forwarded.json()) as { message_snapshots?: unknown }
++    expect(fwdMsg.message_snapshots).toEqual([
++      { message: { content: 'forwarded body' } },
++    ])
++
++    const mangled = await fetch(
++      `${server.baseUrl}/_test/channels/${channelId}/messages`,
++      {
++        method: 'POST',
++        headers: { 'Content-Type': 'application/json' },
++        body: JSON.stringify({
++          content: 'mangled snapshots',
++          author: { id: user.id },
++          message_snapshots: 'yes',
++        }),
++      }
++    )
++    expect(mangled.status).toBe(201)
++    const mangledMsg = (await mangled.json()) as { message_snapshots?: unknown }
++    expect(mangledMsg.message_snapshots).toBe('yes')
++  })
  })
 diff --git a/src/gateway/opcodes.ts b/src/gateway/opcodes.ts
 index 175d2c7..d14b1ee 100644
@@ -406,12 +521,16 @@ index dd89b8b..0db0b5f 100644
            // Unknown opcodes are ignored (real Discord also ignores unknown
            // opcodes from clients).
 diff --git a/src/routes/channel-messages.ts b/src/routes/channel-messages.ts
-index 535851f..4a6e719 100644
+index 535851f..1cb0f7a 100644
 --- a/src/routes/channel-messages.ts
 +++ b/src/routes/channel-messages.ts
-@@ -193,6 +193,9 @@ export function createChannelMessageRoutes(
+@@ -191,8 +191,12 @@ export function createChannelMessageRoutes(
+         tts: payload.tts as boolean | undefined,
+         embeds: payload.embeds as unknown[] | undefined,
          messageReference: payload.message_reference as
-           { message_id?: string } | undefined,
+-          { message_id?: string } | undefined,
++          | { message_id?: string; type?: number }
++          | undefined,
          flags: payload.flags as number | undefined,
 +        // SPIKE PATCH (boiler-snake e2e): real Discord persists components on
 +        // channel messages too (ticket panels depend on reading them back).
@@ -507,7 +626,7 @@ index 99f69e6..c45426f 100644
  
        if (!result.ok) {
 diff --git a/src/routes/test.ts b/src/routes/test.ts
-index 543d9ef..e7989df 100644
+index 543d9ef..dc151de 100644
 --- a/src/routes/test.ts
 +++ b/src/routes/test.ts
 @@ -16,6 +16,7 @@ import {
@@ -518,7 +637,7 @@ index 543d9ef..e7989df 100644
  import { getChannelWebhooks } from '../services/webhooks'
  import { injectPollVote } from '../services/polls'
  
-@@ -127,16 +128,42 @@ export function createTestRoutes(db: Database, baseUrl: string): Hono {
+@@ -127,16 +128,55 @@ export function createTestRoutes(db: Database, baseUrl: string): Hono {
      const payload = await c.req.json<{
        content?: string
        author?: { id?: string }
@@ -530,6 +649,8 @@ index 543d9ef..e7989df 100644
 +        size?: number
 +        url?: string
 +      }>
++      message_reference?: { message_id?: string; type?: number }
++      message_snapshots?: unknown
      }>()
  
 -    if (!payload.content || !payload.author?.id) {
@@ -555,6 +676,17 @@ index 543d9ef..e7989df 100644
 +          ? { embeds: payload.embeds }
 +          : {}),
 +        ...(attachments.length > 0 && { attachments }),
++        ...(payload.message_reference?.message_id && {
++          message_reference: {
++            message_id: payload.message_reference.message_id,
++            ...(payload.message_reference.type != null && {
++              type: payload.message_reference.type,
++            }),
++          },
++        }),
++        ...(payload.message_snapshots !== undefined && {
++          message_snapshots: payload.message_snapshots,
++        }),
 +        ...(typeof payload.created_timestamp === 'number' &&
 +        Number.isFinite(payload.created_timestamp)
 +          ? { created_timestamp: payload.created_timestamp }
@@ -563,7 +695,7 @@ index 543d9ef..e7989df 100644
        baseUrl
      )
  
-@@ -149,12 +176,74 @@ export function createTestRoutes(db: Database, baseUrl: string): Hono {
+@@ -149,12 +189,74 @@ export function createTestRoutes(db: Database, baseUrl: string): Hono {
    // command, without a real Discord client.
    app.post('/_test/interactions', async (c) => {
      const body = await c.req.json<TestInteractionRequest>()
@@ -1680,7 +1812,7 @@ index 9f13b9c..35d6aec 100644
      db.prepare('UPDATE interactions SET responded = 1 WHERE id = ?').run(row.id)
    }
 diff --git a/src/services/messages.ts b/src/services/messages.ts
-index ba966e1..825d0ee 100644
+index ba966e1..8300e46 100644
 --- a/src/services/messages.ts
 +++ b/src/services/messages.ts
 @@ -6,7 +6,7 @@
@@ -1692,16 +1824,20 @@ index ba966e1..825d0ee 100644
  import { toDiscordTimestamp } from '../timestamp'
  import { gatewayBus } from '../gateway/bus'
  import { getGuildMember } from './guild-members'
-@@ -63,6 +63,8 @@ export interface MessageRow {
+@@ -63,6 +63,12 @@ export interface MessageRow {
    referenced_message_id: string | null
    created_at: string
    edited_at: string | null
 +  /** Persisted components JSON (added by migrateE2eFidelityColumns) */
 +  components?: string | null
++  /** Persisted message_reference.type (added by migrateE2eFidelityColumns) */
++  reference_type?: number | null
++  /** Persisted raw message_snapshots JSON (added by migrateE2eFidelityColumns) */
++  message_snapshots?: string | null
  }
  
  /** User record type retrieved from the DB */
-@@ -90,6 +92,11 @@ interface AttachmentRow {
+@@ -90,6 +96,11 @@ interface AttachmentRow {
    size: number
    content_type: string
    file_path: string
@@ -1713,7 +1849,7 @@ index ba966e1..825d0ee 100644
  }
  
  /** Reaction aggregation record type retrieved from the DB */
-@@ -155,8 +162,8 @@ export interface MessageObject {
+@@ -155,14 +166,26 @@ export interface MessageObject {
    mention_roles: never[]
    attachments: AttachmentObject[]
    embeds: unknown[]
@@ -1724,7 +1860,26 @@ index ba966e1..825d0ee 100644
    /** Reaction list (the field itself is omitted when there are no reactions) */
    reactions?: ReactionObject[]
    pinned: boolean
-@@ -235,18 +242,28 @@ export function toMessageObject(
+   type: number
+   flags: number
+-  message_reference?: { message_id: string }
++  /**
++   * SPIKE PATCH (boiler-snake e2e, #175): full reference shape — channel_id
++   * + optional type ride so real discord.js hydration (Message#reference)
++   * and fetchReference() work against the mock.
++   */
++  message_reference?: {
++    channel_id?: string
++    guild_id?: string
++    message_id: string
++    type?: number
++  }
++  /** Raw snapshots passthrough (boiler-snake e2e #175) — verbatim. */
++  message_snapshots?: unknown
+   /** Webhook ID when the message was sent via a webhook */
+   webhook_id?: string
+ }
+@@ -235,23 +258,47 @@ export function toMessageObject(
      mention_everyone: row.mention_everyone === 1,
      mentions: [],
      mention_roles: [],
@@ -1762,9 +1917,40 @@ index ba966e1..825d0ee 100644
      pinned: row.pinned === 1,
      type: row.type,
      flags: row.flags,
-@@ -414,6 +431,21 @@ export interface MessageCreateParams {
+     ...(row.referenced_message_id && {
+-      message_reference: { message_id: row.referenced_message_id },
++      // SPIKE PATCH (boiler-snake e2e, #175): full reference shape — real
++      // Discord pairs the message_id with the referenced channel/guild and
++      // a reference type; discord.js' fetchReference() REQUIRES channelId
++      // (channels.resolve) + messageId, so reply-chain hydration only
++      // works against the mock when channel_id rides. Same-channel replies
++      // reuse the row's channel; guild_id is never needed for hydration.
++      message_reference: {
++        channel_id: row.channel_id,
++        message_id: row.referenced_message_id,
++        ...(row.reference_type != null && { type: row.reference_type }),
++      },
++    }),
++    // SPIKE PATCH (boiler-snake e2e, #175): verbatim snapshots passthrough.
++    ...(row.message_snapshots != null && {
++      message_snapshots: JSON.parse(row.message_snapshots) as unknown,
+     }),
+     // Add webhook_id to messages sent via webhook (author_id = webhook ID)
+     ...(row.author_token === 'webhook' && { webhook_id: row.author_id }),
+@@ -412,8 +459,31 @@ export interface MessageCreateParams {
+   content?: string
+   tts?: boolean
    embeds?: unknown[]
-   messageReference?: { message_id?: string }
+-  messageReference?: { message_id?: string }
++  messageReference?: { message_id?: string; type?: number }
++  /**
++   * SPIKE PATCH (boiler-snake e2e, #175): raw message_snapshots persisted
++   * VERBATIM (JSON) — including malformed shapes. The mock is a
++   * fidelity-mirror, not a validator: a caller reproducing a mangled
++   * gateway proxy payload must get that exact payload back on dispatch
++   * and REST reads, so the CLIENT-side guard is what's under test.
++   */
++  messageSnapshots?: unknown
    flags?: number
 +  components?: unknown[]
 +  /**
@@ -1784,24 +1970,28 @@ index ba966e1..825d0ee 100644
  }
  
  /**
-@@ -464,8 +496,8 @@ export function createMessage(
+@@ -464,8 +534,8 @@ export function createMessage(
    baseUrl: string
  ): MessageObject {
    db.prepare(
 -    `INSERT INTO messages (id, channel_id, author_id, author_token, content, tts, flags, referenced_message_id)
 -     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
-+    `INSERT INTO messages (id, channel_id, author_id, author_token, content, tts, flags, referenced_message_id, components)
-+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
++    `INSERT INTO messages (id, channel_id, author_id, author_token, content, tts, flags, referenced_message_id, components, reference_type, message_snapshots)
++     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
    ).run(
      params.messageId,
      params.channelId,
-@@ -474,9 +506,31 @@ export function createMessage(
+@@ -474,9 +544,35 @@ export function createMessage(
      params.content ?? '',
      params.tts ? 1 : 0,
      params.flags ?? 0,
 -    params.messageReference?.message_id ?? null
 +    params.messageReference?.message_id ?? null,
-+    params.components ? JSON.stringify(params.components) : null
++    params.components ? JSON.stringify(params.components) : null,
++    params.messageReference?.type ?? null,
++    params.messageSnapshots === undefined
++      ? null
++      : JSON.stringify(params.messageSnapshots)
    )
  
 +  // SPIKE PATCH (boiler-snake e2e, #683): persist attachment stub rows
@@ -1828,7 +2018,7 @@ index ba966e1..825d0ee 100644
    // Save embeds
    if (params.embeds) {
      for (let i = 0; i < params.embeds.length; i++) {
-@@ -517,7 +571,7 @@ export function createMessage(
+@@ -517,7 +613,7 @@ export function createMessage(
  export function updateMessage(
    db: Database,
    messageId: string,
@@ -1837,7 +2027,7 @@ index ba966e1..825d0ee 100644
    baseUrl: string
  ): MessageObject | null {
    const row = db
-@@ -531,6 +585,16 @@ export function updateMessage(
+@@ -531,6 +627,16 @@ export function updateMessage(
      ).run(payload.content, messageId)
    }
  
@@ -1855,7 +2045,7 @@ index ba966e1..825d0ee 100644
    if (payload.embeds !== undefined) {
      db.prepare('DELETE FROM embeds WHERE message_id = ?').run(messageId)
 diff --git a/src/services/test-control.ts b/src/services/test-control.ts
-index 000b187..57f4865 100644
+index 000b187..37db881 100644
 --- a/src/services/test-control.ts
 +++ b/src/services/test-control.ts
 @@ -10,7 +10,9 @@ import { generateSnowflake } from '../snowflake'
@@ -1868,7 +2058,7 @@ index 000b187..57f4865 100644
  import {
    createMessage,
    getGuildIdForChannel,
-@@ -348,8 +350,40 @@ export function createTestUser(
+@@ -348,8 +350,55 @@ export function createTestUser(
  
  /** Request payload for injecting a message authored by a pre-registered user */
  export interface InjectTestMessageRequest {
@@ -1907,10 +2097,25 @@ index 000b187..57f4865 100644
 +    size?: number
 +    url?: string
 +  }>
++  /**
++   * Reference the injected message replies to (`{message_id, type?}`),
++   * boiler-snake e2e #175: the reply-chain walk in gork's context builder
++   * needs a REAL reference payload — the mock emits the full
++   * `{channel_id, message_id, type?}` shape so discord.js hydration +
++   * `fetchReference()` (REST GET against the mock) work end to end.
++   */
++  message_reference?: { message_id?: string; type?: number }
++  /**
++   * RAW message_snapshots passthrough (boiler-snake e2e #175): persisted and
++   * emitted VERBATIM — malformed shapes included — so a client-side payload
++   * guard can be proven against mangled-proxy payloads on the real gateway
++   * dispatch path.
++   */
++  message_snapshots?: unknown
  }
  
  /**
-@@ -397,8 +431,12 @@ export function injectTestMessage(
+@@ -397,8 +446,18 @@ export function injectTestMessage(
        // Neither a real bot token nor the webhook sentinel value, so this
        // message resolves to a plain, non-bot, non-webhook author.
        authorToken: '',
@@ -1922,10 +2127,16 @@ index 000b187..57f4865 100644
 +      ...(request.attachments?.length
 +        ? { attachments: request.attachments }
 +        : {}),
++      ...(request.message_reference?.message_id
++        ? { messageReference: request.message_reference }
++        : {}),
++      ...(request.message_snapshots !== undefined && {
++        messageSnapshots: request.message_snapshots,
++      }),
      },
      baseUrl
    )
-@@ -408,11 +446,29 @@ export function injectTestMessage(
+@@ -408,11 +467,29 @@ export function injectTestMessage(
  export interface TestInteractionRequest {
    application_id: string
    type?: number
@@ -1956,7 +2167,7 @@ index 000b187..57f4865 100644
  }
  
  /** Result of a test-interaction creation attempt */
-@@ -425,19 +481,210 @@ interface CommandIdRow {
+@@ -425,19 +502,210 @@ interface CommandIdRow {
    id: string
  }
  
@@ -2168,7 +2379,7 @@ index 000b187..57f4865 100644
    const guildCommand = request.guild_id
      ? (db
          .prepare(
-@@ -459,12 +706,10 @@ export function createTestInteraction(
+@@ -459,12 +727,10 @@ export function createTestInteraction(
    const command = guildCommand ?? globalCommand
    if (!command) return { ok: false, reason: 'unknown_command' }
  
@@ -2185,7 +2396,7 @@ index 000b187..57f4865 100644
  
    const interaction = createInteraction(db, {
      interactionId,
-@@ -474,8 +719,9 @@ export function createTestInteraction(
+@@ -474,8 +740,9 @@ export function createTestInteraction(
      guildId: request.guild_id,
      channelId: request.channel_id,
      commandId: command.id,

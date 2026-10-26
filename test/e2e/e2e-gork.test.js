@@ -33,6 +33,11 @@ const { poll, namespaceIds } = require("./helpers/mockenv");
  * Since #683 the same block verifies VISION ATTRIBUTION: human-authored
  * injected images (fauxcord inject-attachments patch hunk) ride as caption-
  * labeled parts — every assertion reads the mock LLM's recorded wire.
+ * Since #175 it also drives the REPLY/MENTION matrix live (full-shape
+ * message_reference + verbatim-snapshots inject hunks): real REST
+ * fetchReference walks, a real 404 dead-link degrade, malformed snapshot
+ * payloads through the LIVE gatewayPayloadGuard, and <@id>-token vs
+ * plain-@name roster discrimination.
  *
  * Tier-2 parity cites: test/integration/gork.test.js (keyless silence :673,
  * ban flow :1370, queue/gates), gork-budget.test.js, gork-summarize.test.js,
@@ -42,7 +47,7 @@ const { poll, namespaceIds } = require("./helpers/mockenv");
  * env seams driving degradation through the real gateway pipeline.
  */
 describe(
-  "e2e: gork — config subcommand matrix, audit roster, bans/memory/budget round-trips, keyless silence + fake-key network degradation, #705 tool-round + #683 vision-attribution live-verification",
+  "e2e: gork — config subcommand matrix, audit roster, bans/memory/budget round-trips, keyless silence + fake-key network degradation, #705 tool-round + #683 vision-attribution + #175 reply/mention live-verification",
   { concurrency: 1 },
   () => {
     /** @type {Awaited<ReturnType<typeof createE2eEnv>>} */
@@ -1308,6 +1313,201 @@ describe(
         clearLlmEnv();
         delete process.env.GORK_VISION_MAX_IMAGES;
         delete process.env.GORK_VISION_MODEL;
+      }
+    });
+
+    // ---- #175 live-verification block (reply / mention matrix) ----------------
+    //
+    // Dated live-verification record for issue #175 (record in roadmap/gork.md
+    // §7.15). The reply/forward/mention classes from the reported crash run
+    // through the REAL gateway hydration + REST fetchReference path, and the
+    // malformed-payload class (message_snapshots without a reference — the
+    // ONLY way this could ever have "crashed on a reply") runs through the
+    // installed gatewayPayloadGuard on the LIVE dispatch. The inject patch
+    // hunks (#175) carry full-shape message_reference + verbatim snapshots.
+
+    /** Pull the system/user turns out of the mock LLM's recorded payload. */
+    const wireTurn = (call, role) =>
+      (call?.messages ?? []).find((m) => m.role === role) ?? {};
+
+    /** Find a channel message id by exact content via the full tape (oldest match). */
+    async function findTapedId(wanted) {
+      const rows = await env.mock.tape(ids.general);
+      const hit = rows.find((m) => String(m.content ?? "") === wanted);
+      assert.ok(hit, `tape contains "${wanted}"`);
+      return String(hit.id);
+    }
+
+    it("#175 LV reply→existing message: the chain walks over REAL REST fetchReference (anchor past the backfill window)", async () => {
+      // The LV705 anchor ("anchor message content for the reader", injected
+      // long ago at :882) is far outside the newest-10 backfill window —
+      // the ONLY way its text can reach the prompt is a SUCCESSFUL
+      // fetchReference() walk over the mock's real REST GET route, proving
+      // the full message_reference → discord.js hydration → chain path.
+      const anchorId = await findTapedId("anchor message content for the reader");
+      const llm = await startLlmMock(() => ({
+        content: "LV175-CHAIN the chain walked over real REST",
+      }));
+      pointLlmAt(llm.baseUrl);
+      try {
+        await env.mock.inject(
+          "gork what was the anchor message content for",
+          ids.human,
+          ids.general,
+          { messageReference: { message_id: anchorId, type: 1 } },
+        );
+        await awaitAnswer("LV175-CHAIN");
+        const user = wireTurn(llm.state.calls[0], "user");
+        assert.match(
+          String(user.content),
+          /anchor message content for the reader/,
+          "the referenced (out-of-window) anchor rode the prompt — reply-chain walk, not backfill",
+        );
+      } finally {
+        await llm.close();
+        clearLlmEnv();
+      }
+    });
+
+    it("#175 LV reply→deleted message: REAL 404 rejects the walk, backfill answers, slot survives", async () => {
+      const llm = await startLlmMock(() => ({
+        content: "LV175-DELETED answered despite the dead link",
+      }));
+      pointLlmAt(llm.baseUrl);
+      try {
+        const before = qaRows().length;
+        await env.mock.inject(
+          "gork what did that deleted message say",
+          ids.human,
+          ids.general,
+          { messageReference: { message_id: "1564000000000000000", type: 1 } }, // never existed
+        );
+        await awaitAnswer("LV175-DELETED");
+        await poll(() => qaRows().length > before, { label: "qa row on the dead-link turn" });
+        assert.equal(lastQa().status, "shipped");
+      } finally {
+        await llm.close();
+        clearLlmEnv();
+      }
+    });
+
+    it("#175 LV malformed snapshot payloads ride the live dispatch — the gateway guard keeps the process alive", async () => {
+      // WITHOUT the guard these payloads TypeErrors SYNCHRONOUSLY inside the
+      // discord.js Message constructor — before any handler — and the
+      // process net drains + exits (unit tier pins both pairs). Here the
+      // LIVE bot must simply answer. Both shapes arrive verbatim through
+      // the inject passthrough (the mock never normalizes).
+      const llm = await startLlmMock((n) => ({
+        content: `LV175-MALFORMED-${n} guard held on the live dispatch`,
+      }));
+      pointLlmAt(llm.baseUrl);
+      try {
+        // (1) non-array snapshots (mangled proxy shape)
+        await env.mock.inject("gork are these mangled snapshots fatal", ids.human, ids.general, {
+          snapshots: "yes",
+        });
+        await awaitAnswer("LV175-MALFORMED-1");
+        // (2) orphan snapshot array — NO message_reference at all (the
+        // class #175 triage identified as the plausible 2026-09 crash).
+        await env.mock.inject(
+          "gork do orphan snapshots crash you",
+          ids.human,
+          ids.general,
+          { snapshots: [{ message: { content: "forwarded body" } }] },
+        );
+        await awaitAnswer("LV175-MALFORMED-2");
+        // (3) WELL-FORMED pair: snapshots + a real reference to a live
+        // message — fidelity arm. LIVE NUANCE recorded from the real
+        // discord.js constructor: it CACHES each snapshot under the
+        // referenced message id, so fetchReference() resolves to the
+        // snapshot shadow — the walk surfaces the FORWARDED body into the
+        // chain (the tier-2 fakes never construct, which is why their pin
+        // reads differently). Either way: walk succeeds, answer ships.
+        const anchor = await env.mock.inject(
+          "a referenced anchor for the well-formed snapshot arm",
+          ids.target,
+          ids.general,
+        );
+        await env.mock.inject(
+          "gork does the reference walk still work with snapshots",
+          ids.human,
+          ids.general,
+          {
+            messageReference: { message_id: anchor.id, type: 0 },
+            snapshots: [{ message: { content: "forwarded body" } }],
+          },
+        );
+        await awaitAnswer("LV175-MALFORMED-3");
+        const user = wireTurn(llm.state.calls[2], "user");
+        assert.match(
+          String(user.content),
+          /forwarded body/,
+          "the v14 snapshot cache-shadow: fetchReference resolves the snapshot under the referenced id — the walk fed it to the model",
+        );
+        assert.doesNotMatch(
+          String(user.content),
+          /crash|TypeError/,
+          "nothing malformed leaked into the prompt",
+        );
+        const rows = qaRows().slice(-3);
+        assert.deepEqual(
+          rows.map((r) => r.status),
+          ["shipped", "shipped", "shipped"],
+          "three shipped qa rows — the live bot answered every malformed class",
+        );
+      } finally {
+        await llm.close();
+        clearLlmEnv();
+      }
+    });
+
+    it("#175 LV mentions: real <@id> token resolves through the roster (outsider named from the token alone); plain-text @name stays prose", async () => {
+      const llm = await startLlmMock((n) => ({
+        content: `LV175-MENTION-${n} token parsed, prose untouched`,
+      }));
+      pointLlmAt(llm.baseUrl);
+      try {
+        // (e) real mention TOKEN (the gateway-shape id markup) pointing at
+        // E2EOutsider — a member with NO messages in this channel: the ONLY
+        // way their name enters the prompt is the token-driven roster scan.
+        await env.mock.inject(
+          `gork is <@${ids.outsider}> around today`,
+          ids.human,
+          ids.general,
+        );
+        await awaitAnswer("LV175-MENTION-1");
+        const system1 = wireTurn(llm.state.calls[0], "system");
+        const user1 = wireTurn(llm.state.calls[0], "user");
+        assert.ok(
+          String(user1.content).includes("around today"),
+          "the question survives the trigger intact",
+        );
+        assert.match(
+          String(system1.content) + String(user1.content),
+          /E2EOutsider/,
+          "the <@id> token drove a roster entry for the mentioned user (nothing else could name them)",
+        );
+        // (f) plain-text @name — literal prose, no roster entry, no crash
+        await env.mock.inject(
+          "gork why is @alice quiet today",
+          ids.human,
+          ids.general,
+        );
+        await awaitAnswer("LV175-MENTION-2");
+        const system2 = wireTurn(llm.state.calls[1], "system");
+        const user2 = wireTurn(llm.state.calls[1], "user");
+        assert.ok(
+          String(user2.content).includes("why is @alice quiet today"),
+          "the prose rides byte-identical (nothing strips plain @tokens)",
+        );
+        assert.doesNotMatch(
+          String(system2.content),
+          /@alice/,
+          "no phantom roster line can come from prose",
+        );
+      } finally {
+        await llm.close();
+        clearLlmEnv();
       }
     });
 

@@ -236,15 +236,24 @@ class MockEnv {
    * @param {string} content
    * @param {string} authorId
    * @param {string} [channelId]
-   * @param {{atMs?: number, embeds?: object[], attachments?: object[]}} [opts]
+   * @param {{atMs?: number, embeds?: object[], attachments?: object[], messageReference?: {message_id: string, type?: number}, snapshots?: unknown}} [opts]
    *   `embeds` injects rich embeds on the message (#365/#460: the relay flip
    *   asserts the COPIED message carries them — content-only assertions let
    *   an embed-stripping relay pass green). `attachments` injects attachment
    *   STUBS (#683: vision attribution needs a HUMAN message with images —
    *   entries `{filename, content_type?, size?, url?}`; the `url` override
    *   hydrates verbatim, e.g. an https CDN stub the test seam serves).
+   *   `messageReference` emits a full reply reference (#175: discord.js
+   *   hydration + fetchReference() against the mock's REST). `snapshots`
+   *   injects RAW message_snapshots VERBATIM (#175: malformed shapes prove
+   *   the client-side gateway payload guard on the live dispatch path).
    */
-  async inject(content, authorId, channelId = this.ids.general, { atMs, embeds, attachments } = {}) {
+  async inject(
+    content,
+    authorId,
+    channelId = this.ids.general,
+    { atMs, embeds, attachments, messageReference, snapshots } = {},
+  ) {
     return j(`${this.base}/_test/channels/${channelId}/messages`, {
       method: "POST",
       body: JSON.stringify({
@@ -252,6 +261,8 @@ class MockEnv {
         author: { id: authorId },
         ...(Array.isArray(embeds) && embeds.length > 0 && { embeds }),
         ...(Array.isArray(attachments) && attachments.length > 0 && { attachments }),
+        ...(messageReference?.message_id && { message_reference: messageReference }),
+        ...(snapshots !== undefined && { message_snapshots: snapshots }),
         ...(atMs != null && { created_timestamp: atMs }),
       }),
     });
