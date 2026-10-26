@@ -45,10 +45,10 @@ index fda0398..1ff7d3f 100644
      app.route(prefix, createStageInstanceRoutes(db))
      app.route(prefix, createCatalogRoutes(db))
 diff --git a/src/db.ts b/src/db.ts
-index b4549a7..fd978c8 100644
+index b4549a7..f2e758e 100644
 --- a/src/db.ts
 +++ b/src/db.ts
-@@ -43,6 +43,34 @@ const CHANNELS_FEATURE_COLUMNS: Record<string, string> = {
+@@ -43,6 +43,43 @@ const CHANNELS_FEATURE_COLUMNS: Record<string, string> = {
    typing_at: 'TEXT',
  }
  
@@ -60,12 +60,21 @@ index b4549a7..fd978c8 100644
 +  message_id: 'TEXT',
 +  response_json: 'TEXT',
 +}
++/**
++ * Per-attachment URL override (boiler-snake spike, #683): rows injected via
++ * POST /_test/channels/:id/messages carry an explicit CDN-shaped url instead
++ * of bytes on disk; real Discord attachment urls are always https.
++ */
++const ATTACHMENTS_E2E_COLUMNS: Record<string, string> = {
++  url: 'TEXT',
++}
 +
-+/** Adds the E2E-fidelity columns to messages/interactions when missing. */
++/** Adds the E2E-fidelity columns to messages/interactions/attachments when missing. */
 +function migrateE2eFidelityColumns(db: Database): void {
 +  for (const [table, cols] of [
 +    ['messages', MESSAGES_E2E_COLUMNS],
 +    ['interactions', INTERACTIONS_E2E_COLUMNS],
++    ['attachments', ATTACHMENTS_E2E_COLUMNS],
 +  ] as const) {
 +    const existing = new Set(
 +      (db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[]).map(
@@ -83,7 +92,7 @@ index b4549a7..fd978c8 100644
  /**
   * Adds channel feature columns (currently just voice_status) to an
   * existing `channels` table when missing. Kept separate from
-@@ -802,6 +830,7 @@ export function initializeDatabase(dbPath: string): Database {
+@@ -802,6 +839,7 @@ export function initializeDatabase(dbPath: string): Database {
  
    migrateChannelsThreadColumns(db)
    migrateChannelsFeatureColumns(db)
@@ -92,7 +101,7 @@ index b4549a7..fd978c8 100644
    return db
  }
 diff --git a/src/e2e-control-api.test.ts b/src/e2e-control-api.test.ts
-index b122764..0ac6244 100644
+index b122764..c7c93f8 100644
 --- a/src/e2e-control-api.test.ts
 +++ b/src/e2e-control-api.test.ts
 @@ -1,6 +1,7 @@
@@ -103,7 +112,7 @@ index b122764..0ac6244 100644
  import { createRealServer } from './test-helpers'
  
  const token = 'Bot control-api-token'
-@@ -294,4 +295,76 @@ describe('Fauxcord control APIs over a real server', () => {
+@@ -294,4 +295,172 @@ describe('Fauxcord control APIs over a real server', () => {
        d: { data: { name: 'ping' } },
      })
    })
@@ -178,6 +187,102 @@ index b122764..0ac6244 100644
 +    expect(page.status).toBe(200)
 +    const rows = (await page.json()) as { id: string }[]
 +    expect(rows.map((row) => row.id)).toContain(oldMsg.id)
++  })
++
++  it('injects attachment stubs on human messages (boiler-snake patch #683)', async () => {
++    const server = await createRealServer()
++    close = server.close
++
++    const setup = await fetch(`${server.baseUrl}/_test/setup`, {
++      method: 'POST',
++      headers: { 'Content-Type': 'application/json' },
++      body: JSON.stringify({
++        token,
++        user: { id: applicationId, username: 'ControlBot' },
++        guilds: [
++          {
++            id: guildId,
++            name: 'Control Guild',
++            channels: [{ id: channelId, name: 'control', type: 0 }],
++          },
++        ],
++      }),
++    })
++    expect(setup.status).toBe(201)
++
++    const userResponse = await fetch(`${server.baseUrl}/_test/users`, {
++      method: 'POST',
++      headers: { 'Content-Type': 'application/json' },
++      body: JSON.stringify({ username: 'UploaderUser' }),
++    })
++    const user = (await userResponse.json()) as { id: string }
++
++    // Image-only message (EMPTY content is legal once attachments ride) with
++    // an https url override — the shape gork's vision pipeline requires.
++    const injected = await fetch(
++      `${server.baseUrl}/_test/channels/${channelId}/messages`,
++      {
++        method: 'POST',
++        headers: { 'Content-Type': 'application/json' },
++        body: JSON.stringify({
++          author: { id: user.id },
++          attachments: [
++            {
++              filename: 'shot.png',
++              content_type: 'image/png',
++              size: 1234,
++              url: 'https://cdn.test/shot.png',
++            },
++          ],
++        }),
++      }
++    )
++    expect(injected.status).toBe(201)
++    const msg = (await injected.json()) as {
++      id: string
++      content: string
++      attachments: {
++        id: string
++        filename: string
++        size: number
++        content_type: string
++        url: string
++        proxy_url: string
++      }[]
++    }
++    expect(msg.content).toBe('')
++    expect(msg.attachments).toHaveLength(1)
++    const att = msg.attachments[0]
++    expect(att.filename).toBe('shot.png')
++    expect(att.size).toBe(1234)
++    expect(att.content_type).toBe('image/png')
++    expect(att.url).toBe('https://cdn.test/shot.png')
++    expect(att.proxy_url).toBe('https://cdn.test/shot.png')
++
++    // The stub row also rides the REST read path (what discord.js' context
++    // builder fetches), not just the inject response.
++    const read = await fetch(
++      `${server.baseUrl}/channels/${channelId}/messages/${msg.id}`,
++      { headers: { Authorization: token } }
++    )
++    expect(read.status).toBe(200)
++    const readMsg = (await read.json()) as {
++      attachments: { url: string }[]
++    }
++    expect(readMsg.attachments.map((a) => a.url)).toContain(
++      'https://cdn.test/shot.png'
++    )
++
++    // No content AND no attachments stays a 400.
++    const empty = await fetch(
++      `${server.baseUrl}/_test/channels/${channelId}/messages`,
++      {
++        method: 'POST',
++        headers: { 'Content-Type': 'application/json' },
++        body: JSON.stringify({ author: { id: user.id } }),
++      }
++    )
++    expect(empty.status).toBe(400)
 +  })
  })
 diff --git a/src/gateway/opcodes.ts b/src/gateway/opcodes.ts
@@ -402,7 +507,7 @@ index 99f69e6..c45426f 100644
  
        if (!result.ok) {
 diff --git a/src/routes/test.ts b/src/routes/test.ts
-index 543d9ef..b2aaae0 100644
+index 543d9ef..e7989df 100644
 --- a/src/routes/test.ts
 +++ b/src/routes/test.ts
 @@ -16,6 +16,7 @@ import {
@@ -413,16 +518,32 @@ index 543d9ef..b2aaae0 100644
  import { getChannelWebhooks } from '../services/webhooks'
  import { injectPollVote } from '../services/polls'
  
-@@ -127,6 +128,8 @@ export function createTestRoutes(db: Database, baseUrl: string): Hono {
+@@ -127,16 +128,42 @@ export function createTestRoutes(db: Database, baseUrl: string): Hono {
      const payload = await c.req.json<{
        content?: string
        author?: { id?: string }
 +      created_timestamp?: number
 +      embeds?: unknown[]
++      attachments?: Array<{
++        filename?: string
++        content_type?: string
++        size?: number
++        url?: string
++      }>
      }>()
  
-     if (!payload.content || !payload.author?.id) {
-@@ -136,7 +139,17 @@ export function createTestRoutes(db: Database, baseUrl: string): Hono {
+-    if (!payload.content || !payload.author?.id) {
++    // SPIKE PATCH (boiler-snake e2e, #683): attachment stubs let an injected
++    // HUMAN message carry attachments (vision-attribution flows); an
++    // image-only message legitimately has empty content.
++    const attachments = (payload.attachments ?? []).filter(
++      (a): a is { filename: string; content_type?: string; size?: number; url?: string } =>
++        typeof a?.filename === 'string' && a.filename.trim() !== ''
++    )
++    if ((!payload.content && attachments.length === 0) || !payload.author?.id) {
+       return c.json({ message: '400: Bad Request', code: 0 }, 400)
+     }
+ 
      const result = injectTestMessage(
        db,
        channelId,
@@ -433,6 +554,7 @@ index 543d9ef..b2aaae0 100644
 +        ...(Array.isArray(payload.embeds) && payload.embeds.length > 0
 +          ? { embeds: payload.embeds }
 +          : {}),
++        ...(attachments.length > 0 && { attachments }),
 +        ...(typeof payload.created_timestamp === 'number' &&
 +        Number.isFinite(payload.created_timestamp)
 +          ? { created_timestamp: payload.created_timestamp }
@@ -441,7 +563,7 @@ index 543d9ef..b2aaae0 100644
        baseUrl
      )
  
-@@ -149,12 +162,74 @@ export function createTestRoutes(db: Database, baseUrl: string): Hono {
+@@ -149,12 +176,74 @@ export function createTestRoutes(db: Database, baseUrl: string): Hono {
    // command, without a real Discord client.
    app.post('/_test/interactions', async (c) => {
      const body = await c.req.json<TestInteractionRequest>()
@@ -1558,9 +1680,18 @@ index 9f13b9c..35d6aec 100644
      db.prepare('UPDATE interactions SET responded = 1 WHERE id = ?').run(row.id)
    }
 diff --git a/src/services/messages.ts b/src/services/messages.ts
-index ba966e1..7110695 100644
+index ba966e1..825d0ee 100644
 --- a/src/services/messages.ts
 +++ b/src/services/messages.ts
+@@ -6,7 +6,7 @@
+  */
+ 
+ import type { Database } from '../db'
+-import { snowflakeToTimestamp } from '../snowflake'
++import { generateSnowflake, snowflakeToTimestamp } from '../snowflake'
+ import { toDiscordTimestamp } from '../timestamp'
+ import { gatewayBus } from '../gateway/bus'
+ import { getGuildMember } from './guild-members'
 @@ -63,6 +63,8 @@ export interface MessageRow {
    referenced_message_id: string | null
    created_at: string
@@ -1570,7 +1701,19 @@ index ba966e1..7110695 100644
  }
  
  /** User record type retrieved from the DB */
-@@ -155,8 +157,8 @@ export interface MessageObject {
+@@ -90,6 +92,11 @@ interface AttachmentRow {
+   size: number
+   content_type: string
+   file_path: string
++  /**
++   * SPIKE PATCH (boiler-snake e2e, #683): explicit URL override for stub
++   * rows (no bytes on disk). Null = derive the `/mock/attachments` URL.
++   */
++  url: string | null
+ }
+ 
+ /** Reaction aggregation record type retrieved from the DB */
+@@ -155,8 +162,8 @@ export interface MessageObject {
    mention_roles: never[]
    attachments: AttachmentObject[]
    embeds: unknown[]
@@ -1581,7 +1724,34 @@ index ba966e1..7110695 100644
    /** Reaction list (the field itself is omitted when there are no reactions) */
    reactions?: ReactionObject[]
    pinned: boolean
-@@ -246,7 +248,9 @@ export function toMessageObject(
+@@ -235,18 +242,28 @@ export function toMessageObject(
+     mention_everyone: row.mention_everyone === 1,
+     mentions: [],
+     mention_roles: [],
+-    attachments: attachments.map((a) => ({
+-      id: a.id,
+-      filename: a.filename,
+-      size: a.size,
+-      url: `${baseUrl}/_mock/attachments/${row.channel_id}/${row.id}/${encodeURIComponent(a.filename)}`,
+-      proxy_url: `${baseUrl}/_mock/attachments/${row.channel_id}/${row.id}/${encodeURIComponent(a.filename)}`,
+-      content_type: a.content_type,
+-    })),
++    attachments: attachments.map((a) => {
++      // SPIKE PATCH (boiler-snake e2e, #683): stub rows carry an explicit
++      // url override (CDN-shaped, https); real multipart rows keep null and
++      // derive the mock-served URL as before.
++      const servedUrl =
++        a.url ??
++        `${baseUrl}/_mock/attachments/${row.channel_id}/${row.id}/${encodeURIComponent(a.filename)}`
++      return {
++        id: a.id,
++        filename: a.filename,
++        size: a.size,
++        url: servedUrl,
++        proxy_url: servedUrl,
++        content_type: a.content_type,
++      }
++    }),
      embeds: embeds
        .toSorted((a, b) => a.position - b.position)
        .map((e) => JSON.parse(e.data) as unknown),
@@ -1592,15 +1762,29 @@ index ba966e1..7110695 100644
      pinned: row.pinned === 1,
      type: row.type,
      flags: row.flags,
-@@ -414,6 +418,7 @@ export interface MessageCreateParams {
+@@ -414,6 +431,21 @@ export interface MessageCreateParams {
    embeds?: unknown[]
    messageReference?: { message_id?: string }
    flags?: number
 +  components?: unknown[]
++  /**
++   * SPIKE PATCH (boiler-snake e2e, #683): attachment rows persisted with the
++   * message BEFORE hydration/dispatch, so the attachments array rides BOTH
++   * the gateway MESSAGE_CREATE and every REST read. Stub rows carry an
++   * explicit `url` (no bytes on disk — real Discord attachment urls are
++   * always https, and consumers may serve the bytes elsewhere).
++   */
++  attachments?: Array<{
++    id?: string
++    filename: string
++    content_type?: string
++    size?: number
++    url?: string
++  }>
  }
  
  /**
-@@ -464,8 +469,8 @@ export function createMessage(
+@@ -464,8 +496,8 @@ export function createMessage(
    baseUrl: string
  ): MessageObject {
    db.prepare(
@@ -1611,7 +1795,7 @@ index ba966e1..7110695 100644
    ).run(
      params.messageId,
      params.channelId,
-@@ -474,7 +479,8 @@ export function createMessage(
+@@ -474,9 +506,31 @@ export function createMessage(
      params.content ?? '',
      params.tts ? 1 : 0,
      params.flags ?? 0,
@@ -1620,8 +1804,31 @@ index ba966e1..7110695 100644
 +    params.components ? JSON.stringify(params.components) : null
    )
  
++  // SPIKE PATCH (boiler-snake e2e, #683): persist attachment stub rows
++  // BEFORE hydration so the dispatched + REST-hydrated payloads both carry
++  // them. Stub rows have no bytes on disk — GET /_mock/attachments answers
++  // 404 for them by design; readers use the explicit url instead.
++  if (params.attachments) {
++    for (const att of params.attachments) {
++      db.prepare(
++        `INSERT INTO attachments (id, message_id, filename, size, content_type, file_path, url)
++         VALUES (?, ?, ?, ?, ?, ?, ?)`
++      ).run(
++        att.id ?? generateSnowflake(),
++        params.messageId,
++        att.filename,
++        Number.isFinite(Number(att.size)) ? Number(att.size) : 0,
++        att.content_type ?? 'application/octet-stream',
++        att.url ?? 'e2e-stub',
++        att.url ?? null
++      )
++    }
++  }
++
    // Save embeds
-@@ -517,7 +523,7 @@ export function createMessage(
+   if (params.embeds) {
+     for (let i = 0; i < params.embeds.length; i++) {
+@@ -517,7 +571,7 @@ export function createMessage(
  export function updateMessage(
    db: Database,
    messageId: string,
@@ -1630,7 +1837,7 @@ index ba966e1..7110695 100644
    baseUrl: string
  ): MessageObject | null {
    const row = db
-@@ -531,6 +537,16 @@ export function updateMessage(
+@@ -531,6 +585,16 @@ export function updateMessage(
      ).run(payload.content, messageId)
    }
  
@@ -1648,7 +1855,7 @@ index ba966e1..7110695 100644
    if (payload.embeds !== undefined) {
      db.prepare('DELETE FROM embeds WHERE message_id = ?').run(messageId)
 diff --git a/src/services/test-control.ts b/src/services/test-control.ts
-index 000b187..a15631f 100644
+index 000b187..57f4865 100644
 --- a/src/services/test-control.ts
 +++ b/src/services/test-control.ts
 @@ -10,7 +10,9 @@ import { generateSnowflake } from '../snowflake'
@@ -1661,9 +1868,13 @@ index 000b187..a15631f 100644
  import {
    createMessage,
    getGuildIdForChannel,
-@@ -350,6 +352,21 @@ export function createTestUser(
+@@ -348,8 +350,40 @@ export function createTestUser(
+ 
+ /** Request payload for injecting a message authored by a pre-registered user */
  export interface InjectTestMessageRequest {
-   content: string
+-  content: string
++  /** Required UNLESS `attachments` carries at least one stub (image-only messages). */
++  content?: string
    author: { id: string }
 +  /**
 +   * Optional rich embeds persisted on the injected message (boiler-snake
@@ -1680,21 +1891,41 @@ index 000b187..a15631f 100644
 +   * Omit = now.
 +   */
 +  created_timestamp?: number
++  /**
++   * Optional attachment STUBS persisted on the injected message
++   * (boiler-snake e2e #683: gork's vision pipeline attributes image parts to
++   * their uploaders — the flow only exists if a HUMAN-authored message can
++   * carry attachments, which no bot/webhook multipart route provides).
++   * Rows hydrate into the standard attachments array; `url` overrides the
++   * derived `/mock/attachments` URL (real Discord urls are https; the
++   * referenced bytes need not live on the mock's disk — callers that want
++   * served bytes should use the multipart REST routes instead).
++   */
++  attachments?: Array<{
++    filename: string
++    content_type?: string
++    size?: number
++    url?: string
++  }>
  }
  
  /**
-@@ -397,8 +414,9 @@ export function injectTestMessage(
+@@ -397,8 +431,12 @@ export function injectTestMessage(
        // Neither a real bot token nor the webhook sentinel value, so this
        // message resolves to a plain, non-bot, non-webhook author.
        authorToken: '',
 -      messageId: generateSnowflake(),
+-      content: request.content,
 +      messageId: generateSnowflake(request.created_timestamp),
-       content: request.content,
++      content: request.content ?? '',
 +      ...(request.embeds ? { embeds: request.embeds } : {}),
++      ...(request.attachments?.length
++        ? { attachments: request.attachments }
++        : {}),
      },
      baseUrl
    )
-@@ -408,11 +426,29 @@ export function injectTestMessage(
+@@ -408,11 +446,29 @@ export function injectTestMessage(
  export interface TestInteractionRequest {
    application_id: string
    type?: number
@@ -1725,7 +1956,7 @@ index 000b187..a15631f 100644
  }
  
  /** Result of a test-interaction creation attempt */
-@@ -425,19 +461,210 @@ interface CommandIdRow {
+@@ -425,19 +481,210 @@ interface CommandIdRow {
    id: string
  }
  
@@ -1937,7 +2168,7 @@ index 000b187..a15631f 100644
    const guildCommand = request.guild_id
      ? (db
          .prepare(
-@@ -459,12 +686,10 @@ export function createTestInteraction(
+@@ -459,12 +706,10 @@ export function createTestInteraction(
    const command = guildCommand ?? globalCommand
    if (!command) return { ok: false, reason: 'unknown_command' }
  
@@ -1954,7 +2185,7 @@ index 000b187..a15631f 100644
  
    const interaction = createInteraction(db, {
      interactionId,
-@@ -474,8 +699,9 @@ export function createTestInteraction(
+@@ -474,8 +719,9 @@ export function createTestInteraction(
      guildId: request.guild_id,
      channelId: request.channel_id,
      commandId: command.id,
