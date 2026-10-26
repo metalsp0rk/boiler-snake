@@ -1,4 +1,5 @@
 "use strict";
+const http = require("node:http");
 const { describe, it, before, after } = require("node:test");
 const assert = require("node:assert/strict");
 const { PermissionFlagsBits } = require("discord.js");
@@ -18,13 +19,17 @@ const { poll, namespaceIds } = require("./helpers/mockenv");
  * surface is the MESSAGE keyword trigger. Matrix row 1 ("no key → specific
  * actionable reply") is therefore TWO truths: the keyless keyword trigger is
  * FULLY SILENT by design (silence IS the product decision — pinned), and
- * `/gork status` says `**not configured**`. Model calls stay out of scope
- * (todos name the fixtures); everything else is real: gates, the full
+ * `/gork status` says `**not configured**`. Model calls were out of scope
+ * (todos name the fixtures) until the scripted-mock #705 block below;
+ * everything else is real: gates, the full
  * config-subcommand matrix with exact copies + the 10-action admin_audit
  * roster + guild_settings persistence, bans/memory/budget DB round-trips,
  * the summarize refusal ladder, and a FAKE-KEY network degradation via the
  * base-URL seam (AI_API_KEY="ns22-fake" + http://127.0.0.1:9 discard port —
  * clearly-fake placeholder per the no-secrets rule; ECONNREFUSED is local).
+ * Since #705 the live-verification block at the END drives the REAL tool loop
+ * against a SCRIPTED loopback mock LLM (same base-URL seam, fake key
+ * "lv705-fake") — rounds, derived deadline, env override, clamp disclosure.
  *
  * Tier-2 parity cites: test/integration/gork.test.js (keyless silence :673,
  * ban flow :1370, queue/gates), gork-budget.test.js, gork-summarize.test.js,
@@ -34,7 +39,7 @@ const { poll, namespaceIds } = require("./helpers/mockenv");
  * env seams driving degradation through the real gateway pipeline.
  */
 describe(
-  "e2e: gork — config subcommand matrix, audit roster, bans/memory/budget round-trips, keyless silence + fake-key network degradation",
+  "e2e: gork — config subcommand matrix, audit roster, bans/memory/budget round-trips, keyless silence + fake-key network degradation, #705 tool-round live-verification",
   { concurrency: 1 },
   () => {
     /** @type {Awaited<ReturnType<typeof createE2eEnv>>} */
@@ -54,6 +59,10 @@ describe(
       "SEARXNG_URL",
       "GORK_LLM_MAX_TOKENS",
       "GORK_LLM_TIMEOUT_MS",
+      // #705 derivation inputs: scrubbed too so the params pins stay
+      // deterministic regardless of the operator's shell.
+      "GORK_LLM_TIMEOUT_PER_ROUND_MS",
+      "GORK_LLM_TIMEOUT_CAP_MS",
       "GORK_LLM_MAX_TOOL_ROUNDS",
       "GORK_LLM_THINKING_TOKEN_BUDGET",
       "GORK_MAX_ANSWER_CHARS",
@@ -132,6 +141,131 @@ describe(
     const botMsgs = async (channelId) =>
       ((await env.mock.messages(channelId)) ?? []).filter(
         (m) => String(m?.author?.id ?? "") === String(ids.app),
+      );
+
+    // ---- #705 live-verification helpers -------------------------------------
+    //
+    // Dated live-verification record for issue #705 (record in
+    // roadmap/gork.md §7.24). The scripted mock LLM below is loopback-only
+    // with a clearly-fake key ("lv705-fake", no-secrets rule): the point is
+    // the REAL router → gates → queue → chatWithTools loop running rounds
+    // with the guild-resolved budget, NOT model quality.
+
+    /**
+     * Scripted OpenAI-compatible `POST /v1/chat/completions` server on
+     * 127.0.0.1. `script(callIndex, payload)` returns one outcome per
+     * request: `{ content?, toolCalls?: [{name, args}], sleepMs? }`.
+     * `sleepMs` delays the response so the loop's whole-loop DEADLINE fires
+     * against a REACHABLE model (mid-loop abort ≠ ECONNREFUSED degradation).
+     */
+    async function startLlmMock(script) {
+      const state = { calls: [] };
+      const pending = new Set();
+      const server = http.createServer((req, res) => {
+        req.on("error", () => {}); // deadline-aborted sockets stay quiet
+        res.on("error", () => {});
+        const chunks = [];
+        req.on("data", (c) => chunks.push(c));
+        req.on("end", () => {
+          if (!String(req.url).endsWith("/chat/completions")) {
+            res.writeHead(404, { "content-type": "application/json" });
+            res.end("{}");
+            return;
+          }
+          let payload = {};
+          try {
+            payload = JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}");
+          } catch {
+            /* raw wire body is irrelevant to the script */
+          }
+          state.calls.push(payload);
+          const outcome = script(state.calls.length, payload) || {};
+          const toolCalls = outcome.toolCalls || [];
+          const body = JSON.stringify({
+            id: `mock-${state.calls.length}`,
+            object: "chat.completion",
+            created: Math.floor(Date.now() / 1000),
+            choices: [
+              {
+                index: 0,
+                message: {
+                  role: "assistant",
+                  content: outcome.content ?? (toolCalls.length ? null : ""),
+                  ...(toolCalls.length
+                    ? {
+                        tool_calls: toolCalls.map((tc, i) => ({
+                          id: `call_${state.calls.length}_${i}`,
+                          type: "function",
+                          function: {
+                            name: tc.name,
+                            arguments: JSON.stringify(tc.args || {}),
+                          },
+                        })),
+                      }
+                    : {}),
+                },
+                finish_reason: toolCalls.length ? "tool_calls" : "stop",
+              },
+            ],
+            usage: { prompt_tokens: 20, completion_tokens: 8, total_tokens: 28 },
+          });
+          const timer = setTimeout(() => {
+            pending.delete(timer);
+            try {
+              res.writeHead(200, { "content-type": "application/json" });
+              res.end(body);
+            } catch {
+              /* the loop's deadline aborted the client first — nothing to write */
+            }
+          }, outcome.sleepMs ?? 0);
+          pending.add(timer);
+        });
+      });
+      await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+      return {
+        state,
+        baseUrl: `http://127.0.0.1:${server.address().port}/v1`,
+        async close() {
+          for (const t of pending) clearTimeout(t);
+          pending.clear();
+          server.closeAllConnections?.();
+          await new Promise((resolve) => server.close(resolve));
+        },
+      };
+    }
+
+    /** Point the call-time AI seam at a loopback mock (fake key only). */
+    const pointLlmAt = (baseUrl) => {
+      process.env.AI_API_KEY = "lv705-fake";
+      process.env.AI_BASE_URL = baseUrl;
+    };
+    const clearLlmEnv = () => {
+      delete process.env.AI_API_KEY;
+      delete process.env.AI_BASE_URL;
+      delete process.env.GORK_LLM_TIMEOUT_MS;
+    };
+
+    const qaRows = () =>
+      env.dbmod.db
+        .prepare(
+          "SELECT * FROM gork_interactions WHERE community_id = ? AND kind = 'qa' ORDER BY id",
+        )
+        .all(env.communityId);
+    const lastQa = () => qaRows().at(-1) ?? null;
+    const qaParams = (row) => JSON.parse(row.params);
+
+    const LUNCH = "*gork's brain went to lunch* — try again in a bit.";
+    const lunchCount = async () =>
+      (await botMsgs(ids.general)).filter((m) => String(m.content) === LUNCH)
+        .length;
+
+    const awaitAnswer = (marker, timeoutMs = 20000) =>
+      poll(
+        async () =>
+          (await botMsgs(ids.general)).some((m) =>
+            String(m.content).includes(marker),
+          ),
+        { timeoutMs, label: `gork answer containing "${marker}"` },
       );
 
     // ---- gates / picker / fall-through ---------------------------------------
@@ -700,11 +834,227 @@ describe(
       );
     });
 
+    // ---- #705 live-verification block (recorded 2026-10-26) ------------------
+    //
+    // Issue #705 checklist driven end-to-end (roadmap/gork.md §7.24 carries
+    // the dated record): never-set guild surfaces, a real >3-round tool
+    // chain, the `/gork toolrounds` wire round-trip, the explicit-timeout
+    // escape hatch killing a reachable model mid-loop, and the poisoned-row
+    // clamp. State order matters: these run AFTER the config matrix and the
+    // fake-key degradation, in declaration order (concurrency 1).
+
+    it("#705 LV setup: memory off + cooldown 0 + unlimited budget (deterministic job counts for the loop scenarios)", async () => {
+      assert.match(
+        await gork([sub("memory", [strOpt("action", "off")])]),
+        /^Gork memory is now \*\*off\*\*/,
+        "memory OFF: no detached extraction call can pollute the round counts",
+      );
+      assert.equal(
+        await gork([sub("cooldown", [intOpt("cooldown", 0)])]),
+        "Gork cooldown is now **disabled** (0s). Staff always bypass.",
+      );
+      await gork([sub("budget", [strOpt("action", "default"), intOpt("limit", 0)])]);
+      await gork([sub("keyword", [strOpt("keyword", "gork")])]);
+      assert.equal(
+        settings().gork_max_tool_rounds ?? null,
+        null,
+        "migration 065 shipped NULLABLE: this namespace never ran /gork toolrounds yet",
+      );
+    });
+
+    it("#705 LV never-set guild: /gork status `Tool rounds 50 (global)`, /settings Gork line `Rounds **50**`", async () => {
+      assert.equal((await statusFields())["Tool rounds"], "50 (global)");
+      const inter = await env.mock.slash({ command: "settings", userId: env.ids.human });
+      const fields = Object.fromEntries(
+        (((await replyOf(inter)).embeds?.[0] ?? {}).fields ?? []).map((f) => [
+          f.name,
+          f.value,
+        ]),
+      );
+      assert.match(
+        fields.Gork,
+        /Rounds \*\*50\*\*/,
+        `/settings Gork line carries the effective rounds: ${fields.Gork}`,
+      );
+    });
+
+    it("#705 LV multi-tool chain survives PAST the historical 3-round cap (never-set guild → budget 50, derived deadline 2090000ms = 34.8 min)", async () => {
+      const anchor = await env.mock.inject(
+        "anchor message content for the reader",
+        ids.human,
+        ids.general,
+      );
+      const link = `https://discord.com/channels/${ids.guild}/${ids.general}/${anchor?.id ?? ""}`;
+      const llm = await startLlmMock((n) =>
+        n <= 4
+          ? { toolCalls: [{ name: "read_discord", args: { link } }] }
+          : {
+              content:
+                "LV705-MULTI-ROUND four real reads landed and the final answer still shipped",
+            },
+      );
+      pointLlmAt(llm.baseUrl);
+      try {
+        const before = qaRows().length;
+        await env.mock.inject(
+          "gork read the linked message and what was said around it",
+          ids.human,
+          ids.general,
+        );
+        await awaitAnswer("LV705-MULTI-ROUND");
+        assert.equal(
+          llm.state.calls.length,
+          5,
+          "4 read_discord rounds + final answer — the pre-#705 global cap of 3 kills this job at round 4",
+        );
+        await poll(() => qaRows().length > before, { label: "qa interaction-log row" });
+        const row = lastQa();
+        assert.equal(row.status, "shipped", "full budget → shipped, not the capped-partial arm");
+        assert.equal(row.tool_call_count, 4);
+        const params = qaParams(row);
+        assert.equal(params.maxToolRounds, 50, "effective budget on the never-set guild = 50");
+        assert.equal(
+          params.timeoutMs,
+          90_000 + 40_000 * 50,
+          "derived deadline min(90s + 40s×50, 45min) — the job ran under a 34.8-min budget",
+        );
+        const events = (JSON.parse(row.transcript ?? "{}").events ?? []).filter(
+          (e) => e.type === "tool",
+        );
+        assert.deepEqual(
+          events.map((e) => e.name),
+          ["read_discord", "read_discord", "read_discord", "read_discord"],
+        );
+        // The wire truth (the model's own view, unlike the interaction-log
+        // capture which truncates long tool outputs): the final request
+        // carries the four fed-back tool results — REAL reads of the mock
+        // channel (window anchored on the injected message, anchor marked).
+        const toolMsgs = (llm.state.calls[4]?.messages ?? []).filter(
+          (m) => m.role === "tool",
+        );
+        assert.equal(toolMsgs.length, 4, "all four reads fed back to the model");
+        assert.ok(
+          toolMsgs.every(
+            (m) =>
+              String(m.content).includes("anchor message content for the reader") &&
+              String(m.content).includes("[LINKED MESSAGE]"),
+          ),
+          `real read_discord window content (first line: ${String(toolMsgs[0]?.content).split("\n")[0]})`,
+        );
+      } finally {
+        await llm.close();
+        clearLlmEnv();
+      }
+    });
+
+    it("#705 LV /gork toolrounds 20 names the authorized deadline (~14.8 min) and round-trips status/DB/audit; 4/301 refused", async () => {
+      assert.equal(
+        await gork([sub("toolrounds", [intOpt("rounds", 20)])]),
+        "Gork max tool rounds set to **20** — answers may run up to ~14.8 min.",
+      );
+      assert.equal(Number(settings().gork_max_tool_rounds), 20);
+      const audit = auditRow("gork.tool_rounds_set");
+      assert.equal(audit.origin, "slash");
+      assert.deepEqual(JSON.parse(audit.details_json), { max_tool_rounds: 20 });
+      assert.equal(
+        (await statusFields())["Tool rounds"],
+        "20",
+        "guild-set value renders WITHOUT the (global) tag",
+      );
+
+      for (const bad of [4, 301]) {
+        assert.equal(
+          await gork([sub("toolrounds", [intOpt("rounds", bad)])]),
+          "The tool-round budget must be 5-300 rounds.",
+        );
+      }
+      assert.equal(Number(settings().gork_max_tool_rounds), 20, "refusals wrote nothing");
+    });
+
+    it("#705 LV explicit GORK_LLM_TIMEOUT_MS=1500 forces the hard deadline: a REACHABLE model is killed mid-loop → canned reply, logged reason", async () => {
+      const llm = await startLlmMock((n) =>
+        n === 1
+          ? { sleepMs: 300, toolCalls: [{ name: "peek", args: {} }] }
+          : { sleepMs: 8000, content: "never delivered — the deadline owns the loop" },
+      );
+      pointLlmAt(llm.baseUrl);
+      process.env.GORK_LLM_TIMEOUT_MS = "1500";
+      try {
+        const before = qaRows().length;
+        const lunchBefore = await lunchCount();
+        await env.mock.inject("gork take your time answering", ids.human, ids.general);
+        await poll(async () => (await lunchCount()) > lunchBefore, {
+          timeoutMs: 15000,
+          label: "canned failure reply on the hard deadline",
+        });
+        assert.equal(
+          llm.state.calls.length,
+          2,
+          "round 1 (tool call) answered fast, round 2 was mid-flight when the 1500ms budget died",
+        );
+        await poll(() => qaRows().length > before, { label: "failure qa row" });
+        const row = lastQa();
+        assert.equal(row.status, "failure");
+        assert.match(String(row.error), /^timeout\b/, `logged cause: ${row.error}`);
+        const params = qaParams(row);
+        assert.equal(params.timeoutMs, 1500, "the override REPLACED the derivation (rounds 20 → 890000 unwritten)");
+        assert.equal(params.maxToolRounds, 20, "the override replaces the deadline ONLY — the guild rounds budget survives");
+      } finally {
+        await llm.close();
+        clearLlmEnv();
+      }
+    });
+
+    it("#705 LV poisoned column (100000): status discloses the 300 clamp and the job runs capped at 45 min — no runaway; NULL restores never-set", async () => {
+      env.dbmod.db
+        .prepare(
+          "UPDATE guild_settings SET gork_max_tool_rounds = 100000 WHERE community_id = ?",
+        )
+        .run(env.communityId);
+      const llm = await startLlmMock(() => ({
+        content: "LV705-CAPPED one fast answer under the clamped budget",
+      }));
+      pointLlmAt(llm.baseUrl);
+      try {
+        assert.equal(
+          (await statusFields())["Tool rounds"],
+          "300",
+          "read-side clamp-and-disclose: the poisoned value never reaches the model loop",
+        );
+        const before = qaRows().length;
+        await env.mock.inject("gork are we capped", ids.human, ids.general);
+        await awaitAnswer("LV705-CAPPED");
+        await poll(() => qaRows().length > before, { label: "qa row on the poisoned column" });
+        const row = lastQa();
+        assert.equal(row.status, "shipped");
+        const params = qaParams(row);
+        assert.equal(params.maxToolRounds, 300, "row 100000 → effective 300");
+        assert.equal(
+          params.timeoutMs,
+          45 * 60_000,
+          "min(90s + 40s×300, 45min) — the cap absorbs the poisoned budget",
+        );
+      } finally {
+        await llm.close();
+        clearLlmEnv();
+        env.dbmod.db
+          .prepare(
+            "UPDATE guild_settings SET gork_max_tool_rounds = NULL WHERE community_id = ?",
+          )
+          .run(env.communityId);
+      }
+      assert.equal(
+        (await statusFields())["Tool rounds"],
+        "50 (global)",
+        "NULL = never-set semantics restored",
+      );
+    });
+
     // ---- honest gaps --------------------------------------------------------------------
 
     it.todo("/gork summarize HAPPY rundown (real generation + embed render) needs a live AI key + fixtures — gate/read/booking math pinned offline by test/integration/gork-summarize.test.js");
 
-    it.todo("gork Q&A answer content + web_search/read_discord/read_page/vision happy paths need live model + SearXNG fixtures (golden replays pin the offline math: test/integration/gork-replay.test.js)");
+    it.todo("gork web_search/read_page/vision happy paths need live model + SearXNG fixtures (golden replays pin the offline math: test/integration/gork-replay.test.js); the read_discord tool chain + real answer shipping are now driven in-process by the scripted mock-LLM #705 block above");
 
     it.todo("memory EXTRACTION turn (post-answer durable-fact write) is a model call — replay fixtures cover it offline (test/integration/gork-memory-replay.test.js)");
 
