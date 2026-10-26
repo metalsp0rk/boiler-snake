@@ -1822,7 +1822,7 @@ describe("integration: gork (AI keyword Q&A)", () => {
     }
   });
 
-  it("#175(c): trigger replying to a forwarded/snapshot target degrades to backfill — the snapshot body NEVER rides the prompt", async () => {
+  it("#175(c): trigger replying to a forwarded/snapshot target with an UNRESOLVABLE link degrades to backfill (no crash, slot released)", async () => {
     const env = await freshEnv();
     const saved = saveEnv();
     const fetchMock = mockFetch([
@@ -1846,15 +1846,15 @@ describe("integration: gork (AI keyword Q&A)", () => {
       const { message, replies } = makeGorkMessage(env, {
         id: "t-forwarded-1",
         content: "gork: what was said here?",
-        // A forwarded/snapshot reference: the ORIGINAL lives in another
-        // channel (or is gone) — the walk's fetchReference rejects exactly
-        // like the deleted arm (discord.js rejects; no synchronous throw is
-        // possible out of the async method — pinned at unit tier).
+        // A forwarded/snapshot reference whose ORIGINAL is unreachable —
+        // the walk's fetchReference rejects (the tier-2 fake never
+        // constructs, so no v14 snapshot cache-shadow exists here; the
+        // LIVE shadow behavior is pinned by the e2e #175 block).
         reference: { messageId: "fwd-original", type: 0 },
         messageSnapshots: [
           {
             id: "fwd-original",
-            content: "FORWARDED BODY — content gap: never fed to the LLM today",
+            content: "FORWARDED BODY — unreachable-original arm: nothing to feed",
             author: { id: IDS.member2, username: "member2" },
           },
         ],
@@ -1876,7 +1876,7 @@ describe("integration: gork (AI keyword Q&A)", () => {
       );
       assert.ok(
         !userMsg.content.includes("FORWARDED BODY"),
-        "#175 content-gap pin: snapshot bodies are not assembled into the prompt (recorded, not a crash)",
+        "the fake surfaces no snapshot body on the broken-link arm (the real shadow path is pinned live in e2e)",
       );
 
       const { gorkQueue } = require("../../src/features/gork/trigger");

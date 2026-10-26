@@ -1,6 +1,6 @@
 # 7. Gork (AI Keyword Q&A)
 
-> **Tracking moved to GitHub Issues (2026-10-09).** Open work for this feature lives in [GitHub issues labeled `gork`](https://github.com/metalsp0rk/boiler-snake/issues/labels/gork), ordered by [milestones](https://github.com/metalsp0rk/boiler-snake/milestones). This file stays the **design record** — locked decisions, schemas, and history here remain authoritative. Do not add new tracking items here; open an issue instead (see [index.md](index.md)). Open triage/features: #174 (role-mention trigger), #175 (reply/mention crash triage — §7.15 Fix 3). Resolved: #176 (reply-to-gork silence — §7.23, decision 65, 2026-10).
+> **Tracking moved to GitHub Issues (2026-10-09).** Open work for this feature lives in [GitHub issues labeled `gork`](https://github.com/metalsp0rk/boiler-snake/issues/labels/gork), ordered by [milestones](https://github.com/metalsp0rk/boiler-snake/milestones). This file stays the **design record** — locked decisions, schemas, and history here remain authoritative. Do not add new tracking items here; open an issue instead (see [index.md](index.md)). Remaining live-verification arms: #227 (dev-guild vision), #742 (Fluxer vision). §7.15 Fix 3 (#175 reply/mention crash triage) CLOSED 2026-10-26 — see the §7.15 close record. Resolved: #174 (role-mention trigger), #176 (reply-to-gork silence — §7.23, decision 65, 2026-10).
 
 ### Purpose
 
@@ -438,28 +438,93 @@ the MESSAGE_CREATE payload (before any handler runs) or another pipeline step.
 
 **Likely suspects (reply / mention paths):**
 
-- [ ] `walkReplyChain()` in `src/features/gork/context.js` → `current.fetchReference()`
+- [x] `walkReplyChain()` in `src/features/gork/context.js` → `current.fetchReference()`
       on **non-reply reference types**: forwarded messages (message snapshots — needs
       discord.js ≥ 14.16; `package.json` pins `^14.16.0`, check the actually-installed
       version), crossposts, deleted targets (404), or targets in unreadable channels
       (403). Rejections are caught; a discord.js version-specific **synchronous** throw
       during reference/mention parsing would not be.
-- [ ] discord.js mention parsing on odd payloads (real `@user` mention with missing
+      **CLOSED 2026-10-26 — statically impossible + pinned:** the `fetchReference()`
+      CALL SITE sits inside the walk's `try` (context.js), and v14's
+      `Message#fetchReference` is an `async` method — every path (missing ref, unresolvable
+      channel, 404/403 REST) becomes a promise REJECTION the catch converts to a walk
+      `break`. A unit pin feeds a non-async, synchronously throwing fake: the walk still
+      degrades to backfill. (The real synchronous crash lived in the Message CONSTRUCTOR,
+      not the walk — see the close record.)
+- [x] discord.js mention parsing on odd payloads (real `@user` mention with missing
       member/unknown payload shape) — bump discord.js and retry; capture the payload.
+      **CLOSED 2026-10-26:** repo is on **14.27.0 = latest 14.x** (nothing newer exists;
+      14.26.5/14.27.0 changed nothing in reference/snapshot parsing). A bump cannot fix
+      the class; the malformed-payload crash surface inside `Message#_patch` exists in
+      the newest 14.x — closed in OUR choke point instead: `gatewayPayloadGuard` v2
+      (see the close record).
 - [x] Hang-read-as-crash (fixed 2026-09): `buildContext` now runs under a 20s
       `CONTEXT_DEADLINE_MS` (`withDeadline` in `trigger.js`) — a hung channel fetch
       degrades to empty context instead of holding the guild slot; the LLM phase was
       already 60s-bounded by `chatWithTools`' deadline. Triage also confirmed the
       installed discord.js is **14.26.4** (well past the ≥14.16 snapshot support).
-- [ ] Repro matrix (live instance, still open — no crash evidence captured yet):
+      *(2026-10-26 correction: the pin moved to `^14.27.0` since this line was written.)*
+- [x] Repro matrix (live instance, still open — no crash evidence captured yet):
       trigger replying to (a) a normal message, (b) a deleted message, (c) a
       forwarded/snapshot message, (d) a bot message; trigger containing (e) a real
       `@user` mention, (f) plain-text `@name`. Record the exact error for each.
+      **RECORDED 2026-10-26 — tier-4 harness (fauxcord + real bot + scripted mock LLM):**
+      see the dated live record below; no handler-side error exists on ANY cell.
 - [x] Integration regression fixtures landed for (b) deleted reference (answers via
       backfill, slot provably released) and (e) mention trigger (sanitized, no ping);
       (a)/(d) were already covered by the existing reply-chain fixture. If the report
       recurs, capture the `[gork]` / `[MessageCreate]` console lines + payload — the
       handler-side surface stays fully guarded per the static analysis above.
+
+**Close record — #175 (2026-10-26).** The reported crash is impossible in gork's own JS
+(triple-guarded: walk try → `withDeadline` catch → job catch), and the matrix produces
+no handler-side error anywhere. What IS real, and shipped in the same PR:
+
+1. **The crash class that matches the symptom** lives in discord.js' `Message#_patch`,
+   before ANY handler runs: `message_reference: null` (constructor reads `.channel_id`
+   off it on the KEY's presence), `message_snapshots` without a reference carrying a
+   `message_id` (`this.reference.channelId` deref + `.reduce` on the raw value), and a
+   non-array `mentions` (iterating a string feeds CHARACTERS into `User._patch` — the
+   2026-10-01 prod incident's sibling). A throw there reaches only the process net
+   (`uncaughtException` → drain + `exit(1)`): the bot "crashes on a reply/forward"
+   with no gork log lines. Gateway proxies/emulators/relays mangle exactly these
+   fields; real Discord pairs them correctly. The 2026-09 report most plausibly predates
+   the guard series (the string-mentions crash of 2026-10-01 produced this symptom and
+   crash-looped prod for real).
+2. **`gatewayPayloadGuard` v2** (the already-installed MessageCreate/MessageUpdate
+   choke point) now repairs all three classes before construction; 9 new regression
+   pairs pin each against the real installed discord.js (without-the-guard throws /
+   with-the-guard hydrates; well-formed snapshot payloads pass through untouched).
+3. **#176 follow-through found dead production code:** `trigger.js` read
+   `message.referencedMessage` — a property that exists in NO discord.js v14
+   (v13-era; v14 caches `referenced_message` into the CHANNEL cache). The
+   reply-to-gork gate line could never fire in production; it now reads the channel
+   cache (still cached-only, never a fetch) and is pinned firing in tier-2.
+   Related-but-separate: `bridge/relay.js` reads `messageReference`/`referencedMessage`
+   the same way — dead for DISCORD-sourced relay headers (the Fluxer duck legitimately
+   carries them) → tracked as a separate bridge issue, out of #175's gork scope.
+4. **Tier coverage of the matrix:** unit (sync-throw walk pin, guard pairs, mention
+   sanitizer); integration ((c) unreachable-forward degrade with slot-release, (f)
+   plain-text `@name` prose pin); tier-4 LIVE (`e2e-gork.test.js` #175 block, enabled
+   by new fauxcord inject hunks — full-shape `message_reference` + VERBATIM
+   snapshots): (a) real REST `fetchReference` walk pulling an anchor PAST the
+   backfill window, (b) real 404 dead-link degrade shipped, (c-malformed) non-array
+   + orphan snapshot payloads surviving the LIVE dispatch through the guard (three
+   shipped qa rows), (c-well-formed) snapshots + reference, (e) `<@id>` token naming
+   a zero-history member through the roster, (f) `@alice` prose untouched.
+5. **Live nuance recorded:** when a forward's snapshots hydrate alongside a
+   SAME-CHANNEL reference, the v14 constructor caches each snapshot under the
+   referenced id — `fetchReference()` resolves the snapshot shadow and the walk
+   feeds the FORWARDED BODY into the chain. Cross-channel forwards walk to the
+   original (or degrade 404). Gork's reply-chain therefore surfaces forwarded
+   content on same-channel references with no extra code; no product change made.
+
+Suite evidence: guard/gork unit suites green · integration gork 60/60 · full
+`npm test` green · full Tier-4 e2e green · `docs:build` clean. **Closing #175:**
+no crash evidence ever materialized from live traffic; the class that could have
+produced it is now repaired at the single choke point, pinned at three tiers, and
+driven live. If a report recurs on a future build, capture the `[gork]` /
+`[MessageCreate]` lines + raw payload — the statics say it cannot be gork's JS.
 
 #### Fix 4 — answers break on special characters (mojibake, mangled rendering, failed sends)
 
