@@ -21,6 +21,20 @@ const MODAL_STAFF_NOTE_PREFIX = "tk:snm:";
 /** Text input customId inside the post-close staff note modal */
 const MODAL_FIELD_STAFF_NOTE = "staff_note";
 
+// Report modals (context-menu "Report Post" / "Report User", #745 decision 3).
+// The pending-report token travels INSIDE the modal customId — modal submit is
+// a different interaction and carries nothing else. Assembly is a one-line
+// concatenation in the report modal builder (subtask 05): PREFIX + 32-hex
+// token = 41 chars, well inside Discord's 100-char customId limit.
+/** Modal prefix: report-post submit — `tk:rep:m:<token>` */
+const MODAL_REPORT_MESSAGE_PREFIX = "tk:rep:m:";
+/** Modal prefix: report-user submit — `tk:rep:u:<token>` */
+const MODAL_REPORT_USER_PREFIX = "tk:rep:u:";
+/** Text input customId inside both report modals: additional context */
+const MODAL_REPORT_FIELD_CONTEXT = "rep_context";
+/** Text input customId inside the report-post modal: delete the original? (yes/no) */
+const MODAL_REPORT_FIELD_DELETE = "rep_delete";
+
 const DEFAULT_PANEL_TITLE = "Support Tickets";
 const DEFAULT_PANEL_DESCRIPTION =
   "Click **Open a ticket** below to start a private conversation with staff. " +
@@ -36,6 +50,10 @@ module.exports = {
   BTN_STAFF_NOTE_PREFIX,
   MODAL_STAFF_NOTE_PREFIX,
   MODAL_FIELD_STAFF_NOTE,
+  MODAL_REPORT_MESSAGE_PREFIX,
+  MODAL_REPORT_USER_PREFIX,
+  MODAL_REPORT_FIELD_CONTEXT,
+  MODAL_REPORT_FIELD_DELETE,
   DEFAULT_PANEL_TITLE,
   DEFAULT_PANEL_DESCRIPTION,
 };
