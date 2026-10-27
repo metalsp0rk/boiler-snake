@@ -36,6 +36,7 @@ const gorkAccess = require("./repositories/gorkAccess");
 const gorkMemory = require("./repositories/gorkMemory");
 const gorkBudget = require("./repositories/gorkBudget");
 const automodSettings = require("./repositories/automodSettings");
+const automodCases = require("./repositories/automodCases");
 const gorkInteractions = require("./repositories/gorkInteractions");
 const webSessions = require("./repositories/webSessions");
 const adminAudit = require("./repositories/adminAudit");
@@ -420,6 +421,18 @@ module.exports = {
   setAutomodPause: automodSettings.setAutomodPause,
   clearAutomodPause: automodSettings.clearAutomodPause,
   isAutomodPaused: automodSettings.isAutomodPaused,
+
+  // auto-moderation case intake (#726, epic #723). Staff referral writes a
+  // `recorded` row (per-community A-n, the N-n note precedent); #727/#728 read
+  // it and move status through processing → complete/failed.
+  AUTOMOD_CASE_STATUSES: automodCases.AUTOMOD_CASE_STATUSES,
+  AUTOMOD_REFER_NOTE_MAX_LEN: automodCases.AUTOMOD_REFER_NOTE_MAX_LEN,
+  nextAutomodCaseNumber: automodCases.nextCaseNumber,
+  createAutomodCase: automodCases.createAutomodCase,
+  getAutomodCaseById: automodCases.getAutomodCaseById,
+  getAutomodCase: automodCases.getAutomodCase,
+  listAutomodCases: automodCases.listAutomodCases,
+  setAutomodCaseStatus: automodCases.setAutomodCaseStatus,
 
   // gork interaction logging (full request/response capture)
   insertGorkInteraction: gorkInteractions.insertGorkInteraction,

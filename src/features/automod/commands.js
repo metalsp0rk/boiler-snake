@@ -1,5 +1,5 @@
 /**
- * /automod + /automodconfig slash builders (#725, epic #723).
+ * /automod + /automodconfig slash builders (#725 + #726, epic #723).
  *
  * Picker posture (test/command-visibility.test.js pins it): both commands
  * carry the ManageGuild defaultMemberPermissions; the TIERS differ in
@@ -8,6 +8,10 @@
  * (ManageGuild only, no staff-role overwrites). Handlers stay the security
  * source of truth: /automod gate = requireStaff, /automodconfig =
  * isAdminOrMod (ManageGuild), per the epic.
+ *
+ * #726 adds `/automod refer` (message/user/note options) beside `status`.
+ * The "Refer to automod" context-menu builder lives in ./contextMenu.js and
+ * is wired through the feature's commands export.
  */
 
 const {
@@ -17,6 +21,7 @@ const {
 } = require("discord.js");
 const {
   AUTOMOD_RULES_MAX_LEN,
+  AUTOMOD_REFER_NOTE_MAX_LEN,
   AUTOMOD_TIMEOUT_CAP_MIN,
   AUTOMOD_TIMEOUT_CAP_MAX,
   AUTOMOD_BUDGET_MIN,
@@ -30,8 +35,39 @@ const staffPerms = PermissionFlagsBits.ManageGuild;
 const commands = [
   new SlashCommandBuilder()
     .setName("automod")
-    .setDescription("Auto-moderation: check status (staff). Referrals arrive with #726.")
+    .setDescription("Auto-moderation: refer a case, check status (staff).")
     .setDefaultMemberPermissions(staffPerms)
+    // #726: the ONLY way a case starts (besides the "Refer to automod"
+    // message context menu). Discord cannot cross-enforce "at least one of
+    // message|user" — the handler replies with the specific cause.
+    .addSubcommand((sc) =>
+      sc
+        .setName("refer")
+        .setDescription("Refer a message and/or a member to auto-moderation.")
+        .addStringOption((opt) =>
+          opt
+            .setName("message")
+            .setDescription(
+              "Full message link in THIS server (right-click → Copy Link)",
+            )
+            .setRequired(false),
+        )
+        .addUserOption((opt) =>
+          opt
+            .setName("user")
+            .setDescription("Member the referral is about")
+            .setRequired(false),
+        )
+        .addStringOption((opt) =>
+          opt
+            .setName("note")
+            .setDescription(
+              `Your explanation — case input (max ${AUTOMOD_REFER_NOTE_MAX_LEN})`,
+            )
+            .setRequired(false)
+            .setMaxLength(AUTOMOD_REFER_NOTE_MAX_LEN),
+        ),
+    )
     .addSubcommand((sc) =>
       sc
         .setName("status")

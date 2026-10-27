@@ -1,12 +1,15 @@
 /**
- * #725 (epic #723): /automod + /automodconfig command-layer unit tests.
+ * #725 (epic #723): /automod + /automodconfig command-layer unit tests,
+ * extended for #726's /automod refer slash intake wiring.
  *
  * Hand-built CommandContext (the fluxer-honeypot / staffNotes unit pattern) —
  * no gateway, no network. Covers: gates (staff read / admin mutations), the
  * status render (incl. budget sentinels + breaker reason), the rules-modal
  * flow (slash → modal → submit), the H2-15 confirm: idiom on
- * `safety resume`, and the @everyone-view warning on `channel set` (read
- * only — the command must never rewrite overwrites).
+ * `safety resume`, the @everyone-view warning on `channel set` (read
+ * only — the command must never rewrite overwrites), and the /automod refer
+ * wiring (gates first, cross-option enforcement, ack + row + audit).
+ * The refusal battery itself lives in test/automod-refer.test.js.
  */
 const { describe, it, after } = require("node:test");
 const assert = require("node:assert/strict");
@@ -101,6 +104,9 @@ function makeCtx({
       getInteger: (name) => (options[name] ?? null),
       getBoolean: (name) => (options[name] ?? null),
       getChannel: (name) => (options[name] ?? null),
+      // #726: /automod refer resolves the user option (the adapter hands
+      // handlers a normalized { id, ... } — tests pass that shape).
+      getUser: (name) => (options[name] ?? null),
     },
     channelPermissions: manageGuild ? MANAGE_GUILD : "0",
     memberRoleIds,
@@ -456,5 +462,173 @@ describe("/automodconfig safety resume — H2-15 confirm: idiom", () => {
       .find((r) => r.action === "automod.safety_resume");
     assert.ok(audit, "resume is audited with what was armed");
     assert.deepEqual(JSON.parse(audit.details_json).re_armed, ["ban"]);
+  });
+});
+
+// ── #726: /automod refer (slash intake wiring) ─────────────────────────────
+
+const REFER_AMOD_CH = "700000000000000011";
+const REFER_SRC_CH = "700000000000000012";
+const REFER_MSG = "800000000000000012";
+const referLink = (guildId = EXTERNAL_GUILD) =>
+  `https://discord.com/channels/${guildId}/${REFER_SRC_CH}/${REFER_MSG}`;
+
+/**
+ * Raw-interaction fake rich enough for the referral deps seam: guild channel
+ * cache (automod + source channels with permission reads + messages.fetch),
+ * guild.members.me, and the invoker member.
+ */
+function makeReferRaw({ automodSend = true, sourceView = true } = {}) {
+  const chan = (view, send) => ({
+    permissionsFor: () => ({
+      has: (flag) => {
+        if (flag === PermissionsBitField.Flags.ViewChannel) return view === true;
+        if (flag === PermissionsBitField.Flags.SendMessages) return send === true;
+        return false;
+      },
+    }),
+    messages: { fetch: async (id) => ({ id: String(id) }) },
+  });
+  return {
+    user: { id: "u-admin-725" },
+    member: { id: "u-admin-725" },
+    guild: {
+      id: EXTERNAL_GUILD,
+      roles: { everyone: { id: EXTERNAL_GUILD } },
+      members: { me: { id: "u-bot-725" }, cache: { get: () => null } },
+      channels: {
+        cache: {
+          get: (id) => {
+            if (id === REFER_AMOD_CH) return chan(true, automodSend);
+            if (id === REFER_SRC_CH) return chan(sourceView, false);
+            return null;
+          },
+        },
+      },
+    },
+  };
+}
+
+/** Configure a community for referral intake through the shipped services. */
+function readyReferCommunity({ channelId = REFER_AMOD_CH } = {}) {
+  const communityId = freshCommunity();
+  service.setEnabled(communityId, true);
+  service.setChannel(communityId, channelId);
+  service.setRules(communityId, "No spam. Be kind.");
+  return communityId;
+}
+
+describe("/automod refer — slash intake wiring (#726)", () => {
+  it("denies non-staff with the standard denial and records NOTHING", async () => {
+    const communityId = readyReferCommunity();
+    const { ctx, replies } = makeCtx({
+      commandName: "automod",
+      communityId,
+      sub: "refer",
+      options: { message: referLink() },
+      manageGuild: false,
+      raw: makeReferRaw(),
+    });
+    await automod.handlers.automod(ctx, {});
+    assert.equal(content(replies), MSG_DENIED);
+    assert.equal(db.listAutomodCases(communityId).length, 0);
+  });
+
+  it("Fluxer contexts get the NOT_ON_FLUXER refusal before anything else (decision 8)", async () => {
+    const communityId = readyReferCommunity();
+    const { ctx, replies } = makeCtx({
+      commandName: "automod",
+      communityId,
+      sub: "refer",
+      options: { message: referLink() },
+      noRaw: true,
+    });
+    await automod.handlers.automod(ctx, {});
+    assert.equal(content(replies), "That command is not available on Fluxer yet.");
+    assert.equal(db.listAutomodCases(communityId).length, 0);
+  });
+
+  it("no message AND no user → the specific target-required reply", async () => {
+    const communityId = readyReferCommunity();
+    const { ctx, replies } = makeCtx({
+      commandName: "automod",
+      communityId,
+      sub: "refer",
+      options: {},
+      raw: makeReferRaw(),
+    });
+    await automod.handlers.automod(ctx, {});
+    assert.match(content(replies), /\*\*Target required:\*\*/);
+    assert.equal(db.listAutomodCases(communityId).length, 0);
+  });
+
+  it("staff-role leg (no ManageGuild) files the case: ack, row, automod.refer audit", async () => {
+    const communityId = readyReferCommunity();
+    db.addStaffRole(communityId, "role-726-junior", "junior", "u-admin-725");
+    const { ctx, replies } = makeCtx({
+      commandName: "automod",
+      communityId,
+      sub: "refer",
+      options: {
+        message: referLink(),
+        user: { id: "u-target-726" },
+        note: "targeted harassment in #general",
+      },
+      manageGuild: false,
+      memberRoleIds: ["role-726-junior"],
+      raw: makeReferRaw(),
+    });
+    await automod.handlers.automod(ctx, {});
+
+    assert.equal(
+      content(replies),
+      `Case: **A-1** — recorded.\nRecommendations will post in <#${REFER_AMOD_CH}>.`,
+    );
+    assert.equal(replies[0].sensitive, true, "the ack stays ephemeral");
+
+    const row = db.listAutomodCases(communityId)[0];
+    assert.equal(row.referrer_user_id, "u-admin-725");
+    assert.equal(row.message_id, REFER_MSG);
+    assert.equal(row.channel_id, REFER_SRC_CH);
+    assert.equal(row.target_user_id, "u-target-726");
+    assert.equal(row.note, "targeted harassment in #general");
+    assert.equal(row.status, "recorded");
+
+    const audit = db
+      .listAdminAudit(communityId, { limit: 10 })
+      .find((r) => r.action === "automod.refer");
+    assert.ok(audit, "staff intake lands an automod.* audit row (#725 vocabulary)");
+    assert.equal(JSON.parse(audit.details_json).case_number, 1);
+
+    // Intake never consumes the budget (the harness does, #728).
+    assert.equal(repo.getAutomodBudget(communityId).used, 0);
+  });
+
+  it("a malformed link through the slash arm names its own specific cause", async () => {
+    const communityId = readyReferCommunity();
+    const { ctx, replies } = makeCtx({
+      commandName: "automod",
+      communityId,
+      sub: "refer",
+      options: { message: REFER_MSG }, // bare id — strict grammar refuses
+      raw: makeReferRaw(),
+    });
+    await automod.handlers.automod(ctx, {});
+    assert.match(content(replies), /\*\*Message link:\*\*/);
+    assert.equal(db.listAutomodCases(communityId).length, 0);
+  });
+
+  it("an unpostable automod channel refuses the referral by name", async () => {
+    const communityId = readyReferCommunity();
+    const { ctx, replies } = makeCtx({
+      commandName: "automod",
+      communityId,
+      sub: "refer",
+      options: { message: referLink() },
+      raw: makeReferRaw({ automodSend: false }),
+    });
+    await automod.handlers.automod(ctx, {});
+    assert.match(content(replies), /\*\*Automod channel:\*\*.*not postable/);
+    assert.equal(db.listAutomodCases(communityId).length, 0);
   });
 });

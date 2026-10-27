@@ -105,6 +105,13 @@ const COMMAND_VISIBILITY = Object.freeze({
   // security source of truth.
   "Report Post": TIERS.staff,
   "Report User": TIERS.staff,
+  // #726 (epic #723): the auto-mod referral context menu — same staff picker
+  // posture as the report menus (ManageGuild default + staff_roles allow
+  // overwrites after `/staff syncpermissions`; the handler's requireStaff
+  // gate stays the security source of truth). Key = exact display name from
+  // src/features/automod/contextMenu.js, character-for-character. The
+  // `/automod refer` SUBCOMMAND rides the `automod` staff tier above.
+  "Refer to automod": TIERS.staff,
 });
 
 /**

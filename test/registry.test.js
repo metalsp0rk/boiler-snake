@@ -19,11 +19,14 @@ const features = require("../src/features");
 after(cleanup);
 
 describe("command definitions via registry", () => {
-  it("exports 39 slash commands + 2 context menus with unique names", () => {
+  it("exports 39 slash commands + 3 context menus with unique names", () => {
     const { commands } = buildDefaultRegistry();
     // #745: 37 slash builders + "Report Post"/"Report User" context menus.
     // #725: + /automod and /automodconfig (auto-moderation epic #723).
-    assert.equal(commands.length, 41);
+    // #726: + "Refer to automod" context menu (/automod refer is a
+    // SUBCOMMAND of the existing /automod builder — top-level count moves
+    // only by the one menu).
+    assert.equal(commands.length, 42);
     const names = commands.map((c) => c.name);
     assert.equal(new Set(names).size, names.length);
     assert.ok(names.includes("eventreminder"));
@@ -57,6 +60,8 @@ describe("command definitions via registry", () => {
     // caps are legal there and double as the registry + visibility-map keys).
     assert.ok(names.includes("Report Post"));
     assert.ok(names.includes("Report User"));
+    // #726: auto-mod referral context menu (exact display name).
+    assert.ok(names.includes("Refer to automod"));
     // #725: auto-moderation settings + config commands.
     assert.ok(names.includes("automod"));
     assert.ok(names.includes("automodconfig"));
@@ -78,8 +83,10 @@ describe("buildDefaultRegistry", () => {
   it("keeps the context-menu report handlers on the interaction api", () => {
     // #745: "Report Post"/"Report User" ride the raw interaction (the target
     // message/user only exists there); they must NOT be flagged "context".
+    // #726: "Refer to automod" the same — options.getMessage() is the only
+    // way to reach the referred message.
     const registry = buildDefaultRegistry();
-    for (const name of ["Report Post", "Report User"]) {
+    for (const name of ["Report Post", "Report User", "Refer to automod"]) {
       assert.equal(typeof registry.getHandler(name), "function", name);
       assert.equal(registry.getHandlerApi(name), "interaction", name);
     }

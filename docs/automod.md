@@ -1,8 +1,8 @@
 # Auto-moderation (epic #723)
 
 !!! abstract "Ship state — this page tracks the epic"
-    **Shipped now (#725):** the guild settings and the Manage-Guild commands that edit them — `/automod status` and `/automodconfig` (channel, rules, master switch, per-action modes, timeout cap, daily case budget, breaker state + `safety resume`).
-    **Landing in sibling issues:** staff referral `/automod refer` (#726), case context (#727), the LLM harness (#728), the per-action mode gate (#729), the case card (#730), and the individual action tools (#731–#738), plus the circuit breaker trip logic (#739). There is **no** `/automod refer` yet — the commands here configure state that the referral path will consume.
+    **Shipped now:** the guild settings and their Manage-Guild commands — `/automod status` and `/automodconfig` (channel, rules, master switch, per-action modes, timeout cap, daily case budget, breaker state + `safety resume`) (#725) — plus **staff referral intake**: `/automod refer` and the **Refer to automod** message context menu, which record a case (**A-n**) and ack where recommendations will post (#726).
+    **Landing in sibling issues:** case context (#727), the LLM harness (#728), the per-action mode gate (#729), the case card (#730), and the individual action tools (#731–#738), plus the circuit breaker trip logic (#739). A recorded case is queued input: **nothing here calls a model** — the ack never claims a recommendation was produced.
 
 Auto-moderation is a staff-referred judgment pipeline: a staff member refers a message or a user, a separate LLM harness recommends staff actions against the guild's written rules, and each action type is gated `off` / `suggest` / `auto` by the guild. **Recommendations are the default** — enabling the master switch never starts kicking or banning by itself.
 
@@ -14,9 +14,11 @@ on GitHub. This page documents the shipped surface; the design record wins on in
 
 **Discord only.** This milestone ships no Fluxer surface, and the docs state the
 **explicit no-parity**: the automod commands are not registered for Fluxer's
-prefix dispatcher, and a Fluxer dispatch reaching either command answers
+prefix dispatcher and the **Refer to automod** message context menu exists on
+Discord only; a Fluxer dispatch reaching `/automod` or `/automodconfig` answers
 `That command is not available on Fluxer yet.` (the standard Discord-only
-refusal). No Fluxer implementation is planned in this epic (epic decision 8).
+refusal). This applies to **both** referral arms — no Fluxer implementation is
+planned in this epic (epic decision 8).
 See [Fluxer instances](fluxer.md) for the platform matrix.
 
 It is also **separate from Gork** by design: its own settings family
@@ -55,6 +57,43 @@ mode by design), **Timeout cap**, **Daily budget** (real remaining count
 today, `0` → unlimited, `-1` → blocked), and **Safety** (breaker state incl.
 the pause reason). Ephemeral; no secrets.
 
+### `/automod refer` (staff)
+
+Files a **staff referral** into the automod queue as a numbered case
+(**A-1**, **A-2**, … per guild — the same human-ref idea as **N-n** notes and
+**T-n** tickets). This is THE intake seam (locked decision 1): members have no
+command for this and nothing in message-create opens a case.
+
+| Option | Meaning |
+|--------|---------|
+| `message:` | **Full message link** of the offending message (right-click → *Copy Link*). Bare message ids are refused — the full link is what lets the bot cross-check the guild. |
+| `user:` | The member the referral is about. |
+| `note:` | Your explanation — stored as **case input** for the harness (max **1000** characters). |
+
+At least one of `message:` / `user:` is required. A successful referral stores
+one `automod_cases` row (status `recorded`), lands one `automod.refer` row in
+the admin audit trail, and acks ephemerally:
+
+```text
+Case: **A-3** — recorded.
+Recommendations will post in <#1234567890123456789>.
+```
+
+The ack promises only WHERE recommendations will post — nothing at intake
+calls a model or claims a recommendation was produced (the harness, #728, may
+not even be merged yet). Every refusal names its specific cause; see
+[Staff referral intake and refusals](#staff-referral-intake-and-refusals).
+
+### "Refer to automod" (message context menu, staff)
+
+Right-click a message → **Apps → Refer to automod** — the context-menu twin of
+`/automod refer` (#726). The right-clicked message IS the referral: no link to
+paste, no note option, no separately named user. Same battery, same refusal
+copy, same ack. Discord additionally resolves the target, so the platform
+already guarantees the guild and the invoker's view of the channel — and
+bot/system messages are refused here before anything runs
+(`Cannot refer a bot or system message to automod — nothing was recorded.`).
+
 ### `/automodconfig` (admin — Manage Server in the picker AND the handler)
 
 | Subcommand | What it does |
@@ -72,6 +111,123 @@ the pause reason). Ephemeral; no secrets.
 Every `/automodconfig` mutation lands an `automod.*` row in the admin audit
 trail and a config-change embed on the audit log channel (best-effort
 mirror).
+
+## Staff referral intake and refusals
+
+A referral is **intake only**: no model call, no enforcement, no budget
+consumption. BEFORE anything is stored, the full refusal battery runs — every
+gate has its OWN specific ephemeral cause (staff-facing copy always names the
+cause; never "check logs"), and nothing is recorded without the fix. Gate
+order:
+
+1. master switch · 2. automod channel unset · 3. channel not postable ·
+4. rules not set · 5. budget blocked · 6. budget exhausted · 7. no target ·
+8. note over cap · 9. link format · 10. cross-guild link · 11. source channel
+gone · 12. referrer cannot view the source channel · 13. message no longer
+exists.
+
+The exact replies (tests pin them byte-for-byte):
+
+**Automod off** (gate 1)
+
+```text
+**Automod off:** the master switch is off here — an admin must run `/automodconfig enable` before referrals can record cases.
+```
+
+**Automod channel unset / unpostable** (gates 2–3; `<#…>` is the configured channel)
+
+```text
+**Automod channel:** not set — an admin must pick the case-card channel with `/automodconfig channel set` before referrals can record cases.
+```
+
+```text
+**Automod channel:** <#CHANNEL_ID> is not postable right now — it is deleted, or I lack View Channel / Send Messages there. An admin must fix it or re-set it with `/automodconfig channel set`.
+```
+
+**Automod rules empty** (gate 4)
+
+```text
+**Automod rules:** not set — the judge needs the guild rules text. An admin must run `/automodconfig rules set` first.
+```
+
+**Daily budget blocked / exhausted** (gates 5–6)
+
+```text
+**Daily budget:** blocked (`-1`) — every referral is refused until an admin opens the budget with `/automodconfig budget`.
+```
+
+```text
+**Daily budget:** exhausted — 50 of 50 cases used today (UTC day). Nothing was recorded — try again after the day rolls or raise the cap with `/automodconfig budget`.
+```
+
+**No target** (gate 7 — slash only; the menu always carries a message)
+
+```text
+**Target required:** include at least one of `message:` (a message link) or `user:` (the member) — nothing was recorded.
+```
+
+**Note over cap** (gate 8 — also enforced by the slash option's max length)
+
+```text
+**Note too long:** the referral note is 1200 characters — the cap is 1000. Shorten it — nothing was recorded.
+```
+
+**Link format / cross-guild / gone / invisible** (gates 9–13, slash `message:`
+arm). A bare message id is NOT accepted — the strict grammar is
+`https://discord.com/channels/<guild>/<channel>/<message>` (the legacy
+`discordapp.com` host is also accepted), and the echo of a bad link is
+length-clipped:
+
+```text
+**Message link:** `1234567890123456789` is not a full message link — right-click → Copy Link gives `https://discord.com/channels/<guild>/<channel>/<message>` (a bare message id is not accepted). Nothing was recorded.
+```
+
+```text
+**Message link:** that message is from another server (`999999999999999999`) — referrals must point at messages in this server. Nothing was recorded.
+```
+
+```text
+**Message not found:** that message no longer exists — nothing was recorded.
+```
+
+(Also used when the source channel itself is gone — a deleted channel holds no
+referable message.)
+
+```text
+**Channel not visible:** you cannot view <#CHANNEL_ID>, so its messages cannot be referred. Refer only what you can see — nothing was recorded.
+```
+
+A Discord read failure OTHER than "unknown message" surfaces its own cause
+(`Could not read that message (…cause…) — nothing was recorded.`) instead of
+claiming deletion.
+
+**Context-menu only**
+
+```text
+Could not resolve the referred message — it may have been deleted. Nothing was recorded.
+```
+
+```text
+Cannot refer a bot or system message to automod — nothing was recorded.
+```
+
+### What a recorded case is (and is not)
+
+- One `automod_cases` row: per-community `A-n` number, referrer, referred
+  message + its channel, target user, note, `status = recorded`. At least one
+  of message/user is set; the other pair stays NULL.
+- The **referrer is not a subject** merely because they filed, and the note is
+  case input, NOT a staff note — intake writes **zero** `staff_notes` rows.
+  The harness owns notes for considered users (locked decision 4).
+- **Budget is read, never consumed here.** A case counts against the daily
+  budget only when the harness's provider call is accepted (#728); a recorded
+  case that never reaches a provider does not count.
+- **A breaker pause never refuses a referral.** The pause darkens auto
+  kick/ban/timeout only; a paused guild keeps recording cases.
+- `status` vocabulary: `recorded` (only #726 writes this) → `processing` →
+  `complete` / `failed` — transitions are owned by the harness (#728) via
+  `setAutomodCaseStatus`. Executor action state lives in the sibling
+  case-actions table, not in this column.
 
 ## Modes (locked decision 2)
 
@@ -104,6 +260,19 @@ All settings live as the `automod_*` column family on `guild_settings`
 `src/db/repositories/automodSettings.js`; service:
 `src/features/automod/settings.js` (returns `{ ok:false, error }` — handlers
 surface the specific cause).
+
+Cases are real rows: `automod_cases` (migration `068_automod_cases`,
+community-scoped with `ON DELETE CASCADE`, `UNIQUE (community_id,
+case_number)` — see [Database](database.md#database-migrations)). Repository:
+`src/db/repositories/automodCases.js` — `createAutomodCase` (allocates the
+next `A-n` as MAX+1 in a transaction), `nextCaseNumber`,
+`getAutomodCase(ById)`, `listAutomodCases(communityId, { status, limit,
+offset })`,
+`setAutomodCaseStatus`, plus the `AUTOMOD_CASE_STATUSES` enum and the
+`AUTOMOD_REFER_NOTE_MAX_LEN` cap (1000), re-exported via
+`src/features/automod/constants.js` and the `src/db` facade. Intake:
+`src/features/automod/refer.js` (both command arms over one service); the
+context-menu builder is `src/features/automod/contextMenu.js`.
 
 ## Related
 

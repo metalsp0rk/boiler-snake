@@ -81,6 +81,7 @@ boiler-snake/
 | `ticket_create_reservations` | Atomic ticket self-create rate-limit slot (#420) |
 | `reaction_role_claims` | Per-emoji role-claim ledger — reaction removal can't strip a role another path granted (#433) |
 | `twitch_eventsub_subs` | EventSub subscription ledger per (type, broadcaster), shared across guilds (§8d) |
+| `automod_cases` | Staff referrals into auto-moderation: one case row per referral with per-community `A-n` number, referrer, referred message/channel, target user, note (case input), pipeline `status` (#726, epic #723) |
 | `applied_migrations` | Migration ledger: ordered id list of the last complete migration pass (§24) |
 | `sqlite_sequence` | SQLite-internal AUTOINCREMENT high-water counter (not bot data) |
 | `events` | Community events: title/status/times, post + retry bookkeeping, role gates (§20) |
@@ -1850,7 +1851,7 @@ There is no separate manual migration CLI for normal operation: starting the bot
 
 Since the 2026-10 audit (#202) the database records a schema version in SQLite's `PRAGMA user_version` header field:
 
-- **The version is the registry size.** The ordered list in `src/db/migrate.js` is append-only (same rule as the numbered files); with `001`–`067` registered the version is `67`.
+- **The version is the registry size.** The ordered list in `src/db/migrate.js` is append-only (same rule as the numbered files); with `001`–`068` registered the version is `68`.
 - **Full replay stays the correctness mechanism.** Every migration is idempotent, so `runMigrations()` replays the entire set whenever the recorded version does not match the registry, and stamps `user_version` only after the whole pass succeeds.
 - **`user_version` is a fast-skip record, not a per-migration cursor.** When the recorded version equals the registry size AND the `applied_migrations` ledger agrees (below), the replay is skipped entirely (one boot log line). Databases created before the guard have `user_version = 0`: they get one idempotent full replay and are stamped — every boot after that is a skip.
 - **The `applied_migrations` ledger records WHAT ran (audit #394).** A count can never record a set: a length-preserving registry change (reorder, or a swap that keeps the list the same size) leaves `user_version` identical and would fast-skip a replay the changed registry needs. The ledger (`seq`/`id`/`applied_at`) stores the ORDERED id list of the last complete pass and is rebuilt transactionally with the version stamp — a crashed pass leaves neither honest. The fast-skip requires both records to agree; on disagreement (including legacy DBs with no ledger yet) the idempotent replay runs once and re-stamps both.
@@ -1953,6 +1954,7 @@ Concretely this means:
 | `065_gork_max_tool_rounds` | `guild_settings.gork_max_tool_rounds` (nullable) — per-guild gork tool-round budget (`/gork toolrounds`, 5–300) driving the derived answer deadline; NULL = never set so `GORK_LLM_MAX_TOOL_ROUNDS` stays the global fallback (#705) |
 | `066_ticket_reports` | `ticket_reports` — one structured side record per context-menu Report Post / Report User ticket (#745): `kind` CHECK (`message`/`user`), reported subject, message + source-channel ids, `message_deleted` flag, modal context note; PK `ticket_id` with `ON DELETE CASCADE` to `tickets`, partial index on `reported_message_id` for the duplicate-open-report nudge |
 | `067_automod_guild_settings` | `guild_settings.automod_*` — auto-moderation config family (#725, epic #723): master switch `automod_enabled` (default 0), `automod_channel_id` / `automod_rules` (both required to run a case), seven `automod_mode_<action>` columns (`off`/`suggest`/`auto`, default `suggest`; no mode for staff notes — always on), `automod_timeout_cap` (default 3600 s), tri-state `automod_daily_case_limit` (default 50; `-1` blocked, `0` unlimited; separate from `gork_daily_limit`) with the UTC-day counter `automod_cases_today`/`automod_cases_day`, and the persisted breaker pause `automod_paused_at`/`automod_pause_reason` (049 posture: a restart never silently re-arms) |
+| `068_automod_cases` | `automod_cases` — staff referrals into auto-moderation, one row per referral (#726, epic #723): per-community sequential display `case_number` (`A-n`, `UNIQUE (community_id, case_number)` allocation belt — repository assigns MAX+1 in a transaction, staff-notes posture), `referrer_user_id`, nullable `message_id`/`channel_id`/`target_user_id` (at least one of message/user, enforced by the referral service), `note` (referrer's case input — NOT a staff note), `status` CHECK (`recorded`/`processing`/`complete`/`failed`; intake writes only `recorded`); real `ON DELETE CASCADE` FK to `communities` (062 posture, 034-order guard) with `(community_id, status)` and recent-first indexes |
 
 Public API remains available via `require("./db")` (facade over repositories).
 
