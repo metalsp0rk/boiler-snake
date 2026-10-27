@@ -99,6 +99,7 @@ boiler-snake/
 | `event_google_links` | Per-user Google Calendar OAuth — envelope-encrypted tokens, never plaintext |
 | `event_crossposts` | Cross-community crosspost pairs (invite-code approval, per-destination settings) |
 | `event_crosspost_messages` | Destination message rows mapping crosspost copies to the source event |
+| `automod_case_actions` | Auto-moderation case-action ledger: one suggested→claimed→terminal row per action a case took, refused, or failed against a considered user (#729, §25) |
 
 ---
 
@@ -1841,6 +1842,44 @@ CREATE TABLE sqlite_sequence(name,seq);
 
 ---
 
+### 25. Auto-moderation tables
+
+#### `automod_case_actions`
+
+One row per sanction a case **suggested, executed, refused, or failed** to execute against a considered user (migration `069_automod_case_actions`, issue #729, epic #723). This is the intent/commit ledger the executor claims and finalizes — the automod sibling of the atomic `ticket_create_reservations` slot: transitions are single-statement conditional UPDATEs (or the claim INSERT against the UNIQUE slot index), so a double Approve click or an auto re-entry can never re-run a Discord mutation. Primary writer: `src/db/repositories/automodCaseActions.js` (executor: `src/features/automod/executor.js`; readers: the case card #730 and the staff-note commit #731 — an existing row IS the "considered" flag, every state counts).
+
+`case_id` is a NULLABLE plain INTEGER **without** a foreign key: the `automod_cases` table ships in the concurrent referral issue (#726) and this ledger links by value, never by constraint. The state machine (`suggested`→`approved`→`executed`/`refused`/`failed`, or `suggested`→`dismissed`) is pinned by both the CHECK below and `AUTOMOD_ACTION_STATES` in the repository. `params_json` stores the EFFECTIVE (post-timeout-clamp) params — the row echoes the duration actually applied.
+
+```sql
+-- Live DDL (migrated schema, from sqlite_master)
+CREATE TABLE automod_case_actions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  community_id INTEGER NOT NULL REFERENCES communities(id) ON DELETE CASCADE,
+  case_id INTEGER,
+  guild_id TEXT,
+  subject_user_id TEXT,
+  action TEXT NOT NULL CHECK (action IN ('no_action','warn','delete_message','ticket','timeout','kick','ban')),
+  mode TEXT NOT NULL CHECK (mode IN ('off','suggest','auto')),
+  state TEXT NOT NULL DEFAULT 'suggested' CHECK (state IN ('suggested','approved','dismissed','executed','refused','failed')),
+  params_json TEXT,
+  result_text TEXT,
+  error_text TEXT,
+  claimed_by TEXT,
+  claimed_at INTEGER,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+CREATE INDEX idx_automod_case_actions_case
+  ON automod_case_actions(community_id, case_id) WHERE case_id IS NOT NULL;
+CREATE INDEX idx_automod_case_actions_subject
+  ON automod_case_actions(community_id, subject_user_id) WHERE subject_user_id IS NOT NULL;
+CREATE UNIQUE INDEX ux_automod_case_actions_slot
+  ON automod_case_actions(community_id, case_id, action, IFNULL(subject_user_id,''))
+ WHERE case_id IS NOT NULL;
+```
+
+---
+
 ## Database Migrations
 
 Migrations run **automatically** when the db module loads (`src/db/migrate.js` via `src/db/index.js` / the `src/db.js` facade). Steps live under `src/db/migrations/` and are written to be **idempotent** (`CREATE TABLE IF NOT EXISTS`, `addColumnIfMissing`, gated rebuilds, no-op cleanups).
@@ -1851,7 +1890,7 @@ There is no separate manual migration CLI for normal operation: starting the bot
 
 Since the 2026-10 audit (#202) the database records a schema version in SQLite's `PRAGMA user_version` header field:
 
-- **The version is the registry size.** The ordered list in `src/db/migrate.js` is append-only (same rule as the numbered files); with `001`–`068` registered the version is `68`.
+- **The version is the registry size.** The ordered list in `src/db/migrate.js` is append-only (same rule as the numbered files); with `001`–`069` registered the version is `69`.
 - **Full replay stays the correctness mechanism.** Every migration is idempotent, so `runMigrations()` replays the entire set whenever the recorded version does not match the registry, and stamps `user_version` only after the whole pass succeeds.
 - **`user_version` is a fast-skip record, not a per-migration cursor.** When the recorded version equals the registry size AND the `applied_migrations` ledger agrees (below), the replay is skipped entirely (one boot log line). Databases created before the guard have `user_version = 0`: they get one idempotent full replay and are stamped — every boot after that is a skip.
 - **The `applied_migrations` ledger records WHAT ran (audit #394).** A count can never record a set: a length-preserving registry change (reorder, or a swap that keeps the list the same size) leaves `user_version` identical and would fast-skip a replay the changed registry needs. The ledger (`seq`/`id`/`applied_at`) stores the ORDERED id list of the last complete pass and is rebuilt transactionally with the version stamp — a crashed pass leaves neither honest. The fast-skip requires both records to agree; on disagreement (including legacy DBs with no ledger yet) the idempotent replay runs once and re-stamps both.
@@ -1955,6 +1994,7 @@ Concretely this means:
 | `066_ticket_reports` | `ticket_reports` — one structured side record per context-menu Report Post / Report User ticket (#745): `kind` CHECK (`message`/`user`), reported subject, message + source-channel ids, `message_deleted` flag, modal context note; PK `ticket_id` with `ON DELETE CASCADE` to `tickets`, partial index on `reported_message_id` for the duplicate-open-report nudge |
 | `067_automod_guild_settings` | `guild_settings.automod_*` — auto-moderation config family (#725, epic #723): master switch `automod_enabled` (default 0), `automod_channel_id` / `automod_rules` (both required to run a case), seven `automod_mode_<action>` columns (`off`/`suggest`/`auto`, default `suggest`; no mode for staff notes — always on), `automod_timeout_cap` (default 3600 s), tri-state `automod_daily_case_limit` (default 50; `-1` blocked, `0` unlimited; separate from `gork_daily_limit`) with the UTC-day counter `automod_cases_today`/`automod_cases_day`, and the persisted breaker pause `automod_paused_at`/`automod_pause_reason` (049 posture: a restart never silently re-arms) |
 | `068_automod_cases` | `automod_cases` — staff referrals into auto-moderation, one row per referral (#726, epic #723): per-community sequential display `case_number` (`A-n`, `UNIQUE (community_id, case_number)` allocation belt — repository assigns MAX+1 in a transaction, staff-notes posture), `referrer_user_id`, nullable `message_id`/`channel_id`/`target_user_id` (at least one of message/user, enforced by the referral service), `note` (referrer's case input — NOT a staff note), `status` CHECK (`recorded`/`processing`/`complete`/`failed`; intake writes only `recorded`); real `ON DELETE CASCADE` FK to `communities` (062 posture, 034-order guard) with `(community_id, status)` and recent-first indexes |
+| `069_automod_case_actions` | `automod_case_actions` — auto-moderation case-action ledger (#729, epic #723): one row per action a case suggested, executed, refused, or failed against a considered user; `state` CHECK pins `suggested`→`approved`→`executed`/`refused`/`failed` (or `suggested`→`dismissed`), the UNIQUE partial index on (community, case, action, subject) is the single-winner claim slot (052 posture), `claimed_by`/`claimed_at` stamp the execution slot, `params_json` records the effective post-clamp params, and every row counts its subject as considered (#731). `case_id` stays a NULLABLE plain INTEGER — the #726 `automod_cases` table is linked by value, no FK |
 
 Public API remains available via `require("./db")` (facade over repositories).
 

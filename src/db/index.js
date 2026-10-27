@@ -37,6 +37,7 @@ const gorkMemory = require("./repositories/gorkMemory");
 const gorkBudget = require("./repositories/gorkBudget");
 const automodSettings = require("./repositories/automodSettings");
 const automodCases = require("./repositories/automodCases");
+const automodCaseActions = require("./repositories/automodCaseActions");
 const gorkInteractions = require("./repositories/gorkInteractions");
 const webSessions = require("./repositories/webSessions");
 const adminAudit = require("./repositories/adminAudit");
@@ -433,6 +434,23 @@ module.exports = {
   getAutomodCase: automodCases.getAutomodCase,
   listAutomodCases: automodCases.listAutomodCases,
   setAutomodCaseStatus: automodCases.setAutomodCaseStatus,
+
+  // auto-moderation case-action ledger (#729, epic #723 — automod_case_actions,
+  // migration 069). Atomic claim/commit primitives for the executor + reads
+  // for the card (#730) and the staff-note commit (#731: every recorded row is
+  // a considered subject, AUTOMOD_CONSIDERED_STATES).
+  AUTOMOD_ACTION_STATES: automodCaseActions.AUTOMOD_ACTION_STATES,
+  AUTOMOD_CONSIDERED_STATES: automodCaseActions.AUTOMOD_CONSIDERED_STATES,
+  insertAutomodActionSuggestion: automodCaseActions.insertAutomodActionSuggestion,
+  claimAutomodActionSlot: automodCaseActions.claimAutomodActionSlot,
+  recordAutomodActionRefusal: automodCaseActions.recordAutomodActionRefusal,
+  claimAutomodSuggestion: automodCaseActions.claimAutomodSuggestion,
+  dismissAutomodSuggestion: automodCaseActions.dismissAutomodSuggestion,
+  recordAutomodActionResult: automodCaseActions.recordAutomodActionResult,
+  getAutomodAction: automodCaseActions.getAutomodAction,
+  getAutomodActionBySlot: automodCaseActions.getAutomodActionBySlot,
+  listAutomodActionsForCase: automodCaseActions.listAutomodActionsForCase,
+  parseAutomodActionParams: automodCaseActions.parseAutomodActionParams,
 
   // gork interaction logging (full request/response capture)
   insertGorkInteraction: gorkInteractions.insertGorkInteraction,

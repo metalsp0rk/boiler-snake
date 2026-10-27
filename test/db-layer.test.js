@@ -122,7 +122,7 @@ describe("db layer", () => {
     const { runMigrations } = require("../src/db/migrate");
     api.db.pragma("user_version = 0"); // #202 guard: force the FULL replay, not the fast-skip
     assert.doesNotThrow(() => runMigrations());
-    assert.equal(Number(api.db.pragma("user_version", { simple: true })), 68);
+    assert.equal(Number(api.db.pragma("user_version", { simple: true })), 69);
   });
 
   describe("gork settings (migration 021 + clamps)", () => {
@@ -670,6 +670,8 @@ describe("db layer", () => {
       "AUTOMOD_RULES_MAX_LEN", // #725: guild rules text cap (4000)
       "AUTOMOD_CASE_STATUSES", // #726: automod_cases status vocabulary (068)
       "AUTOMOD_REFER_NOTE_MAX_LEN", // #726: referrer-note cap (1000)
+      "AUTOMOD_ACTION_STATES", // #729: automod_case_actions row state machine
+      "AUTOMOD_CONSIDERED_STATES", // #731: every recorded state counts as considered
     ]);
 
     it("exports no undefined value", () => {
