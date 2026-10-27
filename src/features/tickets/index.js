@@ -7,7 +7,7 @@
  *        panel create|list|edit|delete  (stored panel registry)
  * Buttons: tk:open → modal for description → same pipeline as /ticket create
  *          tk:sn:<ticketId> → modal to attach a staff note after close
- * Modals:  tk:create · tk:snm:<ticketId>
+ * Modals:  tk:create · tk:snm:<ticketId> · tk:rep:u:<token> (Report User submit)
  * Context menus (#745): "Report Post" / "Report User" invoke handlers
  *          snapshot the target and show tk:rep:m:<token> / tk:rep:u:<token>
  */
@@ -25,6 +25,7 @@ const {
   MODAL_CREATE,
   BTN_STAFF_NOTE_PREFIX,
   MODAL_STAFF_NOTE_PREFIX,
+  MODAL_REPORT_USER_PREFIX,
   MODAL_FIELD_REASON,
   MODAL_FIELD_STAFF_NOTE,
 } = require("./constants");
@@ -45,6 +46,7 @@ const {
 const {
   handleReportMessage,
   handleReportUser,
+  handleReportUserModal,
 } = require("./report");
 const {
   handlePanelCreate,
@@ -208,6 +210,10 @@ module.exports = {
   modalHandlers: {
     [MODAL_CREATE]: handleCreateTicketModal,
     [MODAL_STAFF_NOTE_PREFIX]: handleStaffNoteModal,
+    // #745 subtask 06: "Report User" submit — `tk:rep:u:<token>`. The
+    // router's longest-prefix matcher hands it the token-carrying customId;
+    // the subtask-08 "Report Post" submit registers beside it.
+    [MODAL_REPORT_USER_PREFIX]: handleReportUserModal,
   },
   registerEvents,
   formatTicketRef,

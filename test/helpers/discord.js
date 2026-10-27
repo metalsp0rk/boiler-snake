@@ -1393,6 +1393,7 @@ module.exports = {
   createButtonInteraction,
   lastReplyContent,
   lastReplyEphemeral,
+  embedToSearchText,
   MessageFlags,
   PermissionFlagsBits,
 };
