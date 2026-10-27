@@ -25,6 +25,22 @@ const GORK_SUMMARIZE_INPUT_TOKENS_MAX = 200000;
 // Discord's hard message-content cap; a longer template could never send.
 const TWITCH_GOLIVE_TEMPLATE_MAX_LEN = 2000;
 
+// Auto-moderation write-belts (#725, migration 067). The db layer keeps its
+// constants local (same declared pattern as the gork caps and the twitch
+// template); the command/service layer validates FIRST with specific errors,
+// these clamps are the storage-side belt.
+const AUTOMOD_RULES_MAX_LEN = 4000;
+const AUTOMOD_MODE_VALUES = new Set(["off", "suggest", "auto"]);
+const AUTOMOD_MODE_KEYS = [
+  "automod_mode_no_action",
+  "automod_mode_warn",
+  "automod_mode_delete_message",
+  "automod_mode_ticket",
+  "automod_mode_timeout",
+  "automod_mode_kick",
+  "automod_mode_ban",
+];
+
 /** Clamp to an integer range; null/non-finite input falls back to the default. */
 function clampInt(value, min, max, fallback) {
   if (value === null || value === undefined) return fallback;
@@ -107,6 +123,29 @@ function clampGorkMemoryChars(value) {
  */
 function clampGorkSummarizeInputTokens(value) {
   return clampInt(value, GORK_SUMMARIZE_INPUT_TOKENS_MIN, GORK_SUMMARIZE_INPUT_TOKENS_MAX, GORK_DEFAULT_SUMMARIZE_INPUT_TOKENS);
+}
+
+/**
+ * Normalize the auto-mod timeout cap in seconds (#725): integer clamped to
+ * 60 … 2,419,200 (28 days = Discord's timeout maximum). Null / non-numeric
+ * falls back to the 3600 default.
+ */
+function clampAutomodTimeoutCap(value) {
+  return clampInt(value, 60, 2_419_200, 3600);
+}
+
+/**
+ * Normalize the auto-mod daily case budget tri-state (#725): -1 blocked |
+ * 0 unlimited | 1..100000, clamped on write. Garbage degrades to the 50
+ * default (never a silent block, never a silent unlimited). Kept in step
+ * with clampAutomodDailyLimit in ./automodSettings.js (same local-constants
+ * posture as the gork caps mirrored from gork/constants).
+ */
+function clampAutomodDailyLimit(value) {
+  if (value === null || value === undefined) return 50;
+  const n = Number(value);
+  if (!Number.isFinite(n)) return 50;
+  return Math.min(100_000, Math.max(-1, Math.floor(n)));
 }
 
 /**
@@ -236,6 +275,22 @@ function updateGuildSettings(communityId, patch) {
     "gork_log_channel_id",
     "honeypot_paused_at",
     "honeypot_pause_reason",
+    // Auto-moderation family (#725, migration 067) — the case-budget day
+    // counter (automod_cases_today/day) and the breaker pause are written by
+    // src/db/repositories/automodSettings.js; the config columns ride the
+    // shared allow-list like every other feature family.
+    "automod_enabled",
+    "automod_channel_id",
+    "automod_rules",
+    "automod_mode_no_action",
+    "automod_mode_warn",
+    "automod_mode_delete_message",
+    "automod_mode_ticket",
+    "automod_mode_timeout",
+    "automod_mode_kick",
+    "automod_mode_ban",
+    "automod_timeout_cap",
+    "automod_daily_case_limit",
   ]);
 
   const keys = Object.keys(patch).filter((k) => allowed.has(k));
@@ -345,6 +400,30 @@ function updateGuildSettings(communityId, patch) {
   if (safePatch.twitch_golive_template !== undefined) {
     safePatch.twitch_golive_template = normalizeTwitchGoLiveTemplate(
       safePatch.twitch_golive_template
+    );
+  }
+  // Auto-moderation belts (#725). Invalid mode strings sanitize to
+  // undefined → the existing "rejected keeps prior value" filter below drops
+  // the column (same tri-state as normalizeGorkKeyword).
+  if (safePatch.automod_enabled !== undefined) {
+    safePatch.automod_enabled = safePatch.automod_enabled ? 1 : 0;
+  }
+  if (typeof safePatch.automod_rules === "string") {
+    safePatch.automod_rules = safePatch.automod_rules.slice(0, AUTOMOD_RULES_MAX_LEN);
+  }
+  for (const modeKey of AUTOMOD_MODE_KEYS) {
+    if (safePatch[modeKey] === undefined) continue;
+    const mode = String(safePatch[modeKey] ?? "").trim().toLowerCase();
+    safePatch[modeKey] = AUTOMOD_MODE_VALUES.has(mode) ? mode : undefined;
+  }
+  if (safePatch.automod_timeout_cap !== undefined) {
+    safePatch.automod_timeout_cap = clampAutomodTimeoutCap(
+      safePatch.automod_timeout_cap,
+    );
+  }
+  if (safePatch.automod_daily_case_limit !== undefined) {
+    safePatch.automod_daily_case_limit = clampAutomodDailyLimit(
+      safePatch.automod_daily_case_limit,
     );
   }
 

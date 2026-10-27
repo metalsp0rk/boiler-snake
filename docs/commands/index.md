@@ -1433,6 +1433,56 @@ role — the service re-checks on every call).
 
 ---
 
+### `/automod` - Auto-moderation status (staff)
+
+Read-only view of the auto-moderation configuration (epic
+[#723](https://github.com/metalsp0rk/boiler-snake/issues/723) — the settings
+slice, #725). Discord-only; Fluxer is explicit no-parity
+(`That command is not available on Fluxer yet.`). See
+[Auto-moderation](../automod.md).
+
+**Usage**:
+```bash
+/automod status    # enabled, channel, rules, 7 modes, timeout cap, budget remaining, breaker
+```
+
+**Response** (ephemeral): `**Enabled:**`, `**Channel:**`, `**Rules:**`
+(set + char count / not set), all seven action **Modes** (staff notes shown
+as always-on — no mode by design), `**Timeout cap:**`,
+`**Daily budget:**` (real remaining today; `0` = unlimited, `-1` = blocked),
+`**Safety:**` (breaker state + pause reason). No secrets.
+
+### `/automodconfig` - Auto-moderation configuration (admin)
+
+Manage Server in the picker AND in the handler. Every mutation records an
+`automod.*` admin-audit row. Settings live on `guild_settings`
+(migration `067`); see [Auto-moderation](../automod.md).
+
+**Usage**:
+```bash
+/automodconfig channel set channel:#automod   # warns if @everyone can view (never rewrites)
+/automodconfig channel clear
+/automodconfig rules set [text]               # omit text → modal (like /note add); cap 4000
+/automodconfig rules clear
+/automodconfig enable on|off                  # master switch (default off)
+/automodconfig mode action:<a> mode:off|suggest|auto
+/automodconfig timeout-cap seconds:3600       # 60 … 2419200 (28 days), never silently clamped
+/automodconfig budget limit:50                # -1 blocked · 0 unlimited · 1–100000 / UTC day
+/automodconfig safety resume                  # preview; then confirm:true to re-arm
+```
+
+| Subcommand | Effect |
+|------------|--------|
+| `channel set\|clear` | Case-card channel. `set` replies with a **Warning** when `@everyone` can view the channel — overwrites are read, NEVER rewritten. Clearing while enabled is allowed (referrals name the missing piece). |
+| `rules set\|clear` | Rules text the judge applies (required to run a case). Over-cap input refuses with the offending character count. |
+| `enable on\|off` | Master switch, default **off**. Enabling does not arm any action — modes stay `suggest`. |
+| `mode` | Per-action mode for `no_action`, `warn`, `delete_message`, `ticket`, `timeout`, `kick`, `ban` (`off` / `suggest` / `auto`, default `suggest`). No mode exists for the staff-note tool — always on. |
+| `timeout-cap` | Max automod-run timeout, 60 s – 2,419,200 s (Discord's 28-day ceiling); default 3600. |
+| `budget` | Daily case budget per server (`-1` blocked / `0` unlimited / `1–100000`, default 50). Separate from Gork's budget; a case counts only when a provider call is accepted. |
+| `safety resume` | Clears the persisted circuit-breaker pause. **Confirm-once (#471 H2-15)**: without `confirm: true` this only previews which auto kick/ban/timeout actions re-arm. |
+
+---
+
 ## Permission Matrix
 
 **Staff gate** = Manage Server **or** any `staff_roles` role (junior or senior).  
@@ -1508,6 +1558,8 @@ role — the service re-checks on every call).
 | `/reactionrole panel\|option\|sync` | Staff gate | Yes |
 | `/gork keyword\|role\|context\|cooldown\|rules\|search\|ste\|enable\|ban\|unban\|bans\|memory\|budget\|log\|logchannel\|summarize-budget\|status` | Staff gate | Yes |
 | `/gork summarize` | Staff gate | No — rundown embed posts publicly (gate/error replies ephemeral) |
+| `/automod status` (#725) | Staff gate | Yes |
+| `/automodconfig …` (#725) | ManageGuild (picker AND handler) | Yes |
 | `/staff role add\|remove\|setlevel` | ManageGuild | Yes |
 | `/staff syncpermissions` | ManageGuild | Yes |
 | `/setcommandchannel add\|remove\|list` | ManageGuild ¹ | Yes |
@@ -1592,6 +1644,7 @@ STAFF GATE (Manage Server OR any staff role):
 /reactionrole panel|option|sync
 /gork keyword|role|context|cooldown|rules|search|ste|enable|ban|unban|bans|memory|budget|log|logchannel|summarize-budget|status
 /gork summarize (from|to|last)       → conversation rundown (10-min guild cooldown)
+/automod status                      → Auto-mod config + budget + breaker (staff, #725)
 /honeypot channel|banrole
 /eventreminder setchannel
 /eventreminder edit|clear|sync       → creator OR Manage Server (create retired → /event)
@@ -1603,4 +1656,6 @@ MANAGE SERVER ONLY:
 /setcommandchannel add|remove|list → Command channel allow-list
 /honeypot exempt …                 → Staff-role alias
 /honeypot safety resume            → Un-pause honeypot bans after the #440 safety valve
+/automodconfig channel|rules|enable|mode|timeout-cap|budget → Auto-mod config (#725)
+/automodconfig safety resume       → Re-arm auto kick/ban/timeout (confirm:true, #725)
 ```
