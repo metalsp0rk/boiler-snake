@@ -24,6 +24,15 @@
  *    RECORDED and where recommendations will post — it never claims a
  *    recommendation was produced (the harness may not exist yet).
  *
+ * #728 ADDITION (additive only — the ack copy stays byte-identical; tests
+ * pin it): once the ack reply has RESOLVED, both command arms fire the
+ * harness run DETACHED through an installable hook (`setRunCaseHook`,
+ * wired by the feature's boot hook — index.js). No hook installed (unit
+ * tests, degraded boot) → nothing fires. The fire carries its own
+ * `.catch`: one referral can never produce an unhandled rejection nor
+ * kill the interaction handler (AGENTS.md rule 1: detached async gets
+ * its own catch, logged with the ids).
+ *
  * Services never reply to Discord themselves and never throw: every failure
  * is `{ ok: false, error }` with a specific message, logged `[automod]` with
  * community/user ids (error rules 2 + 6); the command arms decide how to
@@ -459,6 +468,54 @@ async function referToAutomod(input = {}) {
   }
 }
 
+// ── harness run trigger (#728, additive) ──────────────────────────────────
+//
+// The feature's boot hook installs the hook (index.js → harness.
+// makeReferRunHook). Until it does — unit tests, or a boot where the
+// harness wiring failed — recorded cases simply stay `recorded`: the ack
+// already says recommendations will post THERE, and a missing hook is a
+// degraded surface, never an intake failure.
+
+/** @type {null | ((input: {communityId: number, guildId: string|null, case: object, referrerUserId: string|null}) => Promise<unknown>)} */
+let runCaseHook = null;
+
+/**
+ * Install (or clear, with null) the post-ack harness trigger. One
+ * referral = one run: the RUN itself refuses a second pass via its atomic
+ * status claim (harness.js) — this seam never double-fires the same ack.
+ *
+ * @param {Function|null} hook
+ */
+function setRunCaseHook(hook) {
+  if (hook != null && typeof hook !== "function") {
+    throw new TypeError("setRunCaseHook: hook must be a function or null");
+  }
+  runCaseHook = hook;
+}
+
+/**
+ * Fire the installed hook DETACHED (never awaited by the handler — the
+ * ack already shipped). Its own `.catch` names the ids (rule 1). Sync
+ * throws from the hook installation path are caught too.
+ */
+function scheduleAutomodRun({ communityId, guildId, caseRow, referrerUserId }) {
+  const hook = runCaseHook;
+  if (typeof hook !== "function") return;
+  if (caseRow?.id == null) return; // nothing to run without the row id
+  const ids =
+    `(community ${communityId ?? "?"} guild ${guildId ?? "?"} case ${caseRow?.id ?? "?"})`;
+  try {
+    const p = Promise.resolve().then(() =>
+      hook({ communityId, guildId, case: caseRow, referrerUserId }),
+    );
+    p.catch((err) =>
+      console.error(`[automod] automod run crashed ${ids}:`, err?.message || err),
+    );
+  } catch (err) {
+    console.error(`[automod] automod run crashed ${ids}:`, err?.message || err);
+  }
+}
+
 // ── audit + command arms ───────────────────────────────────────────────────
 
 /**
@@ -518,6 +575,14 @@ async function handleReferCommand(commandCtx) {
 
   auditRefer(commandCtx.communityId, commandCtx.userId, result);
   await commandCtx.reply({ content: result.ack, sensitive: true });
+
+  // #728: trigger AFTER the ack reply resolves — detached, its own catch.
+  scheduleAutomodRun({
+    communityId: commandCtx.communityId,
+    guildId: commandCtx.externalGuildId,
+    caseRow: result.case,
+    referrerUserId: commandCtx.userId,
+  });
 }
 
 /**
@@ -573,6 +638,14 @@ async function handleReferContextMenu(interaction, ctx) {
 
     auditRefer(communityId, interaction.user?.id, result);
     await replyEphemeral(interaction, result.ack);
+
+    // #728: trigger AFTER the ack reply resolves — detached, its own catch.
+    scheduleAutomodRun({
+      communityId,
+      guildId: interaction.guildId ?? null,
+      caseRow: result.case,
+      referrerUserId: interaction.user?.id ?? null,
+    });
   } catch (err) {
     console.error(
       "[automod] refer context-menu failed:",
@@ -607,4 +680,6 @@ module.exports = {
   referToAutomod,
   handleReferCommand,
   handleReferContextMenu,
+  // #728 harness trigger seam (wired by the feature boot hook):
+  setRunCaseHook,
 };

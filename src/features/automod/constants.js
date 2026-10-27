@@ -61,6 +61,41 @@ const AUTOMOD_CONTEXT_USER_SCAN_MAX_MESSAGES = 100;
 /** Warnings / staff-notes preload page cap (repository non-export max). */
 const AUTOMOD_CONTEXT_RECORDS_PAGE_MAX = 100;
 
+/* ── LLM harness (case runner, #728, epic #723) ───────────────────────────
+ * The runner shares the provider env with Gork (AI_API_KEY / AI_BASE_URL /
+ * AI_MODEL via src/core/ai.js) but owns its OWN knobs — nothing here reads
+ * or writes a Gork setting, queue, or budget counter (locked decision 7).
+ * Fixed constants, deliberately NOT env and NOT per-guild (report to the
+ * settings issue first if a knob ever needs to become configurable):      */
+
+/**
+ * Tool-round cap for ONE case run. Sibling of Gork's per-guild
+ * `gork_max_tool_rounds` knob (roadmap/gork.md #705) with the same purpose
+ * — a model spewing tool calls forever gets bounded — but automod runs are
+ * short by design (read, consider, record), so this is a fixed constant,
+ * not a setting. A run that hits the cap posts the partial decision + the
+ * specific "tool-round cap (N) reached" cause and STILL commits what it
+ * recorded (contract #728).
+ */
+const AUTOMOD_MAX_TOOL_ROUNDS = 12;
+
+/**
+ * Wall-clock budget for the whole provider tool loop of one run (every
+ * round + tool execution, the chatWithTools `timeoutMs` deadline). A hung
+ * provider can therefore never hold a case open past this — the run ends
+ * with the provider's timeout cause and the budget stays unconsumed when
+ * nothing was ever accepted.
+ */
+const AUTOMOD_RUN_TIMEOUT_MS = 120_000;
+
+/** Persisted decision-log entry cap (belt — cap × calls per round can
+ *  exceed it; overflow is dropped with a final `_log_truncated` marker). */
+const AUTOMOD_DECISION_LOG_MAX_ENTRIES = 128;
+
+/** Cap on tool-result strings fed back to the model (lookups can return a
+ *  full record page; keep one tool result bounded like Gork's read caps). */
+const AUTOMOD_TOOL_RESULT_MAX_CHARS = 4000;
+
 /** Slash command builders use these for their option choices. */
 const MODE_CHOICES = AUTOMOD_MODES.map((m) => ({ name: m, value: m }));
 const ACTION_CHOICES = AUTOMOD_ACTIONS.map((a) => ({ name: a, value: a }));
@@ -93,4 +128,11 @@ module.exports = {
   AUTOMOD_CONTEXT_USER_SCAN_PER_CHANNEL,
   AUTOMOD_CONTEXT_USER_SCAN_MAX_MESSAGES,
   AUTOMOD_CONTEXT_RECORDS_PAGE_MAX,
+  // LLM harness (#728): the run's own knobs — round cap, loop deadline,
+  // decision-log belt, tool-result cap. Fixed constants (no env, no setting;
+  // the provider env stays the shared AI_* trio).
+  AUTOMOD_MAX_TOOL_ROUNDS,
+  AUTOMOD_RUN_TIMEOUT_MS,
+  AUTOMOD_DECISION_LOG_MAX_ENTRIES,
+  AUTOMOD_TOOL_RESULT_MAX_CHARS,
 };
