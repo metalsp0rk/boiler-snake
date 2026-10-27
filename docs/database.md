@@ -1840,7 +1840,7 @@ There is no separate manual migration CLI for normal operation: starting the bot
 
 Since the 2026-10 audit (#202) the database records a schema version in SQLite's `PRAGMA user_version` header field:
 
-- **The version is the registry size.** The ordered list in `src/db/migrate.js` is append-only (same rule as the numbered files); with `001`–`065` registered the version is `65`.
+- **The version is the registry size.** The ordered list in `src/db/migrate.js` is append-only (same rule as the numbered files); with `001`–`066` registered the version is `66`.
 - **Full replay stays the correctness mechanism.** Every migration is idempotent, so `runMigrations()` replays the entire set whenever the recorded version does not match the registry, and stamps `user_version` only after the whole pass succeeds.
 - **`user_version` is a fast-skip record, not a per-migration cursor.** When the recorded version equals the registry size AND the `applied_migrations` ledger agrees (below), the replay is skipped entirely (one boot log line). Databases created before the guard have `user_version = 0`: they get one idempotent full replay and are stamped — every boot after that is a skip.
 - **The `applied_migrations` ledger records WHAT ran (audit #394).** A count can never record a set: a length-preserving registry change (reorder, or a swap that keeps the list the same size) leaves `user_version` identical and would fast-skip a replay the changed registry needs. The ledger (`seq`/`id`/`applied_at`) stores the ORDERED id list of the last complete pass and is rebuilt transactionally with the version stamp — a crashed pass leaves neither honest. The fast-skip requires both records to agree; on disagreement (including legacy DBs with no ledger yet) the idempotent replay runs once and re-stamps both.
@@ -1941,6 +1941,7 @@ Concretely this means:
 | `063_rss_seen` | `rss_seen` — bounded per-feed seen-set `(community_id, feed_url, entry_key)` for RSS entry dedup (~100 rows/feed, pruned oldest-first via `idx_rss_seen_feed_prune`); the PK doubles as the poller's claim-before-send race guard (#305) |
 | `064_rss_guild_settings` | `guild_settings.rss_notification_channel_id` + `rss_notify_role_id` + `rss_polling_interval_minutes` (default 15) — the RSS notification settings trio behind `/setrss` (#305); NULL channel = the feature idles, NULL role = no mention |
 | `065_gork_max_tool_rounds` | `guild_settings.gork_max_tool_rounds` (nullable) — per-guild gork tool-round budget (`/gork toolrounds`, 5–300) driving the derived answer deadline; NULL = never set so `GORK_LLM_MAX_TOOL_ROUNDS` stays the global fallback (#705) |
+| `066_ticket_reports` | `ticket_reports` — one structured side record per context-menu Report Post / Report User ticket (#745): `kind` CHECK (`message`/`user`), reported subject, message + source-channel ids, `message_deleted` flag, modal context note; PK `ticket_id` with `ON DELETE CASCADE` to `tickets`, partial index on `reported_message_id` for the duplicate-open-report nudge |
 
 Public API remains available via `require("./db")` (facade over repositories).
 
