@@ -19,11 +19,13 @@
  * Fluxer dispatcher (#750's chat-input-only tree filter).
  *
  * Deliberate absences (by contract, not omission):
- *  - NO LLM call anywhere here; the harness is #728. Referral intake (#726)
- *    stops at a stored case + the ack — see ./refer.js for why the ack may
- *    never claim a recommendation was produced.
+ *  - LLM calls live in ./harness.js ONLY (#728 shipped): command handlers
+ *    never touch a provider. Referral intake (#726) stops at a stored case
+ *    + the ack — see ./refer.js for why the ack may never claim a
+ *    recommendation was produced; the harness posts the outcome separately.
  *  - NO new env vars — storage is the automod_* guild_settings family plus
- *    the automod_cases table (068).
+ *    the automod_cases table (068) with its run-metadata columns (070);
+ *    the provider rides the shared AI_* trio via src/core/ai.js.
  */
 
 const {
@@ -40,6 +42,47 @@ const { buildStatusPayload } = require("./status");
 const config = require("./config");
 const refer = require("./refer");
 const settings = require("./settings");
+const harness = require("./harness");
+
+/**
+ * BOOT HOOK (#728). Runs once at ClientReady behind load.js's per-feature
+ * guard (a throw here logs `[features] automod.start failed:` and login
+ * continues — keep it that way).
+ *
+ *  1. Installs the refer→harness trigger: every recorded-and-acked referral
+ *     then fires `runAutomodCase` DETACHED (refer.js owns the fire + its
+ *     catch; the harness's atomic claim keeps it one-run-per-case). A
+ *     wiring failure logs and leaves intake fully working — cases just
+ *     queue until the next boot.
+ *  2. Boot sweep: cases stuck in `processing` from a previous boot are
+ *     terminalized `failed` ("run interrupted by restart") with a
+ *     best-effort channel notice. Synchronous DB pass, detached posts
+ *     (each self-catching) — this hook NEVER returns a rejecting promise
+ *     (load.js only guards synchronous throws, and a rejected hook promise
+ *     would be an unhandled rejection at boot).
+ *
+ * @param {{discord?: object|null}} supervisor
+ * @returns {{checked:number, flipped:number}|undefined} sweep summary (tests)
+ */
+function start(supervisor) {
+  const client = supervisor?.discord ?? null;
+  try {
+    refer.setRunCaseHook(harness.makeReferRunHook({ client }));
+  } catch (err) {
+    console.error("[automod] harness run-hook wiring failed:", err?.message || err);
+  }
+  try {
+    const sweep = harness.sweepInterruptedRuns({ client });
+    // Every sweep post already catches internally; allSettled is the belt.
+    if (Array.isArray(sweep?.posts) && sweep.posts.length > 0) {
+      Promise.allSettled(sweep.posts);
+    }
+    return { checked: sweep.checked, flipped: sweep.flipped };
+  } catch (err) {
+    console.error("[automod] boot sweep crashed:", err?.message || err);
+    return undefined;
+  }
+}
 
 /**
  * /automod — staff surface (epic: staff may check state and file referrals;
@@ -147,11 +190,16 @@ module.exports = {
   modalHandlers: {
     [MODAL_RULES]: config.handleRulesModal,
   },
+  // #728: boot wiring (harness trigger + interrupted-run sweep), guarded by
+  // load.js's per-feature hook isolation like every other boot surface.
+  start,
   // Exported for unit tests + later automod issues (#727 case context and
   // #728 harness build on the referral service + the automod_cases rows;
-  // #739 owns the breaker trip write).
+  // #730's card reads harness post shapes + executor state; #739 owns the
+  // breaker trip write).
   settings,
   refer,
+  harness,
   status: require("./status"),
   constants: require("./constants"),
   buildStatusPayload,

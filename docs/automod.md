@@ -1,8 +1,8 @@
 # Auto-moderation (epic #723)
 
 !!! abstract "Ship state — this page tracks the epic"
-    **Shipped now:** the guild settings and their Manage-Guild commands — `/automod status` and `/automodconfig` (channel, rules, master switch, per-action modes, timeout cap, daily case budget, breaker state + `safety resume`) (#725) — plus **staff referral intake**: `/automod refer` and the **Refer to automod** message context menu, which record a case (**A-n**) and ack where recommendations will post (#726), and the **case-context collector** + lookup tools the judge reads (#727 — no user-facing surface of its own; see [Case context](#case-context)).
-    **Landing in sibling issues:** the LLM harness (#728), the per-action mode gate (#729), the case card (#730), and the individual action tools (#731–#738), plus the circuit breaker trip logic (#739). A recorded case is queued input: **nothing here calls a model** — the ack never claims a recommendation was produced.
+    **Shipped now:** the guild settings and their Manage-Guild commands — `/automod status` and `/automodconfig` (channel, rules, master switch, per-action modes, timeout cap, daily case budget, breaker state + `safety resume`) (#725) — plus **staff referral intake**: `/automod refer` and the **Refer to automod** message context menu, which record a case (**A-n**) and ack where recommendations will post (#726), the **case-context collector** + lookup tools the judge reads (#727 — no user-facing surface of its own; see [Case context](#case-context)), and the **LLM harness**: the case runner that judges a recorded case, records intent through mode-gated tools, and commits every action through the executor (#728 — see [Harness](#harness)).
+    **Landing in sibling issues:** the case card (#730), the individual action tools' surfaces (#731–#738), plus the circuit breaker trip logic (#739). The intake ack never claims a recommendation was produced — the **harness posts its outcome separately**, after the ack. The mode gate itself (off/suggest/auto, guards, atomic claims) is already shipped in the executor (#729) — until #730 lands, a suggest-mode decision is recorded as a pending row and reported in the harness post.
 
 Auto-moderation is a staff-referred judgment pipeline: a staff member refers a message or a user, a separate LLM harness recommends staff actions against the guild's written rules, and each action type is gated `off` / `suggest` / `auto` by the guild. **Recommendations are the default** — enabling the master switch never starts kicking or banning by itself.
 
@@ -23,9 +23,10 @@ See [Fluxer instances](fluxer.md) for the platform matrix.
 
 It is also **separate from Gork** by design: its own settings family
 (`automod_*`), its own daily budget, its own prompts. A case never increments
-Gork's budget and never enters Gork's queue (and vice versa). No new
-environment variables: the provider env (`AI_API_KEY`, `AI_BASE_URL`,
-`AI_MODEL`) arrives with the harness issue (#728).
+Gork's budget and never enters Gork's queue (and vice versa — the only shared
+surface is the provider env: `AI_API_KEY`, `AI_BASE_URL`, `AI_MODEL` via
+`src/core/ai.js`; **no new environment variables** ship with the harness, and
+there is no automod-specific provider knob).
 
 ## Setup
 
@@ -225,9 +226,12 @@ Cannot refer a bot or system message to automod — nothing was recorded.
 - **A breaker pause never refuses a referral.** The pause darkens auto
   kick/ban/timeout only; a paused guild keeps recording cases.
 - `status` vocabulary: `recorded` (only #726 writes this) → `processing` →
-  `complete` / `failed` — transitions are owned by the harness (#728) via
-  `setAutomodCaseStatus`. Executor action state lives in the sibling
-  case-actions table, not in this column.
+  `complete` / `failed` — transitions are owned by the harness (#728), which
+  CLAIMS a case with an atomic conditional UPDATE (`SET status='processing'
+  WHERE status='recorded'`), so a second run for the same case can never
+  start. Executor action state lives in the sibling case-actions table, not
+  in this column; per-run provider metadata lives on the case row itself
+  (migration `070`, see [Harness](#harness)).
 
 ## Case context
 
@@ -310,6 +314,93 @@ objects.
 lookup tools are Discord-only; there is no Fluxer window read and none is
 planned in this epic.
 
+## Harness
+
+The harness (`src/features/automod/harness.js` + `harnessTools.js` +
+`prompt.js`, #728) is the **case runner**: one recorded referral starts
+exactly one judged run. It is NOT a Gork tool — separate prompt, separate
+tools, separate daily budget, no queue. The only shared surface is the
+provider env (`AI_API_KEY` / `AI_BASE_URL` / `AI_MODEL`, function calling
+required, read through the shared `src/core/ai.js` client).
+
+**Trigger.** Both referral arms fire the run **after the ack reply has
+resolved**, detached with its own catch (a crashing run logs
+`[automod] automod run crashed …` and can never produce an unhandled
+rejection or kill the interaction handler). The ack copy itself is
+unchanged — it still only says where recommendations will post.
+
+**Run lifecycle:**
+
+1. Budget **pre-gate** (blocked/exhausted refuses before anything mutates —
+   the case stays `recorded` and is re-runnable after the UTC day rolls).
+2. **Atomic claim** `recorded → processing` (a conditional UPDATE — one
+   referral, one run; a second attempt refuses naming the current status).
+3. A **reviewing placeholder** posts to the automod channel naming the
+   referrer. A post failure is logged and the run continues — the
+   referrer-visible surface degrades to the completion message only.
+4. The case context (#727) is built; its specific failure fails the run.
+5. **Tool rounds** run against the model. Tool schemas are built FROM the
+   mode gate: `off` actions are not offered at all; the staff-note tool
+   (`write_staff_note`) and both read tools (`read_warnings`,
+   `read_staff_notes`) are always present. Reads execute immediately;
+   **action tools and the note tool only record intent** during the loop —
+   nothing mutates until commit, and each tool result tells the model so
+   (`applied at commit`; suggest-mode lines read
+   `**Status:** awaiting staff approval`).
+6. When the model stops (or the round cap hits), the harness **commits**:
+   every recorded action goes through the executor (`executeAutomodAction`
+   with `claimant: "harness"`) — the executor owns the mode gate, staff /
+   hierarchy guards, atomic claims, and the timeout clamp; the harness
+   clamps nothing itself. Recorded staff notes then write through the real
+   `createStaffNote` (author = the bot acting for the harness, content =
+   the model's note + an `A-n` case reference).
+7. The outcome **edits the placeholder** (or posts fresh when the
+   placeholder never landed): per-intent lines straight from the executor
+   results + a meta line (`Model X · ms · rounds · tools`). Plain embed, no
+   buttons — the Approve/Dismiss card is #730's.
+8. Provider metadata persists on the case row (migration `070`):
+   `last_model`, `last_duration_ms`, `last_tool_names` (JSON),
+   `decision_log` — a **short structured log**
+   (`[{seq, tool, args_summary, state, result_or_error}]`, explicitly not a
+   transcript copy; the staff notes hold the human record) — and
+   `last_run_error`.
+
+**Enforcement in the tool layer** (locked decision 4 — not prompt-only): a
+staff note is required for every user considered, and consideration is
+mechanical — a user becomes considered by a recorded action for them
+(including `no_action`); a note for anyone else is refused naming the
+**bystander rule**, and a second note for the same user is refused
+(one per user per case). Action tools dedupe per (action, user) per run,
+`off` actions cannot run even if hallucinated, and `timeout` durations pass
+through UNCLAMPED (the executor clamps and the row records the duration
+actually used).
+
+**Round cap.** Tool rounds are capped at a fixed **12**
+(`AUTOMOD_MAX_TOOL_ROUNDS` — the harness's own constant, sibling of Gork's
+per-guild knob but not a setting; the loop deadline is the constant
+`AUTOMOD_RUN_TIMEOUT_MS`, 120 s). A run that hits the cap posts the partial
+decision naming the specific cause (`tool-round cap (12) reached`), **still
+commits** what it recorded, and finishes `complete` with that cause kept in
+`last_run_error`.
+
+**Budget.** The provider call is **accepted** exactly when a parsed
+provider response came back at some point (a clean result, any executed
+tool call, the cap, or an empty-but-returned body). Only then
+`consumeAutomodCase` runs — **exactly once per run**. An HTTP 4xx/5xx, a
+network/timeout failure, or an AI-not-configured provider consumes
+**nothing** (test-pinned) and the post names the provider's own words:
+`Referred by <@staff> — provider error: <cause>`.
+
+**Isolation.** A broken provider, garbage tool arguments, or a repo failure
+can never kill the client: the runner never throws, detached work owns its
+catch, and every failure logs `[automod]` with community/guild/case ids and
+staff-facing copy names the specific cause. The **boot sweep** (feature
+`start` hook) fails any case stuck in `processing` from a previous boot
+(`last_run_error = run interrupted by restart`) with a best-effort channel
+notice.
+
+**Fluxer: explicit no-parity** (epic decision 8). The harness is Discord-only.
+
 ## Modes (locked decision 2)
 
 | Mode | Meaning |
@@ -322,9 +413,12 @@ planned in this epic.
 
 One counter per community per **UTC day** (`automod_cases_today` +
 `automod_cases_day` on `guild_settings`). A case counts **only when a
-provider call is accepted** — a provider failure does not consume budget.
-`/automod status` shows the real remaining count; the counter rolls at the
-UTC day boundary with no ticker.
+provider call is accepted** (see [Harness](#harness) for the exact
+acceptance rule) — a provider failure does not consume budget, and the run
+consumes exactly once per accepted run. A run that starts against a
+blocked/exhausted budget refuses BEFORE mutating anything, so the recorded
+case survives to run after the day rolls. `/automod status` shows the real
+remaining count; the counter rolls at the UTC day boundary with no ticker.
 
 ## Circuit breaker (state shipped in #725)
 
@@ -357,7 +451,12 @@ context-menu builder is `src/features/automod/contextMenu.js`. Case-context
 gathering (no table of its own — it reads the case row + the guild settings +
 the referrer's live Discord view): `src/features/automod/caseContext.js` and
 the lookup tools `src/features/automod/lookups.js` (#727, see
-[Case context](#case-context)).
+[Case context](#case-context)). The harness runner, its mode-gated tool
+layer, and its system-prompt builder are `harness.js` / `harnessTools.js` /
+`prompt.js` (#728, see [Harness](#harness)); the run-metadata columns
+(`last_model`, `last_duration_ms`, `last_tool_names`, `decision_log`,
+`last_run_error`) ship in migration `070_automod_case_run_metadata` and are
+written only by the runner and its boot sweep.
 
 ## Related
 
