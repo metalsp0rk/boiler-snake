@@ -7,7 +7,8 @@
  *        panel create|list|edit|delete  (stored panel registry)
  * Buttons: tk:open → modal for description → same pipeline as /ticket create
  *          tk:sn:<ticketId> → modal to attach a staff note after close
- * Modals:  tk:create · tk:snm:<ticketId> · tk:rep:u:<token> (Report User submit)
+ * Modals:  tk:create · tk:snm:<ticketId> · tk:rep:m:<token> · tk:rep:u:<token>
+ *          (the two tk:rep:* arms are the #745 Report Post / Report User submits)
  * Context menus (#745): "Report Post" / "Report User" invoke handlers
  *          snapshot the target and show tk:rep:m:<token> / tk:rep:u:<token>
  */
@@ -25,6 +26,7 @@ const {
   MODAL_CREATE,
   BTN_STAFF_NOTE_PREFIX,
   MODAL_STAFF_NOTE_PREFIX,
+  MODAL_REPORT_MESSAGE_PREFIX,
   MODAL_REPORT_USER_PREFIX,
   MODAL_FIELD_REASON,
   MODAL_FIELD_STAFF_NOTE,
@@ -46,6 +48,7 @@ const {
 const {
   handleReportMessage,
   handleReportUser,
+  handleReportMessageModal,
   handleReportUserModal,
 } = require("./report");
 const {
@@ -210,9 +213,10 @@ module.exports = {
   modalHandlers: {
     [MODAL_CREATE]: handleCreateTicketModal,
     [MODAL_STAFF_NOTE_PREFIX]: handleStaffNoteModal,
-    // #745 subtask 06: "Report User" submit — `tk:rep:u:<token>`. The
-    // router's longest-prefix matcher hands it the token-carrying customId;
-    // the subtask-08 "Report Post" submit registers beside it.
+    // #745 subtasks 06 + 08: the two context-menu report submits. The
+    // router's longest-prefix matcher hands each its token-carrying customId
+    // (`tk:rep:m:<token>` Report Post · `tk:rep:u:<token>` Report User).
+    [MODAL_REPORT_MESSAGE_PREFIX]: handleReportMessageModal,
     [MODAL_REPORT_USER_PREFIX]: handleReportUserModal,
   },
   registerEvents,
