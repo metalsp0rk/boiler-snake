@@ -38,6 +38,29 @@ const {
  */
 const NOT_ON_FLUXER = "That command is not available on Fluxer yet.";
 
+/* ── Case-context gathering caps (#727, epic #723) ─────────────────────────
+ * The ANCHOR window deliberately does NOT get automod-specific sizes: the
+ * contract names Gork's `read_discord` decision-45 window as the cap, so
+ * `caseContext.js` imports READ_DISCORD_BEFORE_WINDOW (40) /
+ * READ_DISCORD_AFTER_WINDOW (10) / READ_DISCORD_MESSAGE_CHAR_CAP (500)
+ * straight from `../gork/constants` (single source, gork stays read-only).
+ * The constants below size the USER-ONLY scan, which has no gork twin (a
+ * referral without an anchor message is automod-only intake shape) — they
+ * exist to make "bounded, never the whole server" a provable bound:
+ * worst case = AUTOMOD_CONTEXT_USER_SCAN_MAX_CHANNELS message fetches, each
+ * ≤ AUTOMOD_CONTEXT_USER_SCAN_PER_CHANNEL messages, and at most
+ * AUTOMOD_CONTEXT_USER_SCAN_MAX_MESSAGES SUBJECT messages survive into the
+ * bundle. */
+
+/** Channels the user-only scan may FETCH (visible + non-ticket) at most. */
+const AUTOMOD_CONTEXT_USER_SCAN_MAX_CHANNELS = 15;
+/** Per-channel fetch cap (recent messages pulled per scanned channel). */
+const AUTOMOD_CONTEXT_USER_SCAN_PER_CHANNEL = 25;
+/** Collected subject-message cap across the whole user-only scan. */
+const AUTOMOD_CONTEXT_USER_SCAN_MAX_MESSAGES = 100;
+/** Warnings / staff-notes preload page cap (repository non-export max). */
+const AUTOMOD_CONTEXT_RECORDS_PAGE_MAX = 100;
+
 /** Slash command builders use these for their option choices. */
 const MODE_CHOICES = AUTOMOD_MODES.map((m) => ({ name: m, value: m }));
 const ACTION_CHOICES = AUTOMOD_ACTIONS.map((a) => ({ name: a, value: a }));
@@ -63,4 +86,11 @@ module.exports = {
   // src/db/repositories/automodCases.js.
   AUTOMOD_CASE_STATUSES,
   AUTOMOD_REFER_NOTE_MAX_LEN,
+  // Case-context gathering caps (#727): the user-only scan bounds and the
+  // records-preload page. The anchor window caps are GORK-owned — import
+  // READ_DISCORD_* from ../gork/constants (see the block comment above).
+  AUTOMOD_CONTEXT_USER_SCAN_MAX_CHANNELS,
+  AUTOMOD_CONTEXT_USER_SCAN_PER_CHANNEL,
+  AUTOMOD_CONTEXT_USER_SCAN_MAX_MESSAGES,
+  AUTOMOD_CONTEXT_RECORDS_PAGE_MAX,
 };

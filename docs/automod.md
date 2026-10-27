@@ -1,8 +1,8 @@
 # Auto-moderation (epic #723)
 
 !!! abstract "Ship state — this page tracks the epic"
-    **Shipped now:** the guild settings and their Manage-Guild commands — `/automod status` and `/automodconfig` (channel, rules, master switch, per-action modes, timeout cap, daily case budget, breaker state + `safety resume`) (#725) — plus **staff referral intake**: `/automod refer` and the **Refer to automod** message context menu, which record a case (**A-n**) and ack where recommendations will post (#726).
-    **Landing in sibling issues:** case context (#727), the LLM harness (#728), the per-action mode gate (#729), the case card (#730), and the individual action tools (#731–#738), plus the circuit breaker trip logic (#739). A recorded case is queued input: **nothing here calls a model** — the ack never claims a recommendation was produced.
+    **Shipped now:** the guild settings and their Manage-Guild commands — `/automod status` and `/automodconfig` (channel, rules, master switch, per-action modes, timeout cap, daily case budget, breaker state + `safety resume`) (#725) — plus **staff referral intake**: `/automod refer` and the **Refer to automod** message context menu, which record a case (**A-n**) and ack where recommendations will post (#726), and the **case-context collector** + lookup tools the judge reads (#727 — no user-facing surface of its own; see [Case context](#case-context)).
+    **Landing in sibling issues:** the LLM harness (#728), the per-action mode gate (#729), the case card (#730), and the individual action tools (#731–#738), plus the circuit breaker trip logic (#739). A recorded case is queued input: **nothing here calls a model** — the ack never claims a recommendation was produced.
 
 Auto-moderation is a staff-referred judgment pipeline: a staff member refers a message or a user, a separate LLM harness recommends staff actions against the guild's written rules, and each action type is gated `off` / `suggest` / `auto` by the guild. **Recommendations are the default** — enabling the master switch never starts kicking or banning by itself.
 
@@ -229,6 +229,87 @@ Cannot refer a bot or system message to automod — nothing was recorded.
   `setAutomodCaseStatus`. Executor action state lives in the sibling
   case-actions table, not in this column.
 
+## Case context
+
+Every recorded case needs an **evidence bundle** before anything can judge it.
+The collector (`src/features/automod/caseContext.js`, #727) assembles it on
+demand: **pure gathering, no sanctions** — it never warns, deletes, tickets,
+times out, kicks or bans, and it cannot write staff notes (those are the
+harness's, #731). It is internal: there is **no user-facing command** for it,
+no setting and no env var. The harness (#728) calls
+`buildCaseContext({ communityId, guildId, caseNumber, deps })` and receives
+`{ ok: true, context }` or `{ ok: false, error }` naming the specific cause.
+
+**Always in the bundle**
+
+- **Guild rules text** — from the current settings. Intake already refused an
+  empty rules text; if an admin clears it *after* recording, the case cannot
+  be judged and the collector refuses naming that cause.
+- **Referral block** — referrer id, their explanation note, the message link
+  (channel + message ids when the case has one), and the named user — read
+  from the `automod_cases` row.
+- **Message window**
+  - *Message referral:* the anchor message plus a bounded surround — up to
+    **40 older / 10 newer**, capped by Gork's own `read_discord` window
+    constants (single source, decision 45). Per message: id, author id,
+    content (capped at 500 chars with an honest `content_truncated` flag),
+    timestamp, attachment **names** only. The anchor channel is re-checked
+    against the **referrer's** current View Channel access (intake checked
+    once; the collector checks honestly); a deleted/unknown anchor is a
+    specific error, never a partial window. **Threads are out of scope** —
+    a window contains channel-level messages only (no thread walk) in v1.
+  - *User-only referral:* the referred user's recent messages in channels the
+    **referrer can view** — asker parity, the Gork decision-46 rule. Channels
+    the referrer cannot view are **never fetched** and are counted as
+    `channels_skipped_not_visible`; open help tickets are excluded too (the
+    decision-46 ticket blackout). The scan is bounded by constants — at most
+    **15 fetched channels**, **25 messages per fetch**, **100 collected
+    messages** (newest kept, `truncated` disclosed) — never a whole-server
+    crawl.
+- **Existing warnings + existing staff notes for the referred user only** —
+  the named user, or the anchor message's author when no user was named.
+  Warnings are the judgment-complete set the staff surfaces read: **active +
+  expired-but-not-yet-voided** (voided = formally withdrawn by
+  `/warn void`, hidden from the default staff view). Notes are **live**
+  notes (erased tombstones excluded).
+
+**Participants vs subjects** (locked decisions 4/5)
+
+- Every author id seen in the window lands in `participant_user_ids`
+  (deduped, including the subject) — context so the case card can later show
+  **who was seen and not considered**.
+- Authors are **context, not subjects**: exactly one subject (`subject_user_ids`)
+  gets any private record preloaded. A bystander who merely appears in the
+  window gets **no** preloaded notes or warnings.
+
+**Lookup tools** (`src/features/automod/lookups.js`) — read-only, always
+available, **no mode flag** (an off/paused executor never gates a read):
+
+- `read_warnings(user)` — that user's non-voided warnings in **this guild**
+  (voided history disclosed as a count only).
+- `read_staff_notes(user)` — that user's live notes in **this guild**.
+
+These exist so the judge can inspect someone in the window it is **starting
+to consider** without preloading every bystander's private record into the
+prompt. Both are **guild-isolated**: a user with no member row in this guild
+is refused with the specific cause.
+
+**Privacy** — staff notes and full warning history stay in the harness and
+the staff channel. The collector never composes ticket or warning-DM text;
+the ticket tool (#735) must scrub member-visible ticket text before anything
+from a bundle could reach it, and window message content is raw data — any
+renderer quoting it escapes markdown/mentions first (the #745 report-evidence
+escaping convention).
+
+Failures always log `[automod]` with community, guild and case ids and always
+carry a specific cause (never "check logs"). The bundle itself is plain
+JSON-able data shaped for the harness — ids as strings, no Discord library
+objects.
+
+**Fluxer: explicit no-parity** (epic decision 8). The collector and both
+lookup tools are Discord-only; there is no Fluxer window read and none is
+planned in this epic.
+
 ## Modes (locked decision 2)
 
 | Mode | Meaning |
@@ -272,7 +353,11 @@ offset })`,
 `AUTOMOD_REFER_NOTE_MAX_LEN` cap (1000), re-exported via
 `src/features/automod/constants.js` and the `src/db` facade. Intake:
 `src/features/automod/refer.js` (both command arms over one service); the
-context-menu builder is `src/features/automod/contextMenu.js`.
+context-menu builder is `src/features/automod/contextMenu.js`. Case-context
+gathering (no table of its own — it reads the case row + the guild settings +
+the referrer's live Discord view): `src/features/automod/caseContext.js` and
+the lookup tools `src/features/automod/lookups.js` (#727, see
+[Case context](#case-context)).
 
 ## Related
 
