@@ -2,7 +2,7 @@
 
 Private per-server support tickets: members open a channel with staff, staff respond, then **non-sensitive** tickets are closed and **archived** (HTML transcript + summary in a staff channel). **Sensitive** tickets are never content-archived—closing deletes the channel and posts a metadata-only stub.
 
-**On Fluxer:** the ticket *text* subcommands run as prefix commands — `!ticket create reason "…"` works (on Fluxer `reason` is required inline; there is no modal surface), as do `!ticket list`, `!ticket settings`, and the staff config verbs (`setcategory`, `setarchive`, `setratelimit`). What stays Discord-only: the panel system, its buttons and modals, and the ticket-channel lifecycle arms (`for`, `close`, `archive`, `claim`, `transfer`, `adduser`/`removeuser`, `addstaff`/`removestaff`, `sensitive`/`unsensitive`, `info`, `summarize`) — those answer `That command is not available on Fluxer yet.` Opening a ticket channel is an elevated write: on Fluxer it is gated behind the community's `elevated_permissions` flag, and with the flag off the failure reply names the cause. See [Fluxer instances](fluxer.md).
+**On Fluxer:** the ticket *text* subcommands run as prefix commands — `!ticket create reason "…"` works (on Fluxer `reason` is required inline; there is no modal surface), as do `!ticket list`, `!ticket settings`, and the staff config verbs (`setcategory`, `setarchive`, `setratelimit`). What stays Discord-only: the panel system, its buttons and modals, and the ticket-channel lifecycle arms (`for`, `close`, `archive`, `claim`, `transfer`, `adduser`/`removeuser`, `addstaff`/`removestaff`, `sensitive`/`unsensitive`, `info`, `summarize`), and the **Report Post** / **Report User** context menus (right-click → Apps — Discord-native with no `!ticket` equivalent, see [Report flow](#report-flow-context-menu-commands)) — those answer `That command is not available on Fluxer yet.` Opening a ticket channel is an elevated write: on Fluxer it is gated behind the community's `elevated_permissions` flag, and with the flag off the failure reply names the cause. See [Fluxer instances](fluxer.md).
 
 ## How it works
 
@@ -109,6 +109,8 @@ Without an API key, archives use a stats + close-reason fallback summary. The sa
 | `/ticket list [status] [user] [staff] [unclaimed] [sensitive] [since] [until]` | List tickets with filters — status `open` (default) / `closed` / `all`, requester/member, claiming staff, unclaimed-only, sensitivity, UTC date window (`YYYY-MM-DD`) |
 | `/ticket info` | Detail for the current ticket channel (open or soft-closed) |
 | `/ticket summarize` | On-demand AI summary of the current ticket conversation (open or soft-closed, pre-archive). Without `AI_API_KEY` (or if the API is unreachable) it replies with a stats-only fallback and says so |
+| **Report Post** (right-click a message → Apps) | Staff-only report ticket with the message captured as evidence; optional delete of the original **after** the evidence posts (Discord-only) — [Report flow](#report-flow-context-menu-commands) |
+| **Report User** (right-click a member → Apps) | Staff-only report ticket with a reported-user card; never deletes anything (Discord-only) — [Report flow](#report-flow-context-menu-commands) |
 
 Lifecycle commands work **inside the ticket channel** even if command-channel restrictions are set.
 
@@ -140,6 +142,57 @@ The same partial-failure convention as the `_Warnings:_` block on the close/arch
 5. The member gets an ephemeral link to the new ticket channel.
 
 Panels are registered in the `ticket_panels` table: `/ticket panel list` shows them, `/ticket panel edit` updates the title/description (re-edits the posted embed in place), `/ticket panel delete` removes the row and best-effort deletes the Discord message. If you delete the Discord message by hand, remove the registry row with `delete`. Re-register slash commands after deploy if `/ticket panel` is missing.
+
+## Report flow (context-menu commands)
+
+Staff right-click a **message** → Apps → **Report Post**, or a **member** → Apps → **Report User** — Discord-native context menus (no slash command, no Fluxer twin) that open a staff-only moderation ticket about the target through the existing create pipeline. Both register at the **staff picker tier**: Manage Server default hides them from regulars, `/staff syncpermissions` pushes allow overwrites for `staff_roles` ([Staff roles](staff-roles.md)). The handlers re-check the staff gate on invoke **and** on modal submit — the picker tier is cosmetic, the handler is the source of truth.
+
+### Modals and the delete rule
+
+| Command | Modal | Fields |
+|---------|-------|--------|
+| Report Post | `Report this post` | **Additional context** (paragraph, required) · **Delete original? (yes/no)** (short text, required, **no default**) |
+| Report User | `Report this user` | **Additional context** (paragraph, required) — never deletes anything |
+
+**Delete rule** — recognition is the only path to a destructive choice (the #471 H2-15 never-destroy-on-a-misread idiom): `yes` / `y` (case-insensitive) deletes the original **after** the evidence copy lands in the ticket; `no` / `n` keeps it; **anything else also keeps**, echoing the raw input in the ephemeral reply and in the ticket's report record: `input 'X' not understood — message kept`.
+
+Refused up front (ephemeral, nothing recorded): a bot subject — `Cannot open a ticket for a bot.`; a self-report — ``You can't report yourself — use `/ticket create` to reach staff instead. Nothing was recorded.`; an unresolvable target — `Could not resolve the reported message — it may have been deleted. Nothing was recorded.` / `Could not resolve the reported member — they may have left the server. Nothing was recorded.` The pending capture is one-shot, lives ~10 minutes in the running process, and does not survive a restart — a stale modal submit answers: `This report form has expired or was already used — run the command again.`
+
+### Evidence capture
+
+A context-menu payload carries the full target message at **invoke time** — content, author, channel, attachments — **regardless of the Message Content intent**. The snapshot is taken there (a modal submit is a different interaction carrying nothing); attachment **bytes** are re-fetched and **re-uploaded into the ticket** at submit (the CDN URLs are still alive pre-delete), images inline.
+
+**Report Post** posts an evidence message: header embed (reporter, message author, source channel + jump link, message id, timestamp, **Disposition** line), the message content fenced/escaped (over-budget text ships whole as a `.txt` file), re-uploaded attachments (audio/video/files playable), original embed URLs + sticker names as text metadata. Files that can't be recovered (per-file size cap, dead URL, the 10-file cap) degrade to metadata-only lines under **Files not recovered (metadata only):** — each names the file and the specific reason and warns that the original copy `may not survive deletion`. The Disposition line records which staff member triggered a deletion (the Discord audit log shows only "bot"): `Original message deleted by <@reporter> via this ticket`, or `Original kept: <jump link>`.
+
+**Report User** posts a **reported-user card**: the `<@!id>` mention escaped inside code plus the raw id (transcript-safe, never pings), the reporter, the timestamp, and the fenced context.
+
+### Evidence before delete — the order is the safety design
+
+```
+staff re-check → one-shot capture token → open ticket → build + post evidence
+    → delete() the original ONLY on yes AND posted evidence
+```
+
+- **Evidence build or post failure → the delete is skipped entirely.** A note in the ticket and a line on the reply carry the cause: `Could not post the evidence (cause) — the original message was NOT deleted: <jump link>` — the side record still writes with `message_deleted = 0`.
+- **Delete failure → the ticket stands and the message stands.** The evidence embed is built with the final disposition *before* the delete runs, so it can claim a deletion that then failed; the correction posted into the ticket and onto the reply closes that honesty gap: `⚠ Delete failed: cause — original message KEPT: <jump link>`
+- The confirmation is `Ticket **#12** opened: <#ticket-channel>`; every partial failure (evidence file warnings, a failed side record) rides along as an italic line — never a false total success.
+- **Duplicate nudge:** reporting a message that already has an open report still opens the ticket — the reply adds `⚠ Already reported on this message: **#12** <#old-ticket-channel>` (read from `ticket_reports`; see [Database](database.md)).
+
+### Who can see a report
+
+The standard `openTicketChannel` overwrite set for "staff opened for themselves": the reporter plus each manageable **senior** `staff_roles` role get view; `@everyone` is denied. The reported user is **never added to the ticket and never DM'd** — the subject-facing ticket is opened manually later with the existing `/ticket for`. Reports bypass the user-facing create rate limit (staff flow, like `/ticket for`).
+
+### Durability — report tickets stay non-sensitive
+
+Report tickets keep `is_sensitive = 0` **by design**: staff-only visibility comes from the overwrites, not the sensitivity flag. The normal **close → archive** pipeline (`mirrorTicketAssets`) mirrors the evidence media into the transcript's asset directory, so the evidence files survive channel deletion. Flagging a report ticket sensitive would degrade its archive to a metadata-only stub — exactly that durability story would be lost.
+
+### Fluxer has no report surface
+
+Context menus are **Discord-native** — there is no `!ticket report` twin, and the report commands never appear in Fluxer command listings. On Fluxer the existing `!ticket` text commands remain the ticket path (#745 decision 14: explicit, intentional no-parity). See [Fluxer instances](fluxer.md).
+
+### Deploy
+
+Re-run `npm run register` after deploying: registration PUTs the command list **per guild** (there is no global-registration path; `DEV_GUILD_ID` narrows it to one guild while developing), so **Report Post / Report User** stay invisible in Discord's Apps submenu until pushed.
 
 ## Sensitive tickets
 

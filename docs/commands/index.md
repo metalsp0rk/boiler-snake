@@ -261,6 +261,25 @@ Ephemeral list of every panel in this server: title, channel, message ID, and ju
 /ticket setratelimit minutes:60
 ```
 
+### Report Post / Report User - Context-menu reports (staff)
+
+Discord **context-menu** commands — no slash. Open via **right-click (long-press) → Apps → Report Post** on a message, or **Report User** on a member. Both open a staff-only moderation ticket with the reported target captured as evidence; the reported user is never contacted. Full flow: [Report flow](../tickets.md#report-flow-context-menu-commands).
+
+**Permission**: staff-tier picker — **Manage Server** default hides the entries from regulars; `/staff syncpermissions` adds allow overwrites for configured `staff_roles` (the handlers re-check the staff gate on invoke **and** modal submit — that gate is the source of truth). A denied invoke records nothing and shows no modal.
+
+**Report Post** (message context menu) → modal `Report this post`:
+
+- `Additional context` — paragraph, required
+- `Delete original? (yes/no)` — short text, required, **no default** (a destructive question is never pre-answered)
+
+**Delete rule** — recognition is the only path to a destructive choice (#471 H2-15 idiom): `yes` / `y` (case-insensitive) deletes the original message **after** its evidence copy lands in the ticket; `no` / `n` keeps it; **anything else also keeps** and echoes the raw input in the reply and the ticket record: `input 'X' not understood — message kept`. Never destroyed on a misread.
+
+**Report User** (user context menu) → modal `Report this user`: `Additional context` only. Never deletes anything. Bot targets and self-reports are refused: `Cannot open a ticket for a bot.` / ``You can't report yourself — use `/ticket create` to reach staff instead. Nothing was recorded.`
+
+Replies are ephemeral; the confirmation is `Ticket **#12** opened: <#ticket-channel>`. A modal reopened after the ~10-minute capture window or a bot restart answers: `This report form has expired or was already used — run the command again.` Need the subject-facing ticket? Open it manually afterwards with `/ticket for` — the report itself never adds or DMs the reported user.
+
+**Deploy**: re-run `npm run register` after deploy — registration PUTs commands **per guild** (no global path), so the new Apps entries stay invisible until pushed.
+
 ### `/settings` - Show Guild Configuration
 
 Display current XP rates, decay settings, role mappings, and allowed command channels.
@@ -1445,6 +1464,7 @@ role — the service re-checks on every call).
 | `/userinfo` | Staff gate | Yes |
 | `/userinfo` **Activity** tab | Senior staff | Yes |
 | `/ticket for\|claim\|transfer\|adduser\|removeuser\|addstaff\|removestaff\|sensitive\|unsensitive\|close\|archive\|list\|info\|summarize` | Staff gate | Yes |
+| Report Post / Report User (message / user **context menus**, right-click → Apps) | Staff gate (staff-tier picker: Manage Server default + `staff_roles` overwrites after `/staff syncpermissions`) | Yes |
 | `/staff role list` | Staff gate | Yes |
 | `/staff settings` | Staff gate | Yes |
 | `/staffsettings roles\|overview` | Staff gate | Yes |
@@ -1555,6 +1575,7 @@ STAFF GATE (Manage Server OR any staff role):
 /ticket adduser|removeuser|addstaff|removestaff
 /ticket sensitive|unsensitive|close|archive
 /ticket panel create|list|edit|delete | setcategory|setarchive|setratelimit
+"Report Post" / "Report User"  → Right-click message/member → Apps (staff report ticket)
 /bridge create|connect|disconnect|retry|status|list → Cross-platform channel bridge (staff)
 /staff role list | /staff settings
 /staffsettings roles|overview       → Staff-visible read view of the above (#599)
