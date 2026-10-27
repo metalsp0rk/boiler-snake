@@ -36,7 +36,11 @@ function interactionLogContext(interaction) {
             ? "button"
             : interaction.isChatInputCommand?.()
               ? "chat"
-              : "interaction",
+              : interaction.isMessageContextMenuCommand?.()
+                ? "message-context"
+                : interaction.isUserContextMenuCommand?.()
+                  ? "user-context"
+                  : "interaction",
     "interaction",
   );
   const bits = [
@@ -49,6 +53,53 @@ function interactionLogContext(interaction) {
   const customId = safe(() => interaction.customId, "");
   if (customId) bits.push(`customId=${customId.slice(0, 120)}`);
   return bits.join(" ");
+}
+
+/**
+ * Shared command dispatch for the chat-input and context-menu arms (#745,
+ * decision 9): guild guard, command-channel gate, registry lookup by
+ * interaction.commandName, the explicit "unhandled" ephemeral on a missing
+ * handler, and the catch contract — one specific [router] log line plus
+ * safeErrorReply (error rules 1–2: never a silent drop). `invoke` receives
+ * the found handler and performs the arm-specific call. The statement order
+ * is the chat arm's original, so both arms keep its observable behavior —
+ * including gate/denial-reply failures flowing into the same catch.
+ *
+ * @param {import("discord.js").Interaction} interaction
+ * @param {object} ctx router ctx ({ registry, … })
+ * @param {(handler: Function, interaction: object, ctx: object) => Promise<void>} invoke
+ */
+async function runCommandArm(interaction, ctx, invoke) {
+  const { registry } = ctx;
+  if (!interaction.guild) return;
+
+  try {
+    if (!commandsAllowed(interaction)) {
+      await replyEphemeral(
+        interaction,
+        "Commands aren't enabled in this channel.",
+      );
+      return;
+    }
+
+    const handler = registry.getHandler(interaction.commandName);
+    if (!handler) {
+      await replyEphemeral(
+        interaction,
+        `Unhandled command: \`/${interaction.commandName}\` (handler missing).`,
+      );
+      return;
+    }
+
+    await invoke(handler, interaction, ctx);
+  } catch (err) {
+    console.error(
+      "[router] command handler failed:",
+      interactionLogContext(interaction),
+      err?.message || err,
+    );
+    await safeErrorReply(interaction);
+  }
 }
 
 /**
@@ -147,31 +198,34 @@ async function handleInteraction(interaction, ctx) {
     return;
   }
 
+  // #745 (decision 9): context-menu commands (right-click → Apps on a
+  // message / member) — before this branch existed, the chat-input early
+  // return below silently dropped them. Same registry (lookup by
+  // interaction.commandName), same gates and failure semantics as the chat
+  // arm, but context-menu handlers are api "interaction" ONLY: the target
+  // rides the raw interaction (options.getMessage()/getUser()) and
+  // buildDiscordCommandContext/assertCommandContext stay chat-input-only.
+  // Predicates are optional-called: discord.js defines them on every
+  // Interaction (BaseInteraction), but leaner duck-typed interaction shapes
+  // must not die on a missing method in a dispatch path.
+  if (
+    interaction.isMessageContextMenuCommand?.() ||
+    interaction.isUserContextMenuCommand?.()
+  ) {
+    await runCommandArm(interaction, ctx, async (handler) => {
+      await handler(interaction, ctx);
+    });
+    return;
+  }
+
   if (!interaction.isChatInputCommand()) return;
-  if (!interaction.guild) return;
 
-  try {
-    if (!commandsAllowed(interaction)) {
-      await replyEphemeral(
-        interaction,
-        "Commands aren't enabled in this channel.",
-      );
-      return;
-    }
-
-    const handler = registry.getHandler(interaction.commandName);
-    if (!handler) {
-      await replyEphemeral(
-        interaction,
-        `Unhandled command: \`/${interaction.commandName}\` (handler missing).`,
-      );
-      return;
-    }
-
-    // Context-arm handlers receive the platform-neutral CommandContext as
-    // their first argument (spec § Handler migration rule). Everything around
-    // this call — the command-channel gate, logging, safeErrorReply — keeps
-    // operating on the raw interaction.
+  // Chat-input arm: same runCommandArm gates; the only difference is the
+  // api "context" migration rule below. Context-arm handlers receive the
+  // platform-neutral CommandContext as their first argument (spec § Handler
+  // migration rule). Everything around this call — the command-channel
+  // gate, logging, safeErrorReply — keeps operating on the raw interaction.
+  await runCommandArm(interaction, ctx, async (handler) => {
     const api = registry.getHandlerApi(interaction.commandName);
     if (api === "context") {
       const commandCtx = buildDiscordCommandContext(interaction, ctx);
@@ -184,14 +238,7 @@ async function handleInteraction(interaction, ctx) {
     } else {
       await handler(interaction, ctx);
     }
-  } catch (err) {
-    console.error(
-      "[router] command handler failed:",
-      interactionLogContext(interaction),
-      err?.message || err,
-    );
-    await safeErrorReply(interaction);
-  }
+  });
 }
 
 module.exports = { handleInteraction };
