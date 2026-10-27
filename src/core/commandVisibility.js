@@ -20,7 +20,9 @@ const TIERS = Object.freeze({
 
 /**
  * Top-level command name → visibility tier.
- * Keep in sync with registered slash commands (see test/command-visibility.test.js).
+ * Keys are exact command names — context-menu commands (#745) key by their
+ * display names verbatim, caps and spaces included.
+ * Keep in sync with registered commands (see test/command-visibility.test.js).
  */
 const COMMAND_VISIBILITY = Object.freeze({
   // Public (mixed staff subcommands gated in handlers)
@@ -87,6 +89,14 @@ const COMMAND_VISIBILITY = Object.freeze({
   // reachable: ManageGuild default + staff_roles allow overwrites after
   // `/staff syncpermissions`.
   staffsettings: TIERS.staff,
+  // #745: context-menu report commands (right-click → Apps). Keys are the
+  // EXACT context-menu display names — unlike slash names they carry caps +
+  // spaces, and they are the registry/dispatch keys verbatim (must match the
+  // builders in src/features/tickets/commands.js character-for-character).
+  // Same staff picker posture as the slash staff surface; handlers stay the
+  // security source of truth.
+  "Report Post": TIERS.staff,
+  "Report User": TIERS.staff,
 });
 
 /**
