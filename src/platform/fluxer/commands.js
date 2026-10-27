@@ -46,6 +46,18 @@ const OPTION_TYPE = Object.freeze({
   ATTACHMENT: 11,
 });
 
+/**
+ * discord.js ApplicationCommandType numbers (same mirror policy as
+ * OPTION_TYPE — this module stays discord.js-free). Only CHAT_INPUT is
+ * parseable as a prefix command; USER/MESSAGE are the context-menu types
+ * (right-click → Apps, Discord-native).
+ */
+const COMMAND_TYPE = Object.freeze({
+  CHAT_INPUT: 1,
+  USER: 2,
+  MESSAGE: 3,
+});
+
 /** Human labels for option types, used by the help renderer. */
 const TYPE_LABELS = Object.freeze({
   [OPTION_TYPE.STRING]: "string",
@@ -261,6 +273,13 @@ function buildFluxerCommandTree(registryCommands) {
   const tree = new Map();
   for (const cmd of registryCommands ?? []) {
     if (!cmd || typeof cmd.name !== "string" || !cmd.name) continue;
+    // #745 decision 14 (Fluxer explicit no-parity): the prefix surface is
+    // chat-input JSON only. Context-menu commands (ApplicationCommandType
+    // USER/MESSAGE — "Report Post"/"Report User") are Discord-native and
+    // must not surface in !help-style listings or parse as prefix commands.
+    // Slash JSON omits `type` (REST defaults it to ChatInput), so only an
+    // explicit non-chat type skips — plain-object test fixtures stay valid.
+    if (cmd.type != null && cmd.type !== COMMAND_TYPE.CHAT_INPUT) continue;
     const entry = {
       name: cmd.name,
       description: cmd.description ?? "",
@@ -983,6 +1002,7 @@ function k10Guard(def, token, mentions, scopeLabel) {
 
 module.exports = {
   OPTION_TYPE,
+  COMMAND_TYPE,
   TYPE_LABELS,
   K10_USER_COPY,
   K10_ROLE_COPY,

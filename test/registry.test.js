@@ -19,9 +19,10 @@ const features = require("../src/features");
 after(cleanup);
 
 describe("command definitions via registry", () => {
-  it("exports 37 slash commands with unique names", () => {
+  it("exports 37 slash commands + 2 context menus with unique names", () => {
     const { commands } = buildDefaultRegistry();
-    assert.equal(commands.length, 37);
+    // #745: 37 slash builders + "Report Post"/"Report User" context menus.
+    assert.equal(commands.length, 39);
     const names = commands.map((c) => c.name);
     assert.equal(new Set(names).size, names.length);
     assert.ok(names.includes("eventreminder"));
@@ -51,6 +52,10 @@ describe("command definitions via registry", () => {
     // #305: RSS feed notifications.
     assert.ok(names.includes("rss"));
     assert.ok(names.includes("setrss"));
+    // #745: Discord context-menu report commands (display names — spaces and
+    // caps are legal there and double as the registry + visibility-map keys).
+    assert.ok(names.includes("Report Post"));
+    assert.ok(names.includes("Report User"));
   });
 });
 
@@ -63,6 +68,16 @@ describe("buildDefaultRegistry", () => {
         "function",
         `missing handler for /${cmd.name}`
       );
+    }
+  });
+
+  it("keeps the context-menu report handlers on the interaction api", () => {
+    // #745: "Report Post"/"Report User" ride the raw interaction (the target
+    // message/user only exists there); they must NOT be flagged "context".
+    const registry = buildDefaultRegistry();
+    for (const name of ["Report Post", "Report User"]) {
+      assert.equal(typeof registry.getHandler(name), "function", name);
+      assert.equal(registry.getHandlerApi(name), "interaction", name);
     }
   });
 

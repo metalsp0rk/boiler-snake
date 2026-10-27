@@ -18,6 +18,8 @@ const { cleanup } = loadDb();
 
 const {
   parsePrefix,
+  buildFluxerCommandTree,
+  COMMAND_TYPE,
   K10_USER_COPY,
 } = require("../src/platform/fluxer/commands");
 const { buildDefaultRegistry } = require("../src/commands/registry");
@@ -460,5 +462,36 @@ describe("fluxer/commands — default tree (prod dispatch path)", () => {
     assert.ok(p, "default-tree parse must succeed, not throw");
     assert.equal(p.commandName, "xp");
     assert.deepEqual(p.options, []);
+  });
+});
+
+describe("fluxer/commands — chat-input-only type filter (#745 decision 14)", () => {
+  it("buildFluxerCommandTree skips non-chat-input command types", () => {
+    // Context-menu commands live in the SAME registry JSON; the Fluxer
+    // prefix surface (parse + !help blocks) is chat-input-only. Slash JSON
+    // omits `type` (REST defaults ChatInput), context menus carry 2/3.
+    const tree = buildFluxerCommandTree([
+      { name: "ticket", description: "slash JSON carries no type" },
+      { name: "xp", description: "explicit chat input", type: COMMAND_TYPE.CHAT_INPUT },
+      { name: "Report Post", description: "message context menu", type: COMMAND_TYPE.MESSAGE },
+      { name: "Report User", description: "user context menu", type: COMMAND_TYPE.USER },
+    ]);
+    assert.ok(tree.has("ticket"), "type-less slash JSON stays in the tree");
+    assert.ok(tree.has("xp"), "explicit type 1 stays in the tree");
+    assert.ok(!tree.has("report post"), "message context menu skipped");
+    assert.ok(!tree.has("report user"), "user context menu skipped");
+  });
+
+  it("the real registry tree carries no report context menus", () => {
+    // The prod leak this filter closes: buildFluxerCommandTree indexed ALL
+    // registry commands, so "Report Post"/"Report User" would surface in
+    // !help-style listings (dispatch renders help blocks FROM the tree).
+    const tree = buildFluxerCommandTree(registryCommands);
+    assert.ok(tree.has("ticket"), "chat-input commands still index");
+    assert.ok(!tree.has("report post"));
+    assert.ok(!tree.has("report user"));
+    // And they are not prefix commands either.
+    assert.equal(parsePrefix("!report post", OPTS), null);
+    assert.equal(parsePrefix("!report user", OPTS), null);
   });
 });
