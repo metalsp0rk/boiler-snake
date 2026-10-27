@@ -14,9 +14,10 @@
  * reporter (the "staff opened for themselves" branch, helpers.js ~L765),
  * is_sensitive untouched (stays 0, decision 6), NO DM, NO user rate-limit.
  * `handleReportUserModal` is the user variant's full submit (subtask 06);
- * subtask 08 adds the message-variant submit beside it, composing its
- * evidence build / disposition / delete / insert fields AROUND the same
- * `openReportTicket` call.
+ * `handleReportMessageModal` is the message variant beside it (subtask 08),
+ * composing its evidence build / disposition / delete / insert fields
+ * AROUND the same `openReportTicket` call — in the locked
+ * evidence-before-delete order that IS the safety design (decision 4).
  *
  * Why snapshot HERE: a context-menu interaction carries the full target
  * message (content, author, channel, attachments incl. URLs) regardless of
@@ -56,17 +57,28 @@ const {
   formatChannelCreateError,
   formatStaffRoleAccessNote,
 } = require("./overwrites");
-const { inlineEscape, fencedBlock } = require("./reportEvidence");
+const {
+  buildEvidenceMessage,
+  inlineEscape,
+  fencedBlock,
+} = require("./reportEvidence");
+const { buildMessageJumpUrl } = require("../../core/jumpUrl");
 const { recordSlashAudit } = require("../../core/auditTrail");
 // Discord edge: (platform, instanceKey, snowflake) → integer community id,
 // resolved once per entry point (same pattern as create.js's flows).
 const { ensureCommunity } = require("../../platform/community");
-const { insertTicketReport, MAX_TICKET_REASON } = require("../../db");
+const {
+  insertTicketReport,
+  findOpenReportForMessage,
+  MAX_TICKET_REASON,
+} = require("../../db");
 const { Color, formatTicketRef, tsFull } = require("../../core/theme");
 const { sliceSafe } = require("../../core/text");
 const {
+  MODAL_REPORT_MESSAGE_PREFIX,
   MODAL_REPORT_USER_PREFIX,
   MODAL_REPORT_FIELD_CONTEXT,
+  MODAL_REPORT_FIELD_DELETE,
 } = require("./constants");
 
 /**
@@ -302,9 +314,10 @@ async function handleReportUser(interaction, ctx) {
 }
 
 // ---------------------------------------------------------------------------
-// Modal submit — shared ticket open + "Report User" submit (subtask 06).
-// The "Report Post" submit joins this section in subtask 08 and composes its
-// evidence build / disposition / delete / insert fields AROUND openReportTicket.
+// Modal submit — shared ticket open + BOTH variant submits. "Report User"
+// landed here in subtask 06; the "Report Post" (message) submit joins beside
+// it (subtask 08), composing its evidence build / disposition / delete /
+// insert fields AROUND openReportTicket in the locked decision-4 order.
 // ---------------------------------------------------------------------------
 
 /** Snowflake-shaped ids (same rule as reportEvidence.js) may render mentions. */
@@ -338,12 +351,20 @@ const REASON_MARKER = "…";
  * always gets the real modules; tests spy or substitute a single function
  * without patching helpers.js or the db layer.
  *
+ * `findOpenReportForMessage` + `buildEvidenceMessage` are the message
+ * variant's additions (subtask 08): the duplicate nudge read and the
+ * evidence build ride the SAME seam, so a test can force the
+ * evidence-build-failure arm (→ delete must NEVER run) without patching
+ * reportEvidence.js, and the nudge read can never kill the submit flow.
+ *
  * @param {object} [options]
  * @returns {{
  *   openTicketChannel: Function,
  *   ensureCommunity: Function,
  *   insertTicketReport: Function,
  *   recordSlashAudit: Function,
+ *   findOpenReportForMessage: Function,
+ *   buildEvidenceMessage: Function,
  * }}
  */
 function createReportTicketDeps(options = {}) {
@@ -352,6 +373,9 @@ function createReportTicketDeps(options = {}) {
     ensureCommunity: options.ensureCommunity || ensureCommunity,
     insertTicketReport: options.insertTicketReport || insertTicketReport,
     recordSlashAudit: options.recordSlashAudit || recordSlashAudit,
+    findOpenReportForMessage:
+      options.findOpenReportForMessage || findOpenReportForMessage,
+    buildEvidenceMessage: options.buildEvidenceMessage || buildEvidenceMessage,
   };
 }
 
@@ -817,10 +841,453 @@ async function handleReportUserModal(interaction, ctx, opts = {}) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// "Report Post" (message variant) submit — subtask 08. Composes the locked
+// decision-4 pipeline AROUND openReportTicket: the evidence message is
+// built and POSTED before the flow dares to delete anything, and every
+// failure after the ticket exists rides into the final reply as a partial
+// result (error rule 5).
+// ---------------------------------------------------------------------------
+
+/** Fallback tail for kept/deleted note lines when no jump link is buildable. */
+const NO_JUMP = "jump link unavailable";
+
+/** Decision-2 delete words (case-insensitive, post-trim) → delete. */
+const DELETE_WORDS = new Set(["yes", "y"]);
+
+/** Decision-2 keep words that echo NOTHING — recognized negative answers. */
+const KEEP_WORDS = new Set(["no", "n"]);
+
+/** Cause text inside the evidence-failure line is capped so the 2000-char
+ * reply can never be busted by a pathological error message. */
+const CAUSE_CAP = 300;
+
+/**
+ * Decision-2 delete-choice parse — VERBATIM safety contract: only
+ * `yes`/`y` (case-insensitive) delete; ANYTHING ELSE keeps, and an
+ * unrecognized non-empty input echoes
+ * `input 'X' not understood — message kept`. The echo shows the submitted
+ * string with surrounding whitespace stripped only (readModalText trims;
+ * case is preserved — lowercasing is for the MATCH, never for the echo),
+ * so the reporter re-reads exactly what they typed. NEVER destroy on a
+ * misread: recognition is the only path to a destructive choice.
+ *
+ * @param {string} raw trimmed modal answer ("" when absent — the field is
+ *   required, so that case is only reachable via a foreign modal)
+ * @returns {{ deleteIntent: boolean, echoNote: string|null }}
+ */
+function parseDeleteChoice(raw) {
+  const value = typeof raw === "string" ? raw.trim() : "";
+  const norm = value.toLowerCase();
+  if (DELETE_WORDS.has(norm)) return { deleteIntent: true, echoNote: null };
+  // "" (theoretical — required field), "no" and "n": keep, no echo.
+  if (value === "" || KEEP_WORDS.has(norm)) {
+    return { deleteIntent: false, echoNote: null };
+  }
+  return {
+    deleteIntent: false,
+    echoNote: `input '${value}' not understood — message kept`,
+  };
+}
+
+/**
+ * Plain-text jump link for the failure note / delete correction lines. The
+ * evidence builder runs its own stricter id-shape gate for embed markup;
+ * these lines are plain content, and a null link degrades to
+ * NO_JUMP (never a dead or injected URL).
+ *
+ * @param {object} snapshot pendingReports snapshot
+ * @param {string|null} [fallbackGuildId]
+ * @returns {string|null}
+ */
+function reportJumpUrl(snapshot, fallbackGuildId) {
+  try {
+    return buildMessageJumpUrl({
+      guildId: snapshot?.guildId ?? fallbackGuildId,
+      channelId: snapshot?.channelId,
+      messageId: snapshot?.messageId,
+    });
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The ONE wording for "evidence did not land" — posted into the ticket as a
+ * best-effort note AND pushed into the ephemeral problems (same sentence in
+ * both places so staff cannot get two different stories). Carries the
+ * specific cause (error rule 3) and the locked skip-delete statement
+ * (decision 4: the original stands).
+ *
+ * @param {unknown} cause
+ * @param {string|null} jumpLink
+ * @returns {string}
+ */
+function evidenceFailureLine(cause, jumpLink) {
+  const reason = sliceSafe(String(cause ?? "unknown failure"), CAUSE_CAP);
+  return (
+    `Could not post the evidence (${reason}) — the original message was NOT deleted: ` +
+    `${jumpLink || NO_JUMP}`
+  );
+}
+
+/**
+ * Best-effort staff note into the ticket channel (evidence-failure note,
+ * delete correction). A note that itself fails is logged (error rule 2) and
+ * dropped — the caller's ephemeral reply already carries the same cause, so
+ * the note is belt-and-braces context IN the ticket, never a second failure
+ * to escalate.
+ *
+ * @param {object} channel ticket channel
+ * @param {string} text
+ * @param {string} ids log id string
+ * @param {string} label which note ("evidence-failure" | "delete-correction")
+ * @returns {Promise<boolean>} whether the note landed
+ */
+async function postReportMessageNote(channel, text, ids, label) {
+  try {
+    await channel.send({
+      content: text,
+      allowedMentions: { repliedUser: false },
+    });
+    return true;
+  } catch (err) {
+    console.error(
+      `[tickets] report message ${label} note failed (${ids}):`,
+      err?.message || err,
+    );
+    return false;
+  }
+}
+
+/**
+ * Post the built evidence message (embeds + re-uploaded file bytes) into
+ * the ticket. Failure = { ok:false, error } with the specific cause and a
+ * log (rules 2/3/6) — the CALLER owns the decision that follows: skip the
+ * delete entirely (decision 4, the safety gate).
+ *
+ * @param {object} channel ticket channel
+ * @param {{ embeds: object[], files: {attachment: Buffer, name: string}[] }} built
+ * @param {string} ids log id string
+ * @returns {Promise<{ ok: true } | { ok: false, error: string }>}
+ */
+async function postReportEvidence(channel, built, ids) {
+  try {
+    await channel.send({ embeds: built.embeds, files: built.files });
+    return { ok: true };
+  } catch (err) {
+    console.error(
+      `[tickets] report message evidence post failed (${ids}):`,
+      err?.message || err,
+    );
+    return { ok: false, error: err?.message || String(err) };
+  }
+}
+
+/**
+ * Delete the ORIGINAL reported message — reached ONLY when the reporter
+ * chose yes AND the evidence posted (decision 4). The message is not on
+ * this interaction (modal submit carries nothing), so it is resolved by
+ * id: guild channel cache first, then REST, then messages.fetch — an
+ * already-deleted or unreachable message fails SPECIFICALLY (DiscordAPIError
+ * 10008 / channel resolution) instead of silently "succeeding" (rule 3).
+ *
+ * discord.js 14.27's `Message#delete()` / `MessageManager#delete()` carry no
+ * audit-reason parameter (verified in node_modules), so the actor record
+ * lives where decision 13 put it anyway: the evidence embed's disposition
+ * line and the recordSlashAudit entry — the Discord audit log shows only
+ * "bot" either way.
+ *
+ * @param {object} guild interaction guild (cache + fetch surface)
+ * @param {object} snapshot pendingReports snapshot (channelId + messageId)
+ * @param {string} ids log id string
+ * @returns {Promise<{ ok: true } | { ok: false, error: string }>} never rejects
+ */
+async function deleteReportedMessage(guild, snapshot, ids) {
+  try {
+    const channelId = snapshot.channelId;
+    if (!channelId) {
+      return { ok: false, error: "the source channel id was not captured" };
+    }
+    const channel =
+      (guild?.channels?.cache?.get?.(channelId) ?? null) ??
+      (await guild?.channels?.fetch?.(channelId)) ??
+      null;
+    if (!channel) {
+      return {
+        ok: false,
+        error: `source channel <#${channelId}> could not be resolved`,
+      };
+    }
+    const message = await channel.messages.fetch(snapshot.messageId);
+    if (!message) {
+      // Defensive: real discord.js REJECTS an unknown id; a resolve-to-null
+      // surface must not read as a successful delete either.
+      return { ok: false, error: "the message could not be fetched" };
+    }
+    await message.delete();
+    return { ok: true };
+  } catch (err) {
+    const cause = err?.message || String(err);
+    // Rule 2: ids + cause. The caller turns this into the ticket correction
+    // + reply warning (rules 3 + 5) — the ticket stands, the message stands.
+    console.error(`[tickets] report message delete failed (${ids}):`, cause);
+    return { ok: false, error: cause };
+  }
+}
+
+/**
+ * "Report Post" modal submit (`tk:rep:m:<token>`) — message variant.
+ *
+ * EXACT order (the order IS the safety design, locked decision 4):
+ * staff re-check FIRST (submitter authoritative, denial = zero side
+ * effects) → one-shot token consumption (expired/unknown/wrong-kind →
+ * REPORT_EXPIRED_REPLY, stop) → decision-2 delete parse (recognition-only;
+ * never destroys on a misread) → community resolve + duplicate nudge read
+ * BEFORE creating (decision 12 — a failed nudge read only loses the note) →
+ * ephemeral defer → openReportTicket (shared decision-5 core) → build +
+ * POST the evidence message → ONLY THEN delete() the original, and only on
+ * a yes AND a posted evidence → insertTicketReport (message_deleted = the
+ * ACTUAL outcome) → audit → ephemeral confirmation with every anomaly
+ * riding along.
+ *
+ * The documented tension, resolved on purpose: the evidence embed is
+ * built with the FINAL disposition (`deleted: true` when the reporter
+ * chose yes) BEFORE the delete runs — evidence-before-delete is locked, so
+ * the embed can momentarily claim a deletion that then fails. The
+ * `⚠ Delete failed: … original message KEPT: <jump>` correction posted
+ * INTO the ticket (and the matching reply warning) closes that honesty gap
+ * (rules 3 + 5); reversing the order to avoid it would risk destroying the
+ * only copy of the evidence, which is the worse failure.
+ *
+ * Evidence build OR post failure → the delete is SKIPPED ENTIRELY (locked):
+ * ticket stands, an explanatory note lands in the ticket when it can, the
+ * reply carries the specific cause, the side record still writes with
+ * message_deleted 0, and the audit still records (the mutation that DID
+ * happen: an opened ticket).
+ *
+ * @param {import("discord.js").ModalSubmitInteraction} interaction
+ * @param {object} [ctx] router context
+ * @param {object} [opts] TEST/deps seam — the router only ever passes
+ *   (interaction, ctx). `opts.deps` overrides createReportTicketDeps;
+ *   `opts.fetchImpl` / `opts.resolveHost` pass through to the evidence
+ *   builder's SSRF-guard seams (integration tests, subtask 09).
+ */
+async function handleReportMessageModal(interaction, ctx, opts = {}) {
+  const deps = createReportTicketDeps(opts?.deps || {});
+  try {
+    // 1. Staff gate on the SUBMITTER (same gate as the invoke — the picker
+    //    tier is cosmetic; this handler remains the security source of truth).
+    if (!(await requireStaff(interaction))) return;
+
+    if (!interaction.guild) {
+      await replyEphemeral(interaction, "Tickets can only be opened in a server.");
+      return;
+    }
+    if (interaction.user?.bot) {
+      await replyEphemeral(interaction, "Bots cannot open tickets.");
+      return;
+    }
+
+    // 2. One-shot token (decision 3). A kind mismatch means this prefix was
+    //    fed something else — same honest outcome as a spent token.
+    const token = String(interaction.customId ?? "")
+      .slice(MODAL_REPORT_MESSAGE_PREFIX.length)
+      .trim();
+    const snapshot = takeReport(token);
+    if (!snapshot || snapshot.kind !== REPORT_KINDS.MESSAGE) {
+      await replyEphemeral(interaction, REPORT_EXPIRED_REPLY);
+      return;
+    }
+
+    // 3. Delete choice, decision 2 verbatim: recognition-only, echo on garbage.
+    const { deleteIntent, echoNote } = parseDeleteChoice(
+      readModalText(interaction, MODAL_REPORT_FIELD_DELETE),
+    );
+
+    const ids = submitIds(interaction, "report_message");
+    const reporterId = interaction.user?.id ?? snapshot.reporterUserId ?? null;
+    const subjectId = snapshot.subjectUserId ?? snapshot.authorId ?? null;
+    const jumpLink = reportJumpUrl(snapshot, interaction.guildId);
+
+    // 4. Duplicate nudge BEFORE creating (decision 12). The community key
+    //    resolves at this Discord edge (openReportTicket's own resolution —
+    //    a pre-resolved id simply wins); a throw from either read must not
+    //    kill the report, it only loses the note.
+    let communityId = null;
+    let dup = null;
+    try {
+      communityId = deps.ensureCommunity({
+        platform: "discord",
+        instanceKey: "discord",
+        externalGuildId: String(interaction.guildId),
+      });
+      dup = deps.findOpenReportForMessage(communityId, snapshot.messageId);
+    } catch (err) {
+      console.error(
+        `[tickets] report message duplicate check failed (${ids}):`,
+        err?.message || err,
+      );
+      dup = null;
+    }
+
+    // 5. Everything past this point does REST + DB work.
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+
+    // 6. The shared ticket open (decision 5): staff-self, no DM, no rate
+    //    limit, is_sensitive 0. A create failure replies with its translated
+    //    cause (logged once inside) and stops — nothing was destroyed.
+    const contextText = readModalText(interaction, MODAL_REPORT_FIELD_CONTEXT);
+    const opened = await openReportTicket({
+      interaction,
+      ctx,
+      snapshot,
+      contextText,
+      communityId,
+      deps,
+    });
+    if (!opened.ok) {
+      await interaction.editReply({ content: opened.error });
+      return;
+    }
+    const { ticket, channel, skippedStaffRoles } = opened;
+
+    const problems = [];
+    let messageDeleted = 0;
+    let stopBeforeDelete = false;
+
+    // 7. EVIDENCE FIRST (decision 4 — the safety gate): the delete below
+    //    only runs when BOTH the build and the post landed.
+    const evidenceOpts = {
+      reporterUserId: reporterId,
+      contextText,
+      deleted: deleteIntent,
+    };
+    if (typeof opts.fetchImpl === "function") evidenceOpts.fetchImpl = opts.fetchImpl;
+    if (typeof opts.resolveHost === "function") {
+      evidenceOpts.resolveHost = opts.resolveHost;
+    }
+    const built = await deps.buildEvidenceMessage(snapshot, evidenceOpts);
+
+    let cause = null;
+    if (!built?.ok) {
+      cause = built?.error || "the evidence builder returned no result";
+      console.error(
+        `[tickets] report message evidence build failed (${ids} ticket=${ticket.id}):`,
+        cause,
+      );
+    } else {
+      const posted = await postReportEvidence(channel, built, ids);
+      if (!posted.ok) cause = posted.error;
+      else if (built.warnings?.length) {
+        // Rule 5: partial evidence is a partial result — one pointer line;
+        // the per-file specifics ship INSIDE the evidence message itself.
+        problems.push(
+          `${built.warnings.length} evidence file warning(s) — recorded in the evidence message.`,
+        );
+      }
+    }
+    if (cause != null) {
+      stopBeforeDelete = true;
+      const line = evidenceFailureLine(cause, jumpLink);
+      problems.push(line);
+      await postReportMessageNote(channel, line, ids, "evidence-failure");
+    }
+
+    // 8. DELETE — only now, only on an explicit yes AND posted evidence.
+    if (deleteIntent && !stopBeforeDelete) {
+      const deleted = await deleteReportedMessage(interaction.guild, snapshot, ids);
+      if (deleted.ok) {
+        messageDeleted = 1;
+      } else {
+        // The posted embed already claims the deletion (built with the
+        // final disposition BEFORE this call) — correct the record IN the
+        // ticket and the reply (rules 3 + 5). The message stays; nothing is
+        // retried behind the reporter's back.
+        const line =
+          `⚠ Delete failed: ${sliceSafe(deleted.error, CAUSE_CAP)} — original message KEPT: ` +
+          `${jumpLink || NO_JUMP}`;
+        problems.push(line);
+        await postReportMessageNote(channel, line, ids, "delete-correction");
+      }
+    }
+
+    // 9. Side record (decision 13). snapshot_note carries the parse echo
+    //    and/or the failure summary when present — the row is the audit-
+    //    adjacent record of what actually happened.
+    const recordNote =
+      [echoNote, ...problems].filter(Boolean).join(" · ") || null;
+    const inserted = deps.insertTicketReport({
+      ticketId: ticket.id,
+      kind: "message",
+      subjectUserId: subjectId,
+      reportedMessageId: snapshot.messageId ?? null,
+      sourceChannelId: snapshot.channelId ?? null,
+      messageDeleted,
+      snapshotNote: recordNote,
+    });
+    if (!inserted?.ok) {
+      // Rule 5: the ticket (and possibly the deletion) DID happen — never
+      // pretend the whole flow failed, never hide the gap either.
+      console.error(
+        `[tickets] report message record failed (${ids} ticket=${ticket.id}):`,
+        inserted?.error || "unknown database failure",
+      );
+      problems.push(
+        `Could not save the report record: ${inserted?.error || "unknown database failure"} — the ticket itself is intact.`,
+      );
+    }
+
+    // 10. Audit trail (decision 13). recordSlashAudit is fail-safe by
+    //     contract; the flow DID mutate (ticket + maybe a delete), so it
+    //     gets audited even when a later step reported a problem.
+    deps.recordSlashAudit({
+      interaction,
+      communityId: opened.communityId,
+      action: "tickets.report_message",
+      targetType: "ticket",
+      targetId: String(ticket.id),
+      details: {
+        ticket_number: ticket.ticket_number,
+        subject_user_id: subjectId,
+        reported_message_id: snapshot.messageId ?? null,
+        message_deleted: messageDeleted,
+        channel_id: channel?.id ?? null,
+      },
+    });
+
+    // 11. Ephemeral confirmation — ticket ref + channel, staff-role note,
+    //     the duplicate nudge (decision 12), the decision-2 echo, and every
+    //     partial-failure line (rule 5: never claim total success).
+    let msg = `Ticket **${formatTicketRef(ticket.ticket_number)}** opened: <#${channel.id}>`;
+    if (skippedStaffRoles?.length) {
+      msg += formatStaffRoleAccessNote(skippedStaffRoles);
+    }
+    if (dup) {
+      msg +=
+        `\n\n⚠ Already reported on this message: ` +
+        `**${formatTicketRef(dup.ticket_number)}** <#${dup.ticket_channel_id}>`;
+    }
+    if (echoNote) msg += `\n\n_${echoNote}_`;
+    if (problems.length) {
+      msg += `\n\n${problems.map((p) => `_${p}_`).join("\n")}`;
+    }
+    await interaction.editReply({ content: msg });
+  } catch (err) {
+    console.error(
+      "[tickets] report message submit failed:",
+      submitIds(interaction, "report_message"),
+      err?.message || err,
+    );
+    await safeErrorReply(interaction);
+  }
+}
+
 module.exports = {
   handleReportMessage,
   handleReportUser,
   handleReportUserModal,
+  handleReportMessageModal,
   openReportTicket,
   buildReportUserCard,
   createReportTicketDeps,
