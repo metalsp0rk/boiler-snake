@@ -8,6 +8,8 @@
  * Buttons: tk:open → modal for description → same pipeline as /ticket create
  *          tk:sn:<ticketId> → modal to attach a staff note after close
  * Modals:  tk:create · tk:snm:<ticketId>
+ * Context menus (#745): "Report Post" / "Report User" invoke handlers
+ *          snapshot the target and show tk:rep:m:<token> / tk:rep:u:<token>
  */
 
 const { Events } = require("discord.js");
@@ -40,6 +42,10 @@ const {
   handleOpenTicketButton,
   handleCreateTicketModal,
 } = require("./create");
+const {
+  handleReportMessage,
+  handleReportUser,
+} = require("./report");
 const {
   handlePanelCreate,
   handlePanelList,
@@ -177,11 +183,21 @@ module.exports = {
   commands,
   handlers: {
     ticket: handleTicket,
+    // #745: Discord context-menu invokes. Keys are the exact registered
+    // display names — the router dispatches context menus by
+    // interaction.commandName. These stay on the raw-interaction api
+    // (deliberately absent from handlerApi below): the target message/user
+    // only exists on the raw interaction, and the router pins context-menu
+    // handlers to the interaction arm.
+    "Report Post": handleReportMessage,
+    "Report User": handleReportUser,
   },
   // Router API flag (roadmap/fluxer.md § Handler migration rule): the slash
   // handler receives a CommandContext. Button/modal arms (tk:open, tk:sn,
   // tk:create, tk:snm) stay on the raw interaction — roadmap
-  // § What stays Discord-only.
+  // § What stays Discord-only. "Report Post" / "Report User" (#745) are
+  // deliberately absent: context-menu invokes keep the default "interaction"
+  // api — the target only exists on the raw interaction.
   handlerApi: {
     ticket: "context",
   },
