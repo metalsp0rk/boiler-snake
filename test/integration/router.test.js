@@ -138,4 +138,193 @@ describe("integration: router", () => {
     assertEphemeralReply(interaction, /Something went wrong/);
     env.registry.registerHandler("xp", original, { api: "context" });
   });
+
+  // ── #745 (decision 9): context-menu dispatch ─────────────────────────────
+  //
+  // Mock pattern: extend createChatInputInteraction and flip the kind
+  // predicates — the same technique as this file's first test ("ignores
+  // non-command interactions"). Context-menu interactions carry their target
+  // on options.getMessage()/getUser(); the handler must receive the RAW
+  // interaction (registry api 'interaction' only — no CommandContext).
+
+  function createContextMenuInteraction({
+    kind,
+    commandName,
+    target = {},
+    ...chatOpts
+  }) {
+    const interaction = createChatInputInteraction({ commandName, ...chatOpts });
+    interaction.isChatInputCommand = () => false;
+    interaction.isMessageContextMenuCommand = () => kind === "message";
+    interaction.isUserContextMenuCommand = () => kind === "user";
+    interaction.options.getMessage = () => target.message ?? null;
+    interaction.options.getUser = () => target.user ?? null;
+    return interaction;
+  }
+
+  it("dispatches message-context menu commands to the registered handler (raw interaction)", async () => {
+    const seen = [];
+    env.registry.registerHandler(
+      "Report Post",
+      async (interaction, handlerCtx) => {
+        seen.push({ interaction, handlerCtx });
+      },
+    );
+    try {
+      const reported = { id: "msg-reported", content: "not acceptable" };
+      const interaction = createContextMenuInteraction({
+        kind: "message",
+        commandName: "Report Post",
+        guild: env.guild,
+        user: env.users.adminUser,
+        member: env.members.adminMember,
+        admin: true,
+        target: { message: reported },
+      });
+      await env.handleInteraction(interaction, env.ctx);
+      assert.equal(seen.length, 1, "registered context-menu handler dispatched");
+      assert.equal(
+        seen[0].interaction,
+        interaction,
+        "handler receives the RAW interaction",
+      );
+      assert.equal(seen[0].handlerCtx, env.ctx);
+      assert.equal(
+        seen[0].interaction.options.getMessage("Message"),
+        reported,
+        "target message rides the raw interaction",
+      );
+      assertNoReply(interaction); // handler answers for itself — router adds nothing
+    } finally {
+      env.registry.handlers.delete("Report Post");
+    }
+  });
+
+  it("dispatches user-context menu commands to the registered handler (raw interaction)", async () => {
+    const seen = [];
+    env.registry.registerHandler("Report User", async (interaction) => {
+      seen.push(interaction);
+    });
+    try {
+      const interaction = createContextMenuInteraction({
+        kind: "user",
+        commandName: "Report User",
+        guild: env.guild,
+        user: env.users.adminUser,
+        member: env.members.adminMember,
+        admin: true,
+        target: { user: env.users.memberUser },
+      });
+      await env.handleInteraction(interaction, env.ctx);
+      assert.equal(seen.length, 1, "registered context-menu handler dispatched");
+      assert.equal(seen[0], interaction, "handler receives the RAW interaction");
+      assert.equal(
+        seen[0].options.getUser("User"),
+        env.users.memberUser,
+        "target user rides the raw interaction",
+      );
+      assertNoReply(interaction);
+    } finally {
+      env.registry.handlers.delete("Report User");
+    }
+  });
+
+  it("drops context-menu interactions without a guild (no handler, no reply)", async () => {
+    let called = 0;
+    env.registry.registerHandler("Report Post", async () => {
+      called += 1;
+    });
+    try {
+      const interaction = createContextMenuInteraction({
+        kind: "message",
+        commandName: "Report Post",
+        guild: null,
+        user: env.users.memberUser,
+        member: null,
+        admin: false,
+      });
+      await env.handleInteraction(interaction, env.ctx);
+      assert.equal(called, 0, "guild guard runs before dispatch");
+      assertNoReply(interaction);
+    } finally {
+      env.registry.handlers.delete("Report Post");
+    }
+  });
+
+  it("blocks context-menu commands outside the channel allow-list", async () => {
+    env.db.addAllowedCommandChannel(env.communityId, IDS.channelCmds);
+    try {
+      const interaction = createContextMenuInteraction({
+        kind: "message",
+        commandName: "Report Post",
+        guild: env.guild,
+        user: env.users.memberUser,
+        member: env.members.member,
+        channelId: IDS.channelGeneral,
+        admin: false,
+      });
+      await env.handleInteraction(interaction, env.ctx);
+      assertEphemeralReply(interaction, /aren't enabled/);
+    } finally {
+      env.db.removeAllowedCommandChannel(env.communityId, IDS.channelCmds);
+    }
+  });
+
+  it("replies unhandled-command for an unknown context-menu commandName", async () => {
+    const interaction = createContextMenuInteraction({
+      kind: "user",
+      commandName: "Report Galaxy",
+      guild: env.guild,
+      user: env.users.adminUser,
+      member: env.members.adminMember,
+      admin: true,
+    });
+    await env.handleInteraction(interaction, env.ctx);
+    assertEphemeralReply(interaction, /Unhandled command/);
+  });
+
+  for (const kind of ["message", "user"]) {
+    it(`logs kind=${kind}-context and safeErrorReplys when a context-menu handler throws`, async () => {
+      const throwing = async () => {
+        throw new Error("boom");
+      };
+      env.registry.registerHandler("Report Post", throwing);
+      env.registry.registerHandler("Report User", throwing);
+      const originalError = console.error;
+      const logs = [];
+      console.error = (...args) => logs.push(args.map(String).join(" "));
+      try {
+        const interaction = createContextMenuInteraction({
+          kind,
+          commandName: kind === "message" ? "Report Post" : "Report User",
+          guild: env.guild,
+          user: env.users.adminUser,
+          member: env.members.adminMember,
+          admin: true,
+        });
+        await env.handleInteraction(interaction, env.ctx);
+        // safeErrorReply answered the user — never a silent drop (rule 1).
+        assertEphemeralReply(interaction, /Something went wrong/);
+        const line = logs.find((l) =>
+          l.includes("[router] command handler failed:"),
+        );
+        assert.ok(
+          line,
+          `expected a [router] failure log, got ${JSON.stringify(logs)}`,
+        );
+        assert.match(
+          line,
+          new RegExp(`kind=${kind}-context`),
+          "the kind ladder names the new context-menu kinds",
+        );
+        assert.match(line, /guild=/, "log has the ids to reproduce (rule 2)");
+        assert.match(line, /command=\/Report/);
+        assert.match(line, /boom/, "the specific error is in the log line");
+      } finally {
+        console.error = originalError;
+        env.registry.handlers.delete("Report Post");
+        env.registry.handlers.delete("Report User");
+      }
+    });
+  }
 });

@@ -22,14 +22,20 @@ function captureErrors(fn) {
   const seen = [];
   const orig = console.error;
   console.error = (...args) => seen.push(args.map(String).join(" "));
-  try {
-    return fn().then(
+  // #745: restore AFTER the awaited call settles. The old finally restored
+  // as soon as fn() handed back its promise, so a log emitted on a
+  // microtask (any await before the router's catch — e.g. the chat arm's
+  // shared runCommandArm invoke) escaped the capture window. The router
+  // contract is "one grep-able line", never a timing; capturing strictly
+  // more is the faithful harness.
+  return fn()
+    .then(
       () => ({ errs: seen }),
       (err) => ({ errs: seen, threw: err }),
-    );
-  } finally {
-    console.error = orig;
-  }
+    )
+    .finally(() => {
+      console.error = orig;
+    });
 }
 
 const BOOM = "handler exploded";
