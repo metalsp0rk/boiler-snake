@@ -63,6 +63,11 @@ describe("commandVisibility", () => {
     // #599: /staffsettings is the staff-tier read path (role list + settings
     // twin) — the whole point is that it rides the staff picker machinery.
     assert.equal(visibilityTier("staffsettings"), TIERS.staff);
+    // #745: context-menu report commands ride the same staff picker posture.
+    // Keys are the exact display names (caps + space) — same strings the
+    // builders register and the router will dispatch on.
+    assert.equal(visibilityTier("Report Post"), TIERS.staff);
+    assert.equal(visibilityTier("Report User"), TIERS.staff);
     assert.equal(visibilityTier("staff"), TIERS.admin);
     assert.equal(visibilityTier("setcommandchannel"), TIERS.admin);
   });
@@ -73,6 +78,11 @@ describe("commandVisibility", () => {
     assert.ok(names.includes("setxp"));
     // #599: the read twin must receive staff_roles allow overwrites on sync.
     assert.ok(names.includes("staffsettings"));
+    // #745: the context-menu report names (exact display names) sync too —
+    // staffSyncCommandNames() is name-agnostic, and sync.js matches them
+    // case-sensitively against the guild command list Discord returns.
+    assert.ok(names.includes("Report Post"));
+    assert.ok(names.includes("Report User"));
     assert.ok(!names.includes("xp"));
     assert.ok(!names.includes("staff"));
     assert.ok(!names.includes("setcommandchannel"));
@@ -99,6 +109,29 @@ describe("commandVisibility", () => {
         );
       }
     }
+  });
+
+  it("context-menu report commands (#745) carry staff-tier command JSON", () => {
+    // The generic loop above already classifies these by name (registry-
+    // derived registeredNames includes context-menu builders via
+    // toJSON().name); this pins the payload specifics the loop can see:
+    // Message/User type + the ManageGuild default_member_permissions string
+    // the builder emits (validateDefaultMemberPermissions bigint→string).
+    const { PermissionFlagsBits, ApplicationCommandType } = require("discord.js");
+    const { buildDefaultRegistry } = require("../src/commands/registry");
+    const reg = buildDefaultRegistry();
+    const byName = new Map(reg.commands.map((c) => [c.name, c]));
+    const manageGuild = BigInt(PermissionFlagsBits.ManageGuild).toString();
+
+    const post = byName.get("Report Post");
+    assert.ok(post, "Report Post missing from the default registry");
+    assert.equal(post.type, ApplicationCommandType.Message);
+    assert.equal(post.default_member_permissions, manageGuild);
+
+    const user = byName.get("Report User");
+    assert.ok(user, "Report User missing from the default registry");
+    assert.equal(user.type, ApplicationCommandType.User);
+    assert.equal(user.default_member_permissions, manageGuild);
   });
 });
 

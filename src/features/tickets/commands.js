@@ -1,11 +1,23 @@
 /**
- * /ticket slash command builder.
+ * /ticket slash command builder + context-menu report commands (#745).
  */
 const {
   SlashCommandBuilder,
+  ContextMenuCommandBuilder,
+  ApplicationCommandType,
   ChannelType,
+  PermissionFlagsBits,
 } = require("discord.js");
 const { MAX_TICKET_REASON, MAX_NOTE_CONTENT } = require("../../db");
+
+// #745: staff-tier picker posture for the context-menu report commands —
+// ManageGuild default hides them from regulars and `/staff syncpermissions`
+// overwrites grant the staff_roles (same posture as the staff slash
+// commands); handlers stay the security source of truth. Note: the
+// installed @discordjs/builders (1.14.1 via discord.js 14.27) exports no
+// dedicated Message/User subclasses — generic ContextMenuCommandBuilder +
+// setType() is the supported form (identical REST payload: type 3 / 2).
+const staffPerms = PermissionFlagsBits.ManageGuild;
 
 const commands = [
   new SlashCommandBuilder()
@@ -338,6 +350,18 @@ const commands = [
         .setName("settings")
         .setDescription("Show ticket configuration for this server."),
     ),
+  // #745: right-click → Apps report commands. Context-menu names are display
+  // names (spaces/caps allowed) and double as the registry + visibility-map
+  // keys — keep them byte-identical everywhere. Handlers land separately;
+  // the router ignores these until its context-menu branches exist.
+  new ContextMenuCommandBuilder()
+    .setName("Report Post")
+    .setType(ApplicationCommandType.Message)
+    .setDefaultMemberPermissions(staffPerms),
+  new ContextMenuCommandBuilder()
+    .setName("Report User")
+    .setType(ApplicationCommandType.User)
+    .setDefaultMemberPermissions(staffPerms),
 ];
 
 module.exports = { commands };
