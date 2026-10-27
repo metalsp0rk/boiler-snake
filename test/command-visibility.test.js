@@ -60,6 +60,11 @@ describe("commandVisibility", () => {
     assert.equal(visibilityTier("setxp"), TIERS.staff);
     assert.equal(visibilityTier("honeypot"), TIERS.staff);
     assert.equal(visibilityTier("bridge"), TIERS.staff);
+    // #725 (epic #723): /automod status is the staff-tier read surface.
+    assert.equal(visibilityTier("automod"), TIERS.staff);
+    // #725: /automodconfig is admin-tier — ManageGuild picker, NO
+    // staff_roles allow overwrites (mutations are admin-only in the handler).
+    assert.equal(visibilityTier("automodconfig"), TIERS.admin);
     // #599: /staffsettings is the staff-tier read path (role list + settings
     // twin) — the whole point is that it rides the staff picker machinery.
     assert.equal(visibilityTier("staffsettings"), TIERS.staff);
@@ -83,6 +88,9 @@ describe("commandVisibility", () => {
     // case-sensitively against the guild command list Discord returns.
     assert.ok(names.includes("Report Post"));
     assert.ok(names.includes("Report User"));
+    // #725: the staff-tier status command syncs; the admin config command must not.
+    assert.ok(names.includes("automod"));
+    assert.ok(!names.includes("automodconfig"));
     assert.ok(!names.includes("xp"));
     assert.ok(!names.includes("staff"));
     assert.ok(!names.includes("setcommandchannel"));

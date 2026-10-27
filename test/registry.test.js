@@ -19,10 +19,11 @@ const features = require("../src/features");
 after(cleanup);
 
 describe("command definitions via registry", () => {
-  it("exports 37 slash commands + 2 context menus with unique names", () => {
+  it("exports 39 slash commands + 2 context menus with unique names", () => {
     const { commands } = buildDefaultRegistry();
     // #745: 37 slash builders + "Report Post"/"Report User" context menus.
-    assert.equal(commands.length, 39);
+    // #725: + /automod and /automodconfig (auto-moderation epic #723).
+    assert.equal(commands.length, 41);
     const names = commands.map((c) => c.name);
     assert.equal(new Set(names).size, names.length);
     assert.ok(names.includes("eventreminder"));
@@ -56,6 +57,9 @@ describe("command definitions via registry", () => {
     // caps are legal there and double as the registry + visibility-map keys).
     assert.ok(names.includes("Report Post"));
     assert.ok(names.includes("Report User"));
+    // #725: auto-moderation settings + config commands.
+    assert.ok(names.includes("automod"));
+    assert.ok(names.includes("automodconfig"));
   });
 });
 
@@ -119,6 +123,9 @@ describe("buildDefaultRegistry", () => {
       "ticket",
       "gork",
       "link",
+      // #725: auto-moderation status + config ride the CommandContext arm.
+      "automod",
+      "automodconfig",
     ];
     for (const name of migrated) {
       assert.equal(registry.getHandlerApi(name), "context", name);
@@ -172,10 +179,11 @@ describe("buildDefaultRegistry", () => {
       "bridge",
       "linking",
       "rss",
+      "automod",
     ]) {
       assert.ok(names.includes(expected), `missing feature ${expected}`);
     }
-    assert.equal(features.length, 28);
+    assert.equal(features.length, 29);
   });
 
   it("registers userinfo button handler", () => {
@@ -204,6 +212,11 @@ describe("buildDefaultRegistry", () => {
       "function"
     );
     assert.equal(typeof registry.getModalHandler("note:edit:12"), "function");
+  });
+
+  it("registers the automod rules modal handler (#725)", () => {
+    const registry = buildDefaultRegistry();
+    assert.equal(typeof registry.getModalHandler("am:rules"), "function");
   });
 });
 

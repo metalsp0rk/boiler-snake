@@ -28,6 +28,7 @@ module.exports = [
   require("./tickets"),
   require("./web"),
   require("./gork"),
+  require("./automod"),
   require("./bridge"),
   require("./linking"),
 ];

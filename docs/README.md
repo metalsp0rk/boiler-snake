@@ -75,6 +75,11 @@ Welcome to the comprehensive documentation for Boiler Snake.
   - Exempt roles for staff
   - Setup order, permissions, and troubleshooting
 
+- **[Auto-moderation](automod.md)**
+  - `/automod` status + `/automodconfig` (channel, rules, per-action modes, timeout cap, budget)
+  - Daily case budget and persisted safety breaker (`safety resume`, confirm-gated)
+  - Discord-only for this milestone (explicit Fluxer no-parity)
+
 - **[Community Events](community-events.md)**
   - Bot-owned events with button RSVP, capacity, waitlists
   - Reminders on the signup list, recurring series, presets, DM wizard

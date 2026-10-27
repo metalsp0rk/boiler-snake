@@ -71,6 +71,7 @@ See [Setup Guide](setup.md) for detailed installation instructions.
 - [Twitch Stream Notifications](twitch-notifications.md) - Go-live alerts for any number of subscribed streamers
 - [RSS Feed Notifications](rss-notifications.md) - Announce new entries from RSS/Atom feeds (SSRF-guarded polling, strict role ping)
 - [Honeypot Channels](honeypot.md) - Auto-ban decoy-channel posters; exempt staff roles
+- [Auto-moderation](automod.md) - Configurable case engine: switch, case channel, rules, per-action modes, budget, breaker (`/automod` + `/automodconfig`)
 - [Community Events](community-events.md) - Bot-owned `/event` + `/eventsignup` / `/eventconfig` / `/eventchannels` with button RSVP, waitlists, reminders, series
 - [Scheduled Event Reminders](event-reminders.md) - Pre-event pings for Interested members
 - [Staff Roles](staff-roles.md) - Junior/senior trusted roles for staff gate and tickets
@@ -118,6 +119,7 @@ See [Setup Guide](setup.md) for detailed installation instructions.
 | **Twitch Alerts** | Go-live alerts for any number of subscribed streamers |
 | **RSS Feed Notifications** | New-entry announcements from RSS/Atom feeds with bounded dedup and flood caps |
 | **Honeypot Channels** | Ban users who post in configured decoy channels; exempt roles for staff |
+| **Auto-moderation** | Guild config for the automod case engine: modes per action, timeout cap, daily case budget, safety breaker (`/automod`, `/automodconfig`) |
 | **Staff Roles** | Junior/senior trusted roles for the staff gate and ticket visibility |
 | **Staff Notes** | Private staff-only notes about members (never shown to the subject) |
 | **Warnings** | Formal permanent disciplinary records (voidable; `/warn mine` for members) |

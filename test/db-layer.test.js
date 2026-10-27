@@ -122,7 +122,7 @@ describe("db layer", () => {
     const { runMigrations } = require("../src/db/migrate");
     api.db.pragma("user_version = 0"); // #202 guard: force the FULL replay, not the fast-skip
     assert.doesNotThrow(() => runMigrations());
-    assert.equal(Number(api.db.pragma("user_version", { simple: true })), 66);
+    assert.equal(Number(api.db.pragma("user_version", { simple: true })), 67);
   });
 
   describe("gork settings (migration 021 + clamps)", () => {
@@ -665,6 +665,9 @@ describe("db layer", () => {
       "ERASED_NOTE_CONTENT", // #469 (F2-11): the delete-tombstone marker string
       "RSS_SEEN_CAP", // #305: the bounded per-feed rss_seen cap
       "REPORT_KINDS", // #745: ticket_reports kind enum ('message' | 'user')
+      "AUTOMOD_ACTIONS", // #725: auto-mod action ids for the per-action mode gate
+      "AUTOMOD_MODES", // #725: off | suggest | auto
+      "AUTOMOD_RULES_MAX_LEN", // #725: guild rules text cap (4000)
     ]);
 
     it("exports no undefined value", () => {

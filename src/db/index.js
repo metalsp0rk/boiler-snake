@@ -35,6 +35,7 @@ const githubWatches = require("./repositories/githubWatches");
 const gorkAccess = require("./repositories/gorkAccess");
 const gorkMemory = require("./repositories/gorkMemory");
 const gorkBudget = require("./repositories/gorkBudget");
+const automodSettings = require("./repositories/automodSettings");
 const gorkInteractions = require("./repositories/gorkInteractions");
 const webSessions = require("./repositories/webSessions");
 const adminAudit = require("./repositories/adminAudit");
@@ -404,6 +405,21 @@ module.exports = {
   listGorkBudgetRules: gorkBudget.listGorkBudgetRules,
   getGorkUsage: gorkBudget.getGorkUsage,
   incrementGorkUsage: gorkBudget.incrementGorkUsage,
+
+  // auto-moderation guild settings + daily case budget (#725, epic #723 —
+  // SEPARATE from the gork budget; day-rollover counter, consume-on-accept).
+  // Constants/clamps are re-exported from the repository for the feature
+  // module and later automod issues (#726 referral gate, #728 harness).
+  AUTOMOD_ACTIONS: automodSettings.AUTOMOD_ACTIONS,
+  AUTOMOD_MODES: automodSettings.AUTOMOD_MODES,
+  AUTOMOD_RULES_MAX_LEN: automodSettings.AUTOMOD_RULES_MAX_LEN,
+  automodModeColumn: automodSettings.automodModeColumn,
+  normalizeAutomodMode: automodSettings.normalizeAutomodMode,
+  getAutomodBudget: automodSettings.getAutomodBudget,
+  consumeAutomodCase: automodSettings.consumeAutomodCase,
+  setAutomodPause: automodSettings.setAutomodPause,
+  clearAutomodPause: automodSettings.clearAutomodPause,
+  isAutomodPaused: automodSettings.isAutomodPaused,
 
   // gork interaction logging (full request/response capture)
   insertGorkInteraction: gorkInteractions.insertGorkInteraction,

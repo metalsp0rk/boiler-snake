@@ -82,6 +82,14 @@ const COMMAND_VISIBILITY = Object.freeze({
   activityconfig: TIERS.staff,
   gork: TIERS.staff,
   bridge: TIERS.staff,
+  // #725 (epic #723): auto-mod STATUS is staff-tier (read-only: config,
+  // budget, breaker — no secrets). Config MUTATIONS live on `/automodconfig`
+  // (admin tier below). Handlers stay the security source of truth.
+  automod: TIERS.staff,
+  // #725: every /automodconfig arm is ManageGuild in the handler too
+  // (requireAdminFromContext) — the admin picker tier only hides the
+  // command from staff-role members; no staff_roles allow overwrites.
+  automodconfig: TIERS.admin,
   // #599: read-only twin of `/staff role list` + `/staff settings` (roles |
   // overview) so junior/senior staff can check their own staff-role status
   // and the staff settings without Manage Server. Handler gate is the staff
