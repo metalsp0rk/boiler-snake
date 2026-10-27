@@ -21,12 +21,13 @@
   | `Gork next` | Gork feature work + open triage (design record: [gork.md](gork.md)) |
   | `Fluxer/Bridge live verification` | Live-verification items gating voice XP / elevated actions + bridge spike follow-ups (design records: [fluxer.md](fluxer.md), [bridge.md](bridge.md)) |
   | `Community Events v1` | Apollo-style events: epic + phases 1–5, DM wizard, `/eventreminder` retirement (design record: [community-events.md](community-events.md)) |
+  | `Auto-moderation v1` | Staff-referral auto-mod: recommendations + gated action harness; epic + settings, harness, case card, per-action tools, circuit breaker, live verification (design record: [automod.md](automod.md)) |
   | `Feature backlog` | Work-as-time-allows items from shipped features |
 
 - **Area labels** filter an issue list per feature: `gork`, `fluxer`, `bridge`,
-  `community-events`, `tickets`, `twitch`, `staff-roles`, `core-infra`, `music`,
-  `notifications` (feed watchers: RSS/YouTube/Twitch-family/GitHub releases), plus
-  `triage` (evidence needed) and `audit-finding` (from the 2026-10 audits).
+  `community-events`, `tickets`, `twitch`, `staff-roles`, `automod`, `core-infra`,
+  `music`, `notifications` (feed watchers: RSS/YouTube/Twitch-family/GitHub releases),
+  plus `triage` (evidence needed) and `audit-finding` (from the 2026-10 audits).
 - **Status semantics:** an issue closes only with its verification bar met. The rule
   the audit forced (and fluxer/bridge invented): **no feature is "Shipped" without a
   dated live-verification record.** Merged-but-unverified stays an open issue.
@@ -50,7 +51,9 @@ channel bridge (Discord ↔ Fluxer, see [bridge.md](bridge.md)), gork AI Q&A
 
 **Planned:** community events with button RSVP
 ([community-events.md](community-events.md), issue-tracked under the
-`Community Events v1` milestone).
+`Community Events v1` milestone); auto-moderation — staff referral, recommendations,
+and a gated action harness ([automod.md](automod.md), issue-tracked under the
+`Auto-moderation v1` milestone).
 
 ---
 
