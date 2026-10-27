@@ -25,6 +25,7 @@ const staffRoles = require("./repositories/staffRoles");
 const staffNotes = require("./repositories/staffNotes");
 const warnings = require("./repositories/warnings");
 const tickets = require("./repositories/tickets");
+const ticketReports = require("./repositories/ticketReports");
 const userChannelActivity = require("./repositories/userChannelActivity");
 const commandPermissionOauth = require("./repositories/commandPermissionOauth");
 const twitch = require("./repositories/twitch");
@@ -369,6 +370,13 @@ module.exports = {
   listTicketMessages: tickets.listTicketMessages,
   generateTranscriptToken: tickets.generateTranscriptToken,
   setTicketArchiveMessageId: tickets.setTicketArchiveMessageId,
+
+  // ticket reports (#745: Report Post / Report User side table; the nudge
+  // query + read accessor — writers get { ok:false, error }, never a throw)
+  REPORT_KINDS: ticketReports.REPORT_KINDS,
+  insertTicketReport: ticketReports.insertTicketReport,
+  getTicketReport: ticketReports.getTicketReport,
+  findOpenReportForMessage: ticketReports.findOpenReportForMessage,
 
   // gork access control (per-guild user blocks)
   addGorkBlock: gorkAccess.addGorkBlock,
