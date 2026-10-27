@@ -71,7 +71,7 @@ See [Setup Guide](setup.md) for detailed installation instructions.
 - [Twitch Stream Notifications](twitch-notifications.md) - Go-live alerts for any number of subscribed streamers
 - [RSS Feed Notifications](rss-notifications.md) - Announce new entries from RSS/Atom feeds (SSRF-guarded polling, strict role ping)
 - [Honeypot Channels](honeypot.md) - Auto-ban decoy-channel posters; exempt staff roles
-- [Auto-moderation](automod.md) - Configurable case engine: switch, case channel, rules, per-action modes, budget, breaker (`/automod` + `/automodconfig`)
+- [Auto-moderation](automod.md) - Configurable case engine: switch, case channel, rules, per-action modes, budget, breaker, staff referrals (`/automod` + `/automodconfig` + *Refer to automod*)
 - [Community Events](community-events.md) - Bot-owned `/event` + `/eventsignup` / `/eventconfig` / `/eventchannels` with button RSVP, waitlists, reminders, series
 - [Scheduled Event Reminders](event-reminders.md) - Pre-event pings for Interested members
 - [Staff Roles](staff-roles.md) - Junior/senior trusted roles for staff gate and tickets

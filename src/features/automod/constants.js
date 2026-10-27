@@ -10,7 +10,7 @@ const MODAL_RULES = "am:rules";
 /** Text input customId inside the rules modal */
 const MODAL_FIELD_RULES = "rules";
 
-// Vocabulary and caps are owned by the db repository (single source of
+// Vocabulary and caps are owned by the db repositories (single source of
 // truth shared by #726/#728 consumers); this module only re-exports what the
 // command layer renders, so readers of the FEATURE module find them here.
 const {
@@ -26,6 +26,10 @@ const {
   automodModeColumn,
   normalizeAutomodMode,
 } = require("../../db/repositories/automodSettings");
+const {
+  AUTOMOD_CASE_STATUSES,
+  AUTOMOD_REFER_NOTE_MAX_LEN,
+} = require("../../db/repositories/automodCases");
 
 /**
  * Standard denial for Fluxer dispatches reaching this Discord-only surface
@@ -55,4 +59,8 @@ module.exports = {
   ACTION_CHOICES,
   automodModeColumn,
   normalizeAutomodMode,
+  // Case intake (#726): status vocabulary + the referrer-note cap, owned by
+  // src/db/repositories/automodCases.js.
+  AUTOMOD_CASE_STATUSES,
+  AUTOMOD_REFER_NOTE_MAX_LEN,
 };

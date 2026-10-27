@@ -73,6 +73,10 @@ describe("commandVisibility", () => {
     // builders register and the router will dispatch on.
     assert.equal(visibilityTier("Report Post"), TIERS.staff);
     assert.equal(visibilityTier("Report User"), TIERS.staff);
+    // #726: the auto-mod referral context menu — same staff posture (the
+    // /automod refer SUBCOMMAND rides the `automod` staff tier above; only
+    // the top-level menu name needs its own entry).
+    assert.equal(visibilityTier("Refer to automod"), TIERS.staff);
     assert.equal(visibilityTier("staff"), TIERS.admin);
     assert.equal(visibilityTier("setcommandchannel"), TIERS.admin);
   });
@@ -88,6 +92,8 @@ describe("commandVisibility", () => {
     // case-sensitively against the guild command list Discord returns.
     assert.ok(names.includes("Report Post"));
     assert.ok(names.includes("Report User"));
+    // #726: the referral context menu syncs with the same posture.
+    assert.ok(names.includes("Refer to automod"));
     // #725: the staff-tier status command syncs; the admin config command must not.
     assert.ok(names.includes("automod"));
     assert.ok(!names.includes("automodconfig"));
@@ -119,7 +125,7 @@ describe("commandVisibility", () => {
     }
   });
 
-  it("context-menu report commands (#745) carry staff-tier command JSON", () => {
+  it("context-menu commands (#745 reports, #726 referral) carry staff-tier command JSON", () => {
     // The generic loop above already classifies these by name (registry-
     // derived registeredNames includes context-menu builders via
     // toJSON().name); this pins the payload specifics the loop can see:
@@ -140,6 +146,12 @@ describe("commandVisibility", () => {
     assert.ok(user, "Report User missing from the default registry");
     assert.equal(user.type, ApplicationCommandType.User);
     assert.equal(user.default_member_permissions, manageGuild);
+
+    // #726: "Refer to automod" — MESSAGE menu, same ManageGuild picker.
+    const referMenu = byName.get("Refer to automod");
+    assert.ok(referMenu, "Refer to automod missing from the default registry");
+    assert.equal(referMenu.type, ApplicationCommandType.Message);
+    assert.equal(referMenu.default_member_permissions, manageGuild);
   });
 });
 
