@@ -285,7 +285,7 @@ test("no_action is consideration: narrative note written once with the actions l
     caseRow,
     w,
     tools: [
-      { name: "no_action", args: { user_id: SUB, rationale: "single remark, no pattern" } },
+      { name: "no_action", args: { user_id: SUB, reason: "single remark, no pattern" } },
       { name: "write_staff_note", args: { user_id: SUB, content: "weighed the window; came close but the rules do not reach them" } },
     ],
   });

@@ -778,7 +778,9 @@ function buildActionHandler(act, { resolved, row, params, referrerUserId = null 
 
 function defaultResultText(act, row, params) {
   if (act === "no_action") {
-    const rationale = String(params?.rationale ?? "").trim();
+    // #732 canonical key is `reason`; `rationale` stays readable for rows
+    // recorded before the rename.
+    const rationale = String(params?.reason ?? params?.rationale ?? "").trim();
     return rationale
       ? `No action — <@${row.subject_user_id}> considered: ${rationale}`
       : `No action — <@${row.subject_user_id}> considered, no sanction warranted.`;

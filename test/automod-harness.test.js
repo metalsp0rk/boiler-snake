@@ -626,7 +626,7 @@ test("queued bystander notes drop at commit; the #731 reconciler hook replaces t
   const round1 = {
     tools: [
       { name: "write_staff_note", args: { user_id: BYS, content: "also note this random member" } },
-      { name: "no_action", args: { user_id: SUB, rationale: "single remark, no pattern" } },
+      { name: "no_action", args: { user_id: SUB, reason: "single remark, no pattern" } },
       { name: "write_staff_note", args: { user_id: SUB, content: "weighed it; no sanction" } },
     ],
   };
@@ -717,6 +717,33 @@ test("queued bystander notes drop at commit; the #731 reconciler hook replaces t
   assert.equal(r2.state, "complete", "a dead reconciler never kills the run");
   assert.match(decisionField(w2.edits[0]), /note reconciliation: \*\*failed\*\* — reconciler exploded/);
   assert.ok(cap.lines.some((l) => l.includes("note reconciliation") && l.includes("reconciler exploded")));
+});
+
+// ── 7b. #732: no_action OFF ⇒ a pass with no actions is NOT consideration ───
+
+test("no_action off + zero tool calls: run completes with zero action rows and zero notes - issue #732", async () => {
+  const off = await seededCommunity("noaction-off-pass", { settings: { modes: { no_action: "off" } } });
+  const cap = captureConsole();
+  let res;
+  try {
+    res = await harness.runAutomodCase({
+      communityId: off.cid,
+      guildId: GUILD,
+      caseId: off.caseRow.id,
+      deps: off.w.deps({ chat: scripted([]) }),
+    });
+  } finally {
+    cap.restore();
+  }
+  assert.equal(res.state, "complete");
+  assert.deepEqual(
+    db.listAutomodActionsForCase(off.cid, off.caseRow.id),
+    [],
+    "nothing was considered, so nothing was recorded (contract: a pass is not consideration)",
+  );
+  assert.equal(db.listStaffNotes(off.cid, SUB).length, 0, "no note without consideration");
+  assert.equal(db.listStaffNotes(off.cid, BYS).length, 0, "bystanders never get notes");
+  assert.equal(off.w.edits.length, 1, "the case card still posted its outcome");
 });
 
 // ── 8. degraded posts never kill the run ─────────────────────────────────────

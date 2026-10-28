@@ -116,10 +116,12 @@ const ACTION_TOOL_SPECS = Object.freeze({
       "Record that a user WAS CONSIDERED and no sanction is warranted (they " +
       "came close, or the rules simply do not reach them). This is how a " +
       "user becomes considered — a staff note can then be written about " +
-      "them. Do NOT use this for bystanders you did not weigh.",
+      "them. Do NOT use this for bystanders you did not weigh. `reason` is " +
+      "required: it is stored on the decision row and in the staff note.",
     extra: Object.freeze({
-      rationale: reasonProp("Why no action is warranted for this user"),
+      reason: reasonProp("Why no action is warranted for this user"),
     }),
+    required: Object.freeze(["user_id", "reason"]),
   }),
   warn: Object.freeze({
     description:
@@ -445,11 +447,22 @@ function createToolDispatcher({ communityId, guildId, caseRow, modes = {}, subje
       const slot = `${name}|${userId}`;
 
       const params = {};
+      // #732: no_action's reason is REQUIRED — it is stored on the action
+      // row AND carried into the staff note (contract verbatim). Every other
+      // action keeps reason optional. Param validation runs BEFORE the slot
+      // check so a malformed call learns the param contract first (#728).
       const reason = optionalText(args.reason);
-      if (reason) params.reason = reason;
       if (name === "no_action") {
-        const rationale = optionalText(args.rationale);
-        if (rationale) params.rationale = rationale;
+        if (!reason) {
+          return refuse(
+            name,
+            args,
+            "`no_action` needs `reason` — why no sanction is warranted for this user. It is recorded on the decision row and in the staff note. If they were merely a bystander, call NOTHING: no_action marks consideration and is not a bystander bin.",
+          );
+        }
+        params.reason = reason;
+      } else if (reason) {
+        params.reason = reason;
       }
       if (name === "timeout") {
         const seconds = Number(args.duration_seconds);

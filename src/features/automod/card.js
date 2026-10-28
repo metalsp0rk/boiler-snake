@@ -167,7 +167,10 @@ function renderRowLine(row) {
       case "suggested": {
         if (act === "no_action") {
           const rationale = snippet(
-            parseAutomodActionParams(row)?.params?.rationale ?? "",
+            // #732 canonical key is `reason`; `rationale` stays readable.
+            parseAutomodActionParams(row)?.params?.reason ??
+              parseAutomodActionParams(row)?.params?.rationale ??
+              "",
             180,
           );
           return (
