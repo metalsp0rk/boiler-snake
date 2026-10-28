@@ -47,11 +47,17 @@
  *     harness; content = the model's note + a case A-n reference; the
  *     dispatcher already guaranteed only-considered users, one note each).
  *     `deps.reconcileNotes` is #731's completeness hook (no-op today).
- *  8. Outcome post: the placeholder is EDITED (or a fresh post lands when
- *     the placeholder never did) with per-intent lines straight from the
- *     executor results + the meta line (model · duration · rounds · tools).
- *     Provider failures name the specific cause to the referrer:
- *     `Referred by <@id> — provider error: <cause>`.
+ *  8. Outcome post (#730): the placeholder is EDITED (or a fresh post lands
+ *     when the placeholder never did) into the interactive CASE CARD —
+ *     per-subject outcome sections built from a FRESH re-read of the action
+ *     ledger + the meta line (model · duration · rounds · tools) +
+ *     Approve/Dismiss buttons per still-suggested row (`src/features/
+ *     automod/card.js`; the card rebuilds from row ids alone, so old cards
+ *     keep working). Provider failures name the specific cause to the
+ *     referrer: `**Referred by:** <@id> — provider error: <cause>`.
+ *     A card that cannot post/edit is NEVER claimed posted: the failure
+ *     logs with ids and `card.recordCardPostError` leaves a structured
+ *     `_card_post_error` entry on the case.
  *  9. Metadata persist (070): last_model / last_duration_ms /
  *     last_tool_names / decision_log / last_run_error.
  *
@@ -79,11 +85,13 @@
  * `src/db/repositories/automodCases.js`; they touch ONLY the columns 068
  * and 070 own and the status vocabulary `AUTOMOD_CASE_STATUSES` pins.
  *
- * Post shapes #730 replaces (exported builders — grep them in tests):
- *  - `buildReviewPlaceholderPayload(caseRow)` — the start placeholder.
- *  - `buildDecisionPayload({...})` — the outcome post (plain embed, NO
- *    buttons: Approve/Dismiss arrive with #730's card).
- *  - `buildInterruptedPayload(caseRow)` — the boot-sweep notice.
+ * Post shapes:
+ *  - `buildReviewPlaceholderPayload(caseRow)` — the start placeholder (the
+ *    card EDITS this message; colors/titles follow the card's family).
+ *  - the outcome post is `card.buildCardPayload({...})` (#730) — exported
+ *    from `src/features/automod/card.js`, tested there.
+ *  - `buildInterruptedPayload(caseRow)` — the boot-sweep notice (no card:
+ *    the run died mid-flight; nothing interactive to approve).
  */
 
 const { sliceSafe } = require("../../core/text");
@@ -94,6 +102,7 @@ const {
   getAutomodBudget,
   consumeAutomodCase,
   createStaffNote,
+  listAutomodActionsForCase,
   MAX_NOTE_CONTENT,
 } = require("../../db");
 const { getAiConfig, chatWithTools } = require("../../core/ai");
@@ -102,6 +111,7 @@ const { executeAutomodAction } = require("./executor");
 const { readSettings } = require("./settings");
 const { createToolDispatcher } = require("./harnessTools");
 const { buildSystemPrompt, buildUserMessage } = require("./prompt");
+const card = require("./card");
 const {
   AUTOMOD_ACTIONS,
   AUTOMOD_MAX_TOOL_ROUNDS,
@@ -196,11 +206,14 @@ function writeRunMetadata(dbHandle, caseId, meta, t) {
     );
 }
 
-/* ── post payload builders (exact shapes #730 replaces with the card) ────── */
+/* ── post payload builders (placeholder + sweep notice; the card builder
+      lives in ./card.js — the outcome post is a card, built from the
+      FRESH ledger rows at finish) ────────────────────────────────────────── */
 
 /**
  * The start placeholder — posted to the automod channel when the run
- * claims the case. Shape:
+ * claims the case. The outcome run EDITS this message into the case card.
+ * Shape:
  *   { allowedMentions: {parse:[]},
  *     embeds: [{ title: "Automod — case A-n — reviewing",
  *                description, fields: [{name:"Referral", value:"Referred by <@id>"}],
@@ -227,36 +240,10 @@ function buildReviewPlaceholderPayload(caseRow) {
 }
 
 /**
- * The outcome post (placeholder edit or fresh post). Shape:
- *   { allowedMentions: {parse:[]},
- *     embeds: [{ title: "Automod — case A-n — decision|run failed",
- *                description: summaryText   // failure lines name the referrer
- *                fields: [{name:"Decision", value: per-intent lines}],
- *                footer: {text: "Model X · N ms · R round(s) · tools: …"},
- *                color }] }
- * Plain embed: NO components/buttons — the Approve/Dismiss card is #730's.
+ * The outcome post is `card.buildCardPayload({...})` (#730) — the harness
+ * feeds it fresh ledger rows in `finishRun`. The old plain-embed decision
+ * builder is gone; grep history: `buildDecisionPayload`.
  */
-function buildDecisionPayload({ caseRow, summaryText, lines = [], meta = {}, failed = false }) {
-  const fieldLines = lines.length ? lines.join("\n") : "_No action calls were recorded this run._";
-  const footerParts = [
-    `Model ${meta.model ?? "?"}`,
-    `${Number.isFinite(Number(meta.durationMs)) ? Math.floor(Number(meta.durationMs)) : "?"} ms`,
-    `${Number.isFinite(Number(meta.rounds)) ? Math.floor(Number(meta.rounds)) : 0} round(s)`,
-    `tools: ${(meta.toolNames ?? []).join(", ") || "none"}`,
-  ];
-  return {
-    allowedMentions: { parse: [] },
-    embeds: [
-      {
-        title: `Automod — case A-${caseRow.case_number} — ${failed ? "run failed" : "decision"}`,
-        description: sliceSafe(summaryText ?? "", 4000),
-        fields: [{ name: "Decision", value: sliceSafe(fieldLines, EMBED_FIELD_MAX) }],
-        footer: { text: sliceSafe(footerParts.join(" · "), 2048) },
-        color: failed ? COLORS.failed : COLORS.complete,
-      },
-    ],
-  };
-}
 
 /** The boot-sweep notice (minimal; the case's real state is the row). */
 function buildInterruptedPayload(caseRow) {
@@ -312,6 +299,9 @@ function makeRunDeps({ client = null } = {}) {
       }));
     },
     getCase: (caseId) => getAutomodCaseById(caseId),
+    /** Fresh ledger read for the outcome card (the card rebuilds from rows
+     *  alone — never from the in-memory commit lines). */
+    listCaseActions: (communityId, caseId) => listAutomodActionsForCase(communityId, caseId),
     readSettings: (communityId) => readSettings(communityId),
     getBudget: (communityId, nowMs) => getAutomodBudget(communityId, nowMs),
     consume: (communityId, nowMs) => consumeAutomodCase(communityId, { nowMs }),
@@ -358,8 +348,10 @@ function buildRunDeps(over = {}) {
 
 /* ── commit ──────────────────────────────────────────────────────────────── */
 
-/** One decision-post line per recorded action intent, from the EXECUTOR
- *  RESULT (state + error/result verbatim — the card never re-derives). */
+/** One commit-report line per recorded action intent, from the EXECUTOR
+ *  RESULT (state + error/result verbatim). `res.commit.lines` is the
+ *  runner's report surface; the CARD's Decision field renders from the
+ *  ledger rows instead (#730), so a rebuild after restart looks identical. */
 function formatActionLine(intent, out) {
   const state = out?.state ?? (out?.ok ? "executed" : "failed");
   const detail =
@@ -380,6 +372,9 @@ function formatActionLine(intent, out) {
  */
 async function commitRunIntents({ d, cid, gid, caseRow, referrerUserId, dispatcher, ids }) {
   const lines = [];
+  // Lines the CASE CARD appends to its Decision field that the ledger rows
+  // cannot carry: note-write failures and the reconciler's report.
+  const extraLines = [];
   const actionResults = [];
   const noteResults = [];
 
@@ -425,6 +420,9 @@ async function commitRunIntents({ d, cid, gid, caseRow, referrerUserId, dispatch
       logFail("staff-note commit", { ...ids, userId: note.userId }, err);
       noteResults.push({ ok: false, userId: note.userId, error: err?.message || String(err) });
       lines.push(`- staff note → <@${note.userId}>: **could not record** — ${sliceSafe(err?.message || String(err), 200)}`);
+      extraLines.push(
+        `- **Staff note:** could not record for <@${note.userId}> — ${sliceSafe(err?.message || String(err), 200)}`,
+      );
     }
   }
 
@@ -443,14 +441,19 @@ async function commitRunIntents({ d, cid, gid, caseRow, referrerUserId, dispatch
         notedUserIds: dispatcher.noteIntents.map((n) => n.userId),
         deps: d,
       });
-      if (Array.isArray(extra?.lines)) lines.push(...extra.lines);
+      if (Array.isArray(extra?.lines)) {
+        lines.push(...extra.lines);
+        extraLines.push(...extra.lines);
+      }
     } catch (err) {
       logFail("note reconciliation", ids, err);
-      lines.push(`- note reconciliation: **failed** — ${sliceSafe(err?.message || String(err), 200)}`);
+      const line = `- note reconciliation: **failed** — ${sliceSafe(err?.message || String(err), 200)}`;
+      lines.push(line);
+      extraLines.push(line);
     }
   }
 
-  return { lines, actionResults, noteResults };
+  return { lines, extraLines, actionResults, noteResults };
 }
 
 /* ── the runner ──────────────────────────────────────────────────────────── */
@@ -581,7 +584,16 @@ async function runCaseInner({ communityId, guildId, caseId, deps, nowMs }) {
   // ── 3. placeholder post (failure logged; the run continues) ─────────────
   let placeholder = null;
   const deliver = async (payload) => {
-    if (!automodChannelId) return; // intake required one; cleared since — logged below
+    if (!automodChannelId) {
+      // intake required one; cleared since — logged below. #730 law: the
+      // card demonstrably did not post — leave the structured record.
+      card.recordCardPostError(
+        caseIdNum,
+        "card could not post: the automod channel setting is unset",
+        { db: d.db },
+      );
+      return;
+    }
     if (placeholder) {
       try {
         await d.editMessage(placeholder, payload);
@@ -594,6 +606,11 @@ async function runCaseInner({ communityId, guildId, caseId, deps, nowMs }) {
       await d.postToChannel(automodChannelId, payload);
     } catch (err) {
       logFail("outcome post", ids, err); // degrade: the row + logs carry the truth
+      // #730 send-failure law: the card did NOT post — never claim it did.
+      // Log with ids and leave the structured record on the case row.
+      const cause = err?.message || String(err);
+      console.error(`[automod] harness ${caseRef} card post failed ${idTag(ids)}: ${cause}`);
+      card.recordCardPostError(caseIdNum, `card post failed: ${cause}`, { db: d.db });
     }
   };
   if (!automodChannelId) {
@@ -609,33 +626,70 @@ async function runCaseInner({ communityId, guildId, caseId, deps, nowMs }) {
     }
   }
 
-  /** Finish: persist metadata (070) + deliver the outcome post. */
-  const finishRun = async ({ status, runError = null, model = null, lines = [], summaryText, toolNames = [], decisionLog = [], rounds = 0 }) => {
+  /** Finish: persist metadata (070) + deliver the outcome CASE CARD, built
+   *  from a FRESH ledger read (never from the in-memory commit lines — a
+   *  card rebuilt after restart must look identical). */
+  const finishRun = async ({
+    status,
+    runError = null,
+    model = null,
+    summaryText,
+    toolNames = [],
+    decisionLog = [],
+    rounds = 0,
+    noteRefs = {},
+    extraLines = [],
+    participants = null,
+  }) => {
     const durationMs = d.now() - startedAt;
+    // Window participants are not ledger data — persist the seen-but-not-
+    // considered set as ONE structured decision_log entry so a later card
+    // rebuild can replay the "**Seen, not considered:**" line (readNotConsidered).
+    const persistedLog =
+      participants === null
+        ? decisionLog
+        : [...decisionLog, card.participantsLogEntry(participants)];
     try {
       writeRunMetadata(d.db, caseIdNum, {
         status,
         model: model ?? null,
         durationMs,
         toolNames,
-        decisionLog,
+        decisionLog: persistedLog,
         lastRunError: runError,
       }, d.now());
     } catch (err) {
       // The outcome is already decided; a metadata failure is loud, not fatal.
       logFail("run metadata persist", ids, err);
     }
+    let rows = [];
+    let rowReadError = null;
+    try {
+      rows = d.listCaseActions(cid, caseIdNum) ?? [];
+    } catch (err) {
+      // The card says the ledger could not be re-read — never fakes calm.
+      rowReadError = err?.message || String(err);
+      logFail("action rows read (card build)", ids, err);
+    }
+    const subjectIds = new Set(rows.map((r) => String(r?.subject_user_id ?? "")));
+    const notConsidered = (Array.isArray(participants) ? participants : [])
+      .map((id) => String(id ?? "").trim())
+      .filter((id) => id && !subjectIds.has(id));
     await deliver(
-      buildDecisionPayload({
+      card.buildCardPayload({
         caseRow,
+        rows,
+        meta: { model, durationMs, rounds, toolNames },
         summaryText:
           summaryText ??
           (status === "failed"
-            ? `Referred by <@${referrerUserId}> — automod run failed: ${runError ?? "unknown error"}`
-            : `Referred by <@${referrerUserId}> — review complete.`),
-        lines,
-        meta: { model, durationMs, rounds, toolNames },
+            ? `**Referred by:** <@${referrerUserId}> — automod run failed: ${runError ?? "unknown error"}`
+            : `**Referred by:** <@${referrerUserId}> — review complete.`),
         failed: status === "failed",
+        notConsidered,
+        noteRefs,
+        extraLines,
+        rowReadError,
       }),
     );
     return durationMs;
@@ -668,7 +722,7 @@ async function runCaseInner({ communityId, guildId, caseId, deps, nowMs }) {
     await finishRun({
       status: "failed",
       runError: built.error,
-      summaryText: `Referred by <@${referrerUserId}> — automod could not build the case context: ${built.error}`,
+      summaryText: `**Referred by:** <@${referrerUserId}> — automod could not build the case context: ${built.error}`,
       model: cfg.model,
     });
     return { ok: false, state: "failed", caseRef, error: built.error };
@@ -754,28 +808,41 @@ async function runCaseInner({ communityId, guildId, caseId, deps, nowMs }) {
   //       executor + the real note writer own everything from here) ────────
   const commit = await commitRunIntents({ d, cid, gid, caseRow, referrerUserId, dispatcher, ids });
 
-  // ── 10. outcome post + metadata ─────────────────────────────────────────
+  // ── 10. outcome CARD + metadata ──────────────────────────────────────────
+  // Card extras: note refs from the rows the commit actually wrote, the
+  // commit's non-ledger lines, and the window participants (the card shows
+  // bystanders the judge saw but did not consider; the ledger rows own the
+  // considered side, subtracted at finish).
   let summaryText;
   if (status === "failed") {
     // Contract naming: the referrer sees the provider's specific failure.
-    summaryText = `Referred by <@${referrerUserId}> — provider error: ${formatProviderCause(res)}`;
+    summaryText = `**Referred by:** <@${referrerUserId}> — provider error: ${formatProviderCause(res)}`;
   } else if (runError) {
     summaryText =
-      `Referred by <@${referrerUserId}> — partial decision: the run hit the ${runError}. ` +
+      `**Referred by:** <@${referrerUserId}> — partial decision: the run hit the ${runError}. ` +
       "What it had recorded committed; nothing further ran.";
   } else {
-    summaryText = `Referred by <@${referrerUserId}> — review complete.`;
+    summaryText = `**Referred by:** <@${referrerUserId}> — review complete.`;
+  }
+
+  const noteRefs = {};
+  for (const n of commit.noteResults) {
+    if (n.ok) noteRefs[String(n.userId)] = n.row?.note_number ?? null;
   }
 
   await finishRun({
     status,
     runError,
     model: cfg.model,
-    lines: commit.lines,
     summaryText,
     toolNames: dispatcher.toolNames,
     decisionLog: dispatcher.decisionLog,
     rounds: Number.isFinite(Number(res?.rounds)) ? Number(res.rounds) : toolCalls,
+    noteRefs,
+    extraLines: commit.extraLines,
+    participants: Array.isArray(context?.participant_user_ids)
+      ? context.participant_user_ids.map((id) => String(id))
+      : [],
   });
 
   return {
@@ -885,9 +952,9 @@ module.exports = {
   makeReferRunHook,
   makeRunDeps,
   buildRunDeps,
-  // Post shapes (#730 replaces these with the case card — grep before changing):
+  // Post shapes (the outcome post itself is `card.buildCardPayload` — see
+  // ./card.js; grep these in tests before changing):
   buildReviewPlaceholderPayload,
-  buildDecisionPayload,
   buildInterruptedPayload,
   // Pure pieces:
   formatProviderCause,

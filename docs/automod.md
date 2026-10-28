@@ -1,8 +1,8 @@
 # Auto-moderation (epic #723)
 
 !!! abstract "Ship state — this page tracks the epic"
-    **Shipped now:** the guild settings and their Manage-Guild commands — `/automod status` and `/automodconfig` (channel, rules, master switch, per-action modes, timeout cap, daily case budget, breaker state + `safety resume`) (#725) — plus **staff referral intake**: `/automod refer` and the **Refer to automod** message context menu, which record a case (**A-n**) and ack where recommendations will post (#726), the **case-context collector** + lookup tools the judge reads (#727 — no user-facing surface of its own; see [Case context](#case-context)), and the **LLM harness**: the case runner that judges a recorded case, records intent through mode-gated tools, and commits every action through the executor (#728 — see [Harness](#harness)).
-    **Landing in sibling issues:** the case card (#730), the individual action tools' surfaces (#731–#738), plus the circuit breaker trip logic (#739). The intake ack never claims a recommendation was produced — the **harness posts its outcome separately**, after the ack. The mode gate itself (off/suggest/auto, guards, atomic claims) is already shipped in the executor (#729) — until #730 lands, a suggest-mode decision is recorded as a pending row and reported in the harness post.
+    **Shipped now:** the guild settings and their Manage-Guild commands — `/automod status` and `/automodconfig` (channel, rules, master switch, per-action modes, timeout cap, daily case budget, breaker state + `safety resume`) (#725) — plus **staff referral intake**: `/automod refer` and the **Refer to automod** message context menu, which record a case (**A-n**) and ack where recommendations will post (#726), the **case-context collector** + lookup tools the judge reads (#727 — no user-facing surface of its own; see [Case context](#case-context)), the **LLM harness**: the case runner that judges a recorded case, records intent through mode-gated tools, and commits every action through the executor (#728 — see [Harness](#harness)), and the **case card**: the interactive one-post-per-case outcome post whose Approve/Dismiss buttons execute suggested actions straight from the ledger (#730 — see [Case card](#case-card)).
+    **Landing in sibling issues:** the individual action tools' surfaces (#731–#738), plus the circuit breaker trip logic (#739). The intake ack never claims a recommendation was produced — the **harness posts its outcome separately**, after the ack. The mode gate itself (off/suggest/auto, guards, atomic claims) is already shipped in the executor (#729) — a suggest-mode decision is recorded as a pending ledger row and surfaces on the case card for staff approval.
 
 Auto-moderation is a staff-referred judgment pipeline: a staff member refers a message or a user, a separate LLM harness recommends staff actions against the guild's written rules, and each action type is gated `off` / `suggest` / `auto` by the guild. **Recommendations are the default** — enabling the master switch never starts kicking or banning by itself.
 
@@ -18,7 +18,9 @@ prefix dispatcher and the **Refer to automod** message context menu exists on
 Discord only; a Fluxer dispatch reaching `/automod` or `/automodconfig` answers
 `That command is not available on Fluxer yet.` (the standard Discord-only
 refusal). This applies to **both** referral arms — no Fluxer implementation is
-planned in this epic (epic decision 8).
+planned in this epic (epic decision 8). The case card's Approve/Dismiss
+buttons are Discord message components with no path through the Fluxer
+dispatcher at all (#730, [Case card](#case-card)) — also explicit no-parity.
 See [Fluxer instances](fluxer.md) for the platform matrix.
 
 It is also **separate from Gork** by design: its own settings family
@@ -355,15 +357,21 @@ unchanged — it still only says where recommendations will post.
    `createStaffNote` (author = the bot acting for the harness, content =
    the model's note + an `A-n` case reference).
 7. The outcome **edits the placeholder** (or posts fresh when the
-   placeholder never landed): per-intent lines straight from the executor
-   results + a meta line (`Model X · ms · rounds · tools`). Plain embed, no
-   buttons — the Approve/Dismiss card is #730's.
+   placeholder never landed) into the interactive **case card** (#730,
+   [Case card](#case-card)): the Decision field renders from a FRESH re-read
+   of the action ledger (per-subject sections + one line per row), the meta
+   line carries model · duration · rounds · tools, and every still-suggested
+   row rides Approve/Dismiss buttons. A card that cannot post is never
+   claimed posted (see the send-failure law below).
 8. Provider metadata persists on the case row (migration `070`):
    `last_model`, `last_duration_ms`, `last_tool_names` (JSON),
    `decision_log` — a **short structured log**
    (`[{seq, tool, args_summary, state, result_or_error}]`, explicitly not a
    transcript copy; the staff notes hold the human record) — and
-   `last_run_error`.
+   `last_run_error`. Entries whose `decision_log` `tool` starts with `_` are
+   structured card meta (`_card_participants` powers the rebuild's bystander
+   line, `_card_post_error` records a card that never posted) — never model
+   calls.
 
 **Enforcement in the tool layer** (locked decision 4 — not prompt-only): a
 staff note is required for every user considered, and consideration is
@@ -389,7 +397,8 @@ tool call, the cap, or an empty-but-returned body). Only then
 `consumeAutomodCase` runs — **exactly once per run**. An HTTP 4xx/5xx, a
 network/timeout failure, or an AI-not-configured provider consumes
 **nothing** (test-pinned) and the post names the provider's own words:
-`Referred by <@staff> — provider error: <cause>`.
+`**Referred by:** <@staff> — provider error: <cause>` (card header line —
+same copy convention as the case card, [Case card](#case-card)).
 
 **Isolation.** A broken provider, garbage tool arguments, or a repo failure
 can never kill the client: the runner never throws, detached work owns its
@@ -400,6 +409,119 @@ staff-facing copy names the specific cause. The **boot sweep** (feature
 notice.
 
 **Fluxer: explicit no-parity** (epic decision 8). The harness is Discord-only.
+
+## Case card
+
+The harness outcome post IS the **case card** (#730, `src/features/automod/card.js`):
+one post per case — the reviewing placeholder is EDITED into it, and every
+staff decision re-edits that same message from fresh ledger rows.
+
+**Embed shape.** Title `Automod — case A-n — decision` (green) or
+`— run failed` (red, the run died — the description names the specific
+cause). Description: the referrer-visible line (`**Referred by:** <@staff> —
+review complete.` etc.) plus, when the judge saw window participants it did
+not consider, a `**Seen, not considered:** <@id> …` line (bystanders only,
+**never** with note refs; clamped to 25 names with an honest `… +N more`).
+Field `Decision`: per-subject sections —
+
+```text
+**Subject:** <@user> · **Staff note:** N-7
+  - `warn` — **pending approval** — a staff decision is due — Approve runs the shared executor, Dismiss declines.
+  - `timeout` — **executed** — Timed out <@user> for 120s (clamped from 99999s) — …
+```
+
+— followed by any non-ledger lines the run produced (note-write failures, the
+#731 reconciler report). A suggested `no_action` row renders
+`**recorded decision**` (it is a judgment, not a pending sanction — it never
+gets buttons). When anything refused or failed, a roll-up line leads the
+field (`**Outcome:** 1 of 3 recorded actions ran — …`) — partial failure is
+never reported as total success (AGENTS rule 5). Footer:
+`Model X · N ms · R round(s) · tools: …` (a rebuild reads the persisted 070
+columns; rounds are run-time data and show `?`).
+
+**Buttons (Discord components).** Every still-`suggested` row rides
+`Approve <action>` / `Dismiss <action>` with customIds
+`am:card:approve:<actionRowId>` / `am:card:dismiss:<actionRowId>` — the row
+id is all a click needs; the case, community, and current states are re-read
+from the ledger at click time. Buttons are clamped to
+**10 pending rows per card** (`AUTOMOD_CARD_MAX_BUTTON_ROWS`; 20 buttons in
+five ActionRows — inside Discord's 25-button/25-component message cap, which
+is why the clamp counts rows and not the 25 suggested in review). Overflow is
+honest: a `**More pending rows:** N pending row(s) have no buttons on this
+card — …` line names the count, and the buttons **regenerate after earlier
+decisions** — approve or dismiss the front of the queue and the rebuilt card
+carries the tail.
+
+**Who may press.** Any staff member (the shipped `requireStaff` gate —
+ManageGuild or any `staff_roles` level; denial is the standard
+`MSG_DENIED`). Not referrer-scoped: the executor's guards, not the clicker,
+bound what a click can do.
+
+**Approve** re-checks, in order, BEFORE anything runs — a refusal is always
+specific and mutates nothing (the row stays suggested and re-approvable):
+
+1. the master switch:
+
+   ```text
+   **Automod off:** the master switch is off for this server — a suggestion cannot be approved until an admin runs `/automodconfig enable on`.
+   ```
+
+2. the action's mode — off is unrunnable (locked decision 2), so a mode
+   flipped after the suggestion refuses:
+
+   ```text
+   **Mode off:** the `<action>` action is now off for this server — approving cannot run it (locked decision 2: off is unrunnable). Set its mode with `/automodconfig mode` or Dismiss the suggestion.
+   ```
+
+3. the **circuit breaker** for `kick`/`ban`/`timeout` — a paused guild
+   refuses naming why:
+
+   ```text
+   **Safety paused:** the auto-moderation circuit breaker is tripped — `<action>` approvals stay dark until an admin runs `/automodconfig safety resume` (confirm:true). **Pause reason:** <reason>
+   ```
+
+   (The trip rules and the auto-path gate are #739; the card-side gate is
+   test-pinned here.)
+
+Then it calls the SHARED executor (`approveSuggestion` → the same atomic
+claim, guards, and clamp auto mode uses — the card runs nothing itself). A
+double click loses the claim and is **never an error and never a second
+mutation**: the ephemeral reads `**already handled**` and carries the
+existing outcome; a stale card's click on an already-terminal row shows the
+same outcome and refreshes the card.
+
+**Dismiss** records the decline (ledger `dismissed`, `Dismissed by <@staff>`)
+and runs nothing — so it needs NO master/mode/breaker gates: even a paused or
+mis-set guild must be able to say no.
+
+**Staff-note outcome.** A terminal click appends one line to the subject's
+harness note (the note whose content carries the `(automod case A-n)`
+suffix AND the bot as author — a human note quoting the case is never
+touched): `` `Outcome: approved by <@staff> — executed: <result>` ``,
+`` `— refused: <cause>` ``, `` `— failed: <cause>` ``, or
+`` `Outcome: dismissed by <@staff> — the suggested action was not run.` ``
+The 2000-char note cap owns the length (a
+line that cannot fit is REPORTED, never truncated into mush), and a missing
+note is a reported warning with the card still updated — never a dead end.
+
+**Rebuild law.** Card updates render ONLY from a fresh read of
+`automod_case_actions` for the case — never from the old embed. An hour-old
+card after a restart still works: the customId's row id alone identifies
+everything, states shown are CURRENT, and buttons appear only for rows still
+suggested. Cross-community rows, unregistered guilds, and vanished rows are
+refused with a specific sentence and zero side-effects.
+
+**Send-failure law.** A card that cannot post/edit is never claimed posted:
+the failure logs `[automod] … case A-n card post failed …` with the ids, the
+case's `decision_log` gets a structured `_card_post_error` entry, and the
+clicker's ephemeral says
+`**Card:** the case card could not be updated (<cause>) — the row states
+above are the ledger's truth.` The ledger rows stay the operational truth.
+
+**Fluxer: explicit no-parity.** Approve/Dismiss are Discord message
+components; the Fluxer dispatcher has no component/customId path at all, so
+`am:card:*` is structurally unreachable there (the arms keep a shape belt
+answering the shipped Discord-only sentence anyway).
 
 ## Modes (locked decision 2)
 
@@ -423,7 +545,9 @@ remaining count; the counter rolls at the UTC day boundary with no ticker.
 ## Circuit breaker (state shipped in #725)
 
 The persisted pause (`automod_paused_at` / `automod_pause_reason`) means
-auto kick / ban / timeout are dark until an admin runs
+auto kick / ban / timeout are dark — and case-card **Approve** clicks for
+those three actions are refused naming the pause reason (#730,
+[Case card](#case-card)) — until an admin runs
 `/automodconfig safety resume` with `confirm: true`. The trip rules (when the
 breaker fires) ship with #739; a process restart never silently re-arms it.
 

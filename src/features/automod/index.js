@@ -10,6 +10,11 @@
  *        the handler; api "interaction" — the target only exists on the raw
  *        interaction, so it is deliberately absent from handlerApi below).
  * Modals: am:rules — long rules text (same idea as /note add's modal)
+ * Buttons (#730): am:card:approve:<rowId> / am:card:dismiss:<rowId> on the
+ *        harness case card — staff-gated arms in ./card.js execute suggested
+ *        actions through the shared executor and rebuild the card from the
+ *        ledger rows (raw-interaction arms; the Fluxer dispatcher has no
+ *        component path — explicit no-parity).
  *
  * Discord-only for this milestone (epic decision 8 — Fluxer is explicit
  * no-parity, stated in docs/automod.md): every arm refuses the standard
@@ -37,12 +42,15 @@ const { referContextMenu } = require("./contextMenu");
 const {
   NOT_ON_FLUXER,
   MODAL_RULES,
+  CARD_APPROVE_PREFIX,
+  CARD_DISMISS_PREFIX,
 } = require("./constants");
 const { buildStatusPayload } = require("./status");
 const config = require("./config");
 const refer = require("./refer");
 const settings = require("./settings");
 const harness = require("./harness");
+const card = require("./card");
 
 /**
  * BOOT HOOK (#728). Runs once at ClientReady behind load.js's per-feature
@@ -190,16 +198,26 @@ module.exports = {
   modalHandlers: {
     [MODAL_RULES]: config.handleRulesModal,
   },
+  // #730: the case-card buttons. The router matches customId by longest
+  // prefix, so `am:card:approve:` / `am:card:dismiss:` route here. Handlers
+  // are `(interaction, ctx)` on the RAW interaction (Discord components —
+  // the Fluxer dispatcher has no button path at all; belt refusal inside the
+  // arms, see ./card.js).
+  buttonHandlers: {
+    [CARD_APPROVE_PREFIX]: card.handleCardApprove,
+    [CARD_DISMISS_PREFIX]: card.handleCardDismiss,
+  },
   // #728: boot wiring (harness trigger + interrupted-run sweep), guarded by
   // load.js's per-feature hook isolation like every other boot surface.
   start,
   // Exported for unit tests + later automod issues (#727 case context and
   // #728 harness build on the referral service + the automod_cases rows;
-  // #730's card reads harness post shapes + executor state; #739 owns the
-  // breaker trip write).
+  // #730's card (builders + button arms) rebuilds from the ledger rows;
+  // #739 owns the breaker trip write).
   settings,
   refer,
   harness,
+  card,
   status: require("./status"),
   constants: require("./constants"),
   buildStatusPayload,

@@ -1,0 +1,481 @@
+/**
+ * #730 (epic #723): automod CASE CARD — the render/rebuild layer.
+ *
+ * Pinned contract surface (issue #730):
+ *  - the card renders from LEDGER ROWS alone: per-subject sections
+ *    (`**Subject:** <@id> · **Staff note:** N-n`), one line per row, the
+ *    suggested state shows **pending approval** (no_action shows
+ *    **recorded decision**), and the outcome roll-up never claims total
+ *    success when something refused/failed (AGENTS rule 5);
+ *  - Approve/Dismiss buttons ride still-suggested row ids, clamped to
+ *    AUTOMOD_CARD_MAX_BUTTON_ROWS rows with an honest overflow line;
+ *    no_action never gets buttons;
+ *  - the "**Seen, not considered:**" bystander line carries no note refs,
+ *    replays from the persisted `_card_participants` meta entry, and never
+ *    lists a considered subject;
+ *  - rebuilds reflect CURRENT row states (an old card after a restart
+ *    shows what the ledger says, buttons only for rows still suggested);
+ *  - `recordCardPostError` leaves the structured `_card_post_error` record
+ *    (the card was never claimed posted), and the note outcome append owns
+ *    the 2000-char cap honestly.
+ *
+ * Real SQLite; no Discord needed at this layer (the button arms live in
+ * automod-card-buttons.test.js, the harness integration in
+ * automod-harness.test.js).
+ */
+const { test, after } = require("node:test");
+const assert = require("node:assert/strict");
+
+// CONTRACT: loadDb() before any src/ require (temp DB + require-cache reset).
+const { loadDb, communityKey } = require("./helpers/env");
+const { api: db, cleanup } = loadDb();
+after(cleanup);
+
+const card = require("../src/features/automod/card");
+const settingsService = require("../src/features/automod/settings");
+const {
+  CARD_APPROVE_PREFIX,
+  CARD_DISMISS_PREFIX,
+  AUTOMOD_CARD_MAX_BUTTON_ROWS,
+  AUTOMOD_CARD_NOT_CONSIDERED_MAX,
+} = require("../src/features/automod/constants");
+
+const GUILD = "962000000000000001";
+const AMOD_CH = "962000000000000002";
+const MSG = "962000000000000003";
+const REF = "862000000000000011";
+const SUB = "862000000000000012";
+const SUB2 = "862000000000000013";
+const BOT = "762000000000000014";
+const HUMAN = "862000000000000015";
+
+let seq = 0;
+
+/** Fresh community + recorded case (real repositories). */
+function seededCase(label) {
+  const cid = communityKey(`${GUILD}-730-${label}-${(seq += 1)}`);
+  settingsService.setEnabled(cid, true);
+  settingsService.setChannel(cid, AMOD_CH);
+  settingsService.setRules(cid, "No harassment. No slurs. Be decent.");
+  const created = db.createAutomodCase({
+    communityId: cid,
+    referrerUserId: REF,
+    messageId: MSG,
+    channelId: AMOD_CH,
+    targetUserId: SUB,
+    note: "card fixture referral",
+  });
+  assert.equal(created.ok, true, created.error);
+  // A card only exists AFTER a run — seed the honest lifecycle state so
+  // rebuild summaries take the 'review complete' branch (card.js maps
+  // recorded/processing to 'run has not finished'; the failed arm is
+  // covered by its own test below).
+  db.db.prepare(`UPDATE automod_cases SET status='complete' WHERE id=?`).run(created.case.id);
+  return { cid, caseRow: db.getAutomodCaseById(created.case.id) };
+}
+
+/** Record a suggestion row through the real repository. */
+function suggest(cid, caseRow, action, subject = SUB, params = null) {
+  const ins = db.insertAutomodActionSuggestion({
+    communityId: cid,
+    caseId: caseRow.id,
+    guildId: GUILD,
+    subjectUserId: subject,
+    action,
+    mode: "suggest",
+    params,
+  });
+  assert.equal(ins.ok, true, ins.error || "insert refused");
+  return ins.row;
+}
+
+/** Drive a row to a terminal state through the real state machine. */
+function toExecuted(row, resultText) {
+  const claim = db.claimAutomodSuggestion(row.id, "staff:test");
+  assert.equal(claim.ok, true, JSON.stringify(claim));
+  const fin = db.recordAutomodActionResult(row.id, { state: "executed", resultText });
+  assert.equal(fin.ok, true, JSON.stringify(fin));
+  return fin.row;
+}
+
+function toRefused(row, errorText, state = "refused") {
+  const claim = db.claimAutomodSuggestion(row.id, "staff:test");
+  assert.equal(claim.ok, true, JSON.stringify(claim));
+  const fin = db.recordAutomodActionResult(row.id, { state, errorText });
+  assert.equal(fin.ok, true, JSON.stringify(fin));
+  return fin.row;
+}
+
+const embed = (payload) => payload.embeds[0];
+const decisionField = (payload) => payload.embeds[0].fields[0].value;
+const buttonIds = (payload) =>
+  (payload.components ?? []).flatMap((r) => (r.components ?? []).map((b) => b.custom_id));
+
+// ── 1. the payload shape ─────────────────────────────────────────────────────
+
+test("card payload: sections, note refs, pending approval word, footer, meta family - issue #730", () => {
+  const { cid, caseRow } = seededCase("shape");
+  const warn = db.getAutomodAction(suggest(cid, caseRow, "warn", SUB, { reason: "harassment" }).id);
+  const judged = db.getAutomodAction(
+    suggest(cid, caseRow, "no_action", SUB2, { rationale: "already handled" }).id,
+  );
+
+  const payload = card.buildCardPayload({
+    caseRow,
+    rows: [warn, judged],
+    meta: { model: "test-model", durationMs: 1234, rounds: 2, toolNames: ["warn"] },
+    summaryText: `**Referred by:** <@${REF}> — review complete.`,
+    noteRefs: { [SUB]: 1, [SUB2]: null },
+  });
+
+  assert.deepEqual(payload.allowedMentions, { parse: [] });
+  assert.match(embed(payload).title, new RegExp(`^Automod — case A-${caseRow.case_number} — decision$`));
+  assert.equal(embed(payload).description, `**Referred by:** <@${REF}> — review complete.`);
+  assert.equal(embed(payload).fields[0].name, "Decision");
+  assert.equal(embed(payload).footer.text, "Model test-model · 1234 ms · 2 round(s) · tools: warn");
+  assert.equal(embed(payload).color, card.COLORS.complete);
+
+  const field = decisionField(payload);
+  assert.match(field, new RegExp(`\\*\\*Subject:\\*\\* <@${SUB}> · \\*\\*Staff note:\\*\\* N-1`));
+  assert.match(field, new RegExp(`\\*\\*Subject:\\*\\* <@${SUB2}> · \\*\\*Staff note:\\*\\* no note recorded for this case`));
+  assert.match(field, /`warn` — \*\*pending approval\*\* — a staff decision is due/);
+  assert.match(
+    field,
+    /`no_action` — \*\*recorded decision\*\* — considered, no sanction warranted — already a recorded decision — "already handled"/,
+  );
+
+  // Buttons: warn row only — no_action NEVER gets buttons (recorded decision).
+  assert.deepEqual(buttonIds(payload), [
+    `${CARD_APPROVE_PREFIX}${warn.id}`,
+    `${CARD_DISMISS_PREFIX}${warn.id}`,
+  ]);
+});
+
+test("card buttons clamp honestly: 10 pending rows max, the overflow line names the rest - issue #730", () => {
+  const { cid, caseRow } = seededCase("clamp");
+  const acts = ["warn", "timeout", "kick", "ban", "delete_message", "ticket"];
+  const rows = [];
+  for (const subject of [SUB, SUB2]) {
+    for (const action of acts) {
+      rows.push(db.getAutomodAction(suggest(cid, caseRow, action, subject).id));
+    }
+  }
+  assert.equal(rows.length, 12, "6 actions × 2 subjects — 2 MORE than the button clamp");
+
+  const { components, overflow, pendingCount } = card.buildCardButtons(rows);
+  assert.equal(pendingCount, 12);
+  assert.equal(overflow, 12 - AUTOMOD_CARD_MAX_BUTTON_ROWS);
+  // ≤ 25 buttons AND ≤ 25 components per message: four buttons per ActionRow,
+  // five rows max — the clamp is the card constant (10 rows → 20 buttons).
+  assert.equal(components.length, 5);
+  const total = components.flatMap((r) => r.components).length;
+  assert.equal(total, AUTOMOD_CARD_MAX_BUTTON_ROWS * 2);
+  assert.ok(total <= 25 && components.length + total <= 25, "Discord's 25-component cap holds");
+
+  const payload = card.buildCardPayload({ caseRow, rows, summaryText: "s" });
+  assert.match(
+    decisionField(payload),
+    /\*\*More pending rows:\*\* 2 pending row\(s\) have no buttons on this card — approve or dismiss the earlier ones and the rebuilt card carries them\./,
+  );
+});
+
+// ── 2. partial-failure honesty (rule 5) ──────────────────────────────────────
+
+test("partial auto failure: the roll-up names the split, never total success - issue #730", () => {
+  const { cid, caseRow } = seededCase("partial");
+  const ok = toExecuted(suggest(cid, caseRow, "warn", SUB), "Formal warning W-1 recorded.");
+  const refused = toRefused(
+    suggest(cid, caseRow, "kick", SUB2),
+    "hierarchy guard: the bot cannot moderate this member",
+  );
+  const failed = toRefused(
+    suggest(cid, caseRow, "delete_message", SUB2),
+    "Discord said: Unknown Message",
+    "failed",
+  );
+
+  const payload = card.buildCardPayload({ caseRow, rows: [ok, refused, failed], summaryText: "x" });
+  const field = decisionField(payload);
+  assert.match(
+    field,
+    /\*\*Outcome:\*\* 1 of 3 recorded actions ran — 1 refused, 1 failed, 0 pending approval, 0 dismissed\. Every line below names its own cause\./,
+  );
+  assert.match(field, new RegExp(`\`kick\` — \\*\\*refused\\*\\* — hierarchy guard: the bot cannot moderate this member`));
+  assert.match(field, /`delete_message` — \*\*failed\*\* — Discord said: Unknown Message/);
+
+  // All-clean run: NO roll-up line (no failure to report).
+  const clean = card.buildCardPayload({ caseRow, rows: [ok], summaryText: "x" });
+  assert.doesNotMatch(decisionField(clean), /\*\*Outcome:\*\*/);
+});
+
+// ── 3. the participants roundtrip ────────────────────────────────────────────
+
+test("seen-not-considered: persisted meta entry replays, considered subjects are subtracted, cap holds - issue #730", () => {
+  const { cid, caseRow } = seededCase("seen");
+  const bystanders = Array.from({ length: 30 }, (_, i) => `8700000000000000${String(i).padStart(2, "0")}`);
+
+  const entry = card.participantsLogEntry([SUB, ...bystanders]);
+  assert.equal(entry.seq, 0);
+  assert.equal(entry.state, "meta");
+  assert.equal(entry.tool, card.CARD_PARTICIPANTS_TOOL);
+
+  const withLog = { ...caseRow, decision_log: JSON.stringify([entry]) };
+  assert.equal(card.readNotConsidered(withLog).length, bystanders.length + 1);
+
+  // Render: the subject WITH a row never appears on the bystander line, and
+  // the visible list clamps at 25 with an honest "+N more".
+  const row = suggest(cid, caseRow, "warn", SUB);
+  const payload = card.buildCardPayload({
+    caseRow: withLog,
+    rows: [db.getAutomodAction(row.id)],
+    notConsidered: card.readNotConsidered(withLog).filter((id) => id !== String(SUB)),
+    summaryText: "s",
+  });
+  const desc = embed(payload).description;
+  assert.match(desc, /\*\*Seen, not considered:\*\* <@8700000000000000/);
+  assert.ok(!desc.includes(`<@${SUB}>`), "a considered subject is never a bystander");
+  assert.ok(desc.includes(`… +${bystanders.length - AUTOMOD_CARD_NOT_CONSIDERED_MAX} more`));
+
+  // The rebuild path subtracts ledger subjects from the replayed entry too —
+  // an OLD card rebuilt after SUB was considered must not list SUB.
+  db.db
+    .prepare(`UPDATE automod_cases SET decision_log=? WHERE id=?`)
+    .run(JSON.stringify([entry]), caseRow.id);
+  const rebuilt = card.buildCardFromCase({
+    communityId: cid,
+    caseId: db.getAutomodCaseById(caseRow.id).id,
+    deps: { getCase: () => db.getAutomodCaseById(caseRow.id) },
+  });
+  assert.equal(rebuilt.ok, true, rebuilt.error);
+  const rdesc = embed(rebuilt.payload).description;
+  assert.match(rdesc, /\*\*Seen, not considered:\*\*/);
+  assert.ok(!rdesc.includes(`<@${SUB}>`), "ledger subjects are subtracted at rebuild as well");
+});
+
+// ── 4. rebuild from the ledger (old card after restart) ──────────────────────
+
+test("buildCardFromCase: current states, buttons only for rows still suggested, rebuild summary - issue #730", () => {
+  const { cid, caseRow } = seededCase("rebuild");
+  const ran = toExecuted(suggest(cid, caseRow, "warn", SUB), "Formal warning W-1 recorded.");
+  const pending = suggest(cid, caseRow, "timeout", SUB2, { durationSeconds: 60 });
+
+  const built = card.buildCardFromCase({ communityId: cid, caseId: caseRow.id, botUserId: BOT });
+  assert.equal(built.ok, true, built.error);
+  assert.match(embed(built.payload).title, /— decision$/);
+  assert.match(
+    embed(built.payload).description,
+    new RegExp(`^\\*\\*Referred by:\\*\\* <@${REF}> — review complete\\.`),
+    "rebuilds keep the referrer-visible family",
+  );
+  const field = decisionField(built.payload);
+  assert.match(field, new RegExp(`\`warn\` — \\*\\*executed\\*\\* — Formal warning W-1 recorded\\.`));
+  assert.match(field, /`timeout` — \*\*pending approval\*\*/);
+  // The executed row's buttons are GONE; only the still-suggested row rides.
+  assert.deepEqual(buttonIds(built.payload), [
+    `${CARD_APPROVE_PREFIX}${pending.id}`,
+    `${CARD_DISMISS_PREFIX}${pending.id}`,
+  ]);
+
+  // Footer meta rides the persisted 070 columns; rounds show "?" (run-time data).
+  db.db
+    .prepare(`UPDATE automod_cases SET last_model='m-9', last_duration_ms=4242, last_tool_names='["warn"]' WHERE id=?`)
+    .run(caseRow.id);
+  const rebuilt = card.buildCardFromCase({ communityId: cid, caseId: caseRow.id });
+  assert.equal(rebuilt.ok, true, rebuilt.error);
+  assert.equal(
+    embed(rebuilt.payload).footer.text,
+    "Model m-9 · 4242 ms · ? round(s) · tools: warn",
+  );
+
+  // Failed case → red family + the run's specific cause in the summary.
+  db.db
+    .prepare(`UPDATE automod_cases SET status='failed', last_run_error='provider error: HTTP 500 boom' WHERE id=?`)
+    .run(caseRow.id);
+  const failed = card.buildCardFromCase({ communityId: cid, caseId: caseRow.id });
+  assert.match(embed(failed.payload).title, /— run failed$/);
+  assert.equal(embed(failed.payload).color, card.COLORS.failed);
+  assert.match(embed(failed.payload).description, /automod run failed: provider error: HTTP 500 boom/);
+
+  // Cross-community rebuild is refused, specifically.
+  const other = card.buildCardFromCase({ communityId: cid + 99999, caseId: caseRow.id });
+  assert.equal(other.ok, false);
+  assert.match(other.error, /refusing to rebuild a card across communities/);
+});
+
+test("rebuild when the ledger cannot be re-read: the card says so, never fakes calm - issue #730", () => {
+  const { caseRow } = seededCase("rowread");
+  const built = card.buildCardFromCase({
+    communityId: caseRow.community_id,
+    caseId: caseRow.id,
+    deps: {
+      getCase: () => db.getAutomodCaseById(caseRow.id),
+      listActions: () => {
+        throw new Error("SQLITE_BUSY: database is locked");
+      },
+    },
+  });
+  assert.equal(built.ok, true);
+  assert.match(
+    decisionField(built.payload),
+    /\*\*Action rows:\*\* the ledger could not be re-read \(SQLITE_BUSY: database is locked\) — every row still lives in the database\./,
+  );
+});
+
+// ── 5. the post-failure structured record ────────────────────────────────────
+
+test("recordCardPostError: one structured entry appended to the persisted decision_log, never claims a post - issue #730", () => {
+  const { cid, caseRow } = seededCase("posterr");
+  const entry = card.participantsLogEntry([SUB]);
+  db.db
+    .prepare(`UPDATE automod_cases SET decision_log=? WHERE id=?`)
+    .run(JSON.stringify([entry]), caseRow.id);
+
+  card.recordCardPostError(caseRow.id, "card post failed: 404 Unknown Channel");
+
+  const log = JSON.parse(db.getAutomodCaseById(caseRow.id).decision_log);
+  assert.equal(log.length, 2);
+  assert.equal(log[0].tool, card.CARD_PARTICIPANTS_TOOL, "the existing entries survive");
+  assert.equal(log[1].tool, card.CARD_POST_ERROR_TOOL);
+  assert.equal(log[1].state, "failed");
+  assert.match(log[1].result_or_error, /404 Unknown Channel/);
+
+  // Garbage log → replaced with a fresh single-entry log (never throws).
+  db.db.prepare(`UPDATE automod_cases SET decision_log='not json' WHERE id=?`).run(caseRow.id);
+  card.recordCardPostError(caseRow.id, "second failure");
+  const after2 = JSON.parse(db.getAutomodCaseById(caseRow.id).decision_log);
+  assert.equal(after2.length, 1);
+  assert.equal(after2[0].tool, card.CARD_POST_ERROR_TOOL);
+
+  // Missing case / bad id → silent no-op (there is nowhere to record).
+  card.recordCardPostError(999999, "nowhere");
+  card.recordCardPostError(null, "nowhere");
+});
+
+// ── 6. staff-note refs + outcome append ──────────────────────────────────────
+
+test("findCaseNoteRow: replays the harness suffix, skips foreign authors - issue #730", () => {
+  const { cid, caseRow } = seededCase("note");
+  const suffix = `(automod case A-${caseRow.case_number})`;
+  db.createStaffNote({
+    communityId: cid,
+    userId: SUB,
+    authorId: HUMAN, // a human note quoting the case ref — FOREIGN
+    content: `human said this ${suffix}`,
+  });
+  const mine = db.createStaffNote({
+    communityId: cid,
+    userId: SUB,
+    authorId: BOT,
+    content: `judge weighed it ${suffix}`,
+  });
+
+  const found = card.findCaseNoteRow({
+    communityId: cid,
+    userId: SUB,
+    caseNumber: caseRow.case_number,
+    botUserId: BOT,
+  });
+  assert.equal(found.note_number, mine.note_number, "the bot-authored note wins");
+
+  // Bot id unknown → the shipped fallback author still matches.
+  const fallback = card.findCaseNoteRow({
+    communityId: cid,
+    userId: SUB2,
+    caseNumber: caseRow.case_number,
+    deps: {
+      listNotes: () => [
+        { note_number: 77, author_id: "automod", content: `bot fallback ${suffix}`, deleted_at: null },
+        { note_number: 78, author_id: HUMAN, content: `foreign ${suffix}`, deleted_at: null },
+      ],
+    },
+  });
+  assert.equal(fallback.note_number, 77);
+
+  // No match at all → null (the card warns; it never invents a ref).
+  assert.equal(
+    card.findCaseNoteRow({ communityId: cid, userId: SUB, caseNumber: 424242, botUserId: BOT }),
+    null,
+  );
+});
+
+test("appendNoteOutcome: appends the outcome line; cap and erased note are reported, never mushed - issue #730", () => {
+  const { cid, caseRow } = seededCase("append");
+  const suffix = `(automod case A-${caseRow.case_number})`;
+  const note = db.createStaffNote({
+    communityId: cid,
+    userId: SUB,
+    authorId: BOT,
+    content: `weighed the referral ${suffix}`,
+  });
+
+  const line = card.outcomeLineFor({
+    verb: "approve",
+    staffUserId: REF,
+    state: "executed",
+    detail: "Formal warning W-1 recorded.",
+  });
+  assert.equal(line, `Outcome: approved by <@${REF}> — executed: Formal warning W-1 recorded.`);
+
+  const appended = card.appendNoteOutcome({
+    communityId: cid,
+    noteNumber: note.note_number,
+    outcomeLine: line,
+    editedBy: REF,
+  });
+  assert.equal(appended.ok, true, appended.error);
+  const fresh = db.getStaffNote(cid, note.note_number);
+  assert.match(fresh.content, new RegExp(`\\nOutcome: approved by <@${REF}> — executed:`));
+
+  const dismissed = card.outcomeLineFor({ verb: "dismiss", staffUserId: REF });
+  assert.equal(dismissed, `Outcome: dismissed by <@${REF}> — the suggested action was not run.`);
+
+  // Cap: a note at 2000 chars cannot receive the line — reported, not truncated.
+  const fat = db.createStaffNote({
+    communityId: cid,
+    userId: SUB,
+    authorId: BOT,
+    content: `x ${suffix}`,
+  });
+  db.db
+    .prepare(`UPDATE staff_notes SET content=? WHERE community_id=? AND note_number=?`)
+    .run("y".repeat(db.MAX_NOTE_CONTENT), cid, fat.note_number);
+  const blocked = card.appendNoteOutcome({
+    communityId: cid,
+    noteNumber: fat.note_number,
+    outcomeLine: "Outcome: approved by <@r> — executed: done.",
+    editedBy: REF,
+  });
+  assert.equal(blocked.ok, false);
+  assert.match(blocked.error, /2000-character cap/);
+
+  // Erased/vanished note → specific failure.
+  const gone = card.appendNoteOutcome({
+    communityId: cid,
+    noteNumber: 424242,
+    outcomeLine: "whatever",
+    editedBy: REF,
+    deps: { getNote: () => null },
+  });
+  assert.equal(gone.ok, false);
+  assert.match(gone.error, /gone or was erased/);
+});
+
+// ── 7. the exported feature surface ──────────────────────────────────────────
+
+test("customId parsing: malformed ids are refused before any lookup - issue #730", () => {
+  const malformed = card.parseCardButtonId("am:card:approve:", `${CARD_APPROVE_PREFIX}`);
+  assert.equal(malformed.ok, false);
+  assert.match(malformed.error, /invalid row id/);
+  const wrongPrefix = card.parseCardButtonId("am:other:5", `${CARD_APPROVE_PREFIX}`);
+  assert.equal(wrongPrefix.ok, false);
+  assert.match(wrongPrefix.error, /malformed/);
+  const ok = card.parseCardButtonId(`${CARD_APPROVE_PREFIX}42`, `${CARD_APPROVE_PREFIX}`);
+  assert.deepEqual(ok, { ok: true, rowId: 42 });
+});
+
+test("the feature exports both button arms behind the am:card prefixes (router wiring) - issue #730", () => {
+  const feature = require("../src/features/automod");
+  assert.equal(feature.buttonHandlers[CARD_APPROVE_PREFIX], card.handleCardApprove);
+  assert.equal(feature.buttonHandlers[CARD_DISMISS_PREFIX], card.handleCardDismiss);
+  assert.equal(feature.card, card, "the card module rides the feature export (#731+ read surfaces)");
+});
