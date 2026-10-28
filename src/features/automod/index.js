@@ -5,16 +5,25 @@
  * Slash: /automod status | refer (staff) · /automodconfig
  *        channel set|clear · rules set|clear · enable on|off ·
  *        mode <action> <off|suggest|auto> · timeout-cap · budget ·
- *        safety resume (confirm:)  (admin, ManageGuild in handler too)
+ *        safety resume (confirm:)  (admin, ManageGuild in handler too) ·
+ *        /set-moderation-queue set|clear (#771 §6, admin alias over the
+ *        SAME automod-channel setting)
  * Context menu (#726): "Refer to automod" on a message (staff gate first in
  *        the handler; api "interaction" — the target only exists on the raw
  *        interaction, so it is deliberately absent from handlerApi below).
- * Modals: am:rules — long rules text (same idea as /note add's modal)
+ * Modals: am:rules — long rules text (same idea as /note add's modal) ·
+ *        am:refer:<token> — the #771 referral intake form (problem +
+ *        required context + per-case read window; both intake surfaces
+ *        open it BEFORE the case exists).
  * Buttons (#730): am:card:approve:<rowId> / am:card:dismiss:<rowId> on the
  *        harness case card — staff-gated arms in ./card.js execute suggested
  *        actions through the shared executor and rebuild the card from the
  *        ledger rows (raw-interaction arms; the Fluxer dispatcher has no
  *        component path — explicit no-parity).
+ *        #771 adds the CASE-level queue row: am:case:reveal:<caseId> (lifts
+ *        the default reporter anonymity, audited) and
+ *        am:case:resolve:{recommended|manual|none}:<caseId> (first valid
+ *        click wins; after resolution every queue button renders disabled).
  *
  * Discord-only for this milestone (epic decision 8 — Fluxer is explicit
  * no-parity, stated in docs/automod.md): every arm refuses the standard
@@ -42,12 +51,18 @@ const { referContextMenu } = require("./contextMenu");
 const {
   NOT_ON_FLUXER,
   MODAL_RULES,
+  MODAL_REFER_PREFIX,
   CARD_APPROVE_PREFIX,
   CARD_DISMISS_PREFIX,
+  CASE_REVEAL_PREFIX,
+  CASE_RESOLVE_RECOMMENDED_PREFIX,
+  CASE_RESOLVE_MANUAL_PREFIX,
+  CASE_RESOLVE_NONE_PREFIX,
 } = require("./constants");
 const { buildStatusPayload } = require("./status");
 const config = require("./config");
 const refer = require("./refer");
+const referModal = require("./referModal");
 const settings = require("./settings");
 const harness = require("./harness");
 const card = require("./card");
@@ -175,6 +190,36 @@ async function handleAutomodConfig(commandCtx, featureCtx) {
   });
 }
 
+/**
+ * /set-moderation-queue — #771 §6's thin admin alias over the SAME
+ * automod-channel setting `/automodconfig channel` writes (one queue, one
+ * source of truth). Same gates as automodconfig (admin in the HANDLER + the
+ * admin picker tier + Discord-only raw interaction), different audit verbs
+ * (`automod.queue_set` / `automod.queue_clear`) so the trail shows which
+ * surface a guild used — the setting itself is shared by construction.
+ *
+ * @param {import("../../platform/context").CommandContext} commandCtx
+ * @param {object} [featureCtx]
+ */
+async function handleSetModerationQueue(commandCtx, featureCtx) {
+  void featureCtx;
+  if (!(await requireAdminFromContext(commandCtx))) return;
+
+  if (!commandCtx.rawInteraction) {
+    await commandCtx.reply({ content: NOT_ON_FLUXER, sensitive: true });
+    return;
+  }
+
+  const sub = commandCtx.subcommand;
+  if (sub === "set") return config.handleQueueSet(commandCtx);
+  if (sub === "clear") return config.handleQueueClear(commandCtx);
+
+  await commandCtx.reply({
+    content: `Unknown subcommand: \`${sub}\``,
+    sensitive: true,
+  });
+}
+
 module.exports = {
   name: "automod",
   // Slash builders + the #726 "Refer to automod" message context menu. The
@@ -184,6 +229,8 @@ module.exports = {
   handlers: {
     automod: handleAutomod,
     automodconfig: handleAutomodConfig,
+    // #771 §6: the queue alias (same handler gates as automodconfig).
+    "set-moderation-queue": handleSetModerationQueue,
     // #726: message context menu intake. Key is the exact registered display
     // name (the router dispatches context menus by interaction.commandName).
     "Refer to automod": refer.handleReferContextMenu,
@@ -194,9 +241,12 @@ module.exports = {
   handlerApi: {
     automod: "context",
     automodconfig: "context",
+    "set-moderation-queue": "context",
   },
   modalHandlers: {
     [MODAL_RULES]: config.handleRulesModal,
+    // #771: the referral intake form (`am:refer:<token>`, longest-prefix).
+    [MODAL_REFER_PREFIX]: referModal.handleReferModal,
   },
   // #730: the case-card buttons. The router matches customId by longest
   // prefix, so `am:card:approve:` / `am:card:dismiss:` route here. Handlers
@@ -206,6 +256,13 @@ module.exports = {
   buttonHandlers: {
     [CARD_APPROVE_PREFIX]: card.handleCardApprove,
     [CARD_DISMISS_PREFIX]: card.handleCardDismiss,
+    // #771: the CASE-level queue row (reveal + the three mutually
+    // exclusive resolutions). Longest-prefix dispatch routes the more
+    // specific resolve ids before the card prefixes could shadow them.
+    [CASE_REVEAL_PREFIX]: card.handleCaseReveal,
+    [CASE_RESOLVE_RECOMMENDED_PREFIX]: card.handleCaseResolveRecommended,
+    [CASE_RESOLVE_MANUAL_PREFIX]: card.handleCaseResolveManual,
+    [CASE_RESOLVE_NONE_PREFIX]: card.handleCaseResolveNone,
   },
   // #728: boot wiring (harness trigger + interrupted-run sweep), guarded by
   // load.js's per-feature hook isolation like every other boot surface.

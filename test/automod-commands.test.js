@@ -86,13 +86,14 @@ function makeCtx({
   memberRoleIds = [],
   raw = null,
   noRaw = false,
+  externalGuildId = EXTERNAL_GUILD,
 }) {
   const replies = [];
   const ctx = {
     platform: "discord",
     instanceKey: "discord",
     communityId,
-    externalGuildId: EXTERNAL_GUILD,
+    externalGuildId,
     channelId: "10",
     userId: "u-admin-725",
     user: { id: "u-admin-725", username: "admin" },
@@ -478,7 +479,7 @@ const referLink = (guildId = EXTERNAL_GUILD) =>
  * cache (automod + source channels with permission reads + messages.fetch),
  * guild.members.me, and the invoker member.
  */
-function makeReferRaw({ automodSend = true, sourceView = true } = {}) {
+function makeReferRaw({ automodSend = true, sourceView = true, guildId = EXTERNAL_GUILD } = {}) {
   const chan = (view, send) => ({
     permissionsFor: () => ({
       has: (flag) => {
@@ -489,12 +490,12 @@ function makeReferRaw({ automodSend = true, sourceView = true } = {}) {
     }),
     messages: { fetch: async (id) => ({ id: String(id) }) },
   });
-  return {
+  const raw = {
     user: { id: "u-admin-725" },
     member: { id: "u-admin-725" },
     guild: {
-      id: EXTERNAL_GUILD,
-      roles: { everyone: { id: EXTERNAL_GUILD } },
+      id: guildId,
+      roles: { everyone: { id: guildId } },
       members: { me: { id: "u-bot-725" }, cache: { get: () => null } },
       channels: {
         cache: {
@@ -507,6 +508,12 @@ function makeReferRaw({ automodSend = true, sourceView = true } = {}) {
       },
     },
   };
+  // #771: the refer arm opens the referral modal — record it so the test can
+  // submit the form like Discord would (submitReferModal).
+  raw.showModal = async (modal) => {
+    raw.__shownModal = typeof modal?.toJSON === "function" ? modal.toJSON() : modal;
+  };
+  return raw;
 }
 
 /** Configure a community for referral intake through the shipped services. */
@@ -517,6 +524,44 @@ function readyReferCommunity({ channelId = REFER_AMOD_CH } = {}) {
   service.setRules(communityId, "No spam. Be kind.");
   return communityId;
 }
+
+/**
+ * #771 intake driver: the slash arm now OPENS the referral modal before the
+ * case exists. After `automod.handlers.automod(ctx)` opened it (raw.showModal
+ * spy captured it), submit the form through the real modal handler — the
+ * whole refusal battery + case write run there. The submit fake re-uses the
+ * ctx's staff legs (ManageGuild bit or the member's role ids).
+ */
+async function submitReferModal(ctx, manageGuild, fields = { problem: "targeted harassment" }) {
+  const referModal = require("../src/features/automod/referModal");
+  const raw = ctx.rawInteraction;
+  const shown = raw.__shownModal;
+  const replies = [];
+  const submit = {
+    isModalSubmit: () => true,
+    customId: shown?.custom_id ?? "am:refer:",
+    guildId: raw.guild?.id ?? ctx.externalGuildId,
+    guild: raw.guild,
+    user: raw.user,
+    member: {
+      id: ctx.userId,
+      roles: { cache: new Map((ctx.memberRoleIds ?? []).map((r) => [r, {}])) },
+    },
+    memberPermissions: {
+      has: (flag) => manageGuild === true && String(flag) === String(PermissionFlagsBits.ManageGuild),
+    },
+    fields: { getTextInputValue: (id) => fields[id] ?? "" },
+    replies,
+    reply: async (payload) => {
+      replies.push(typeof payload === "string" ? { content: payload } : payload);
+      return payload;
+    },
+  };
+  await referModal.handleReferModal(submit, {});
+  return submit;
+}
+
+
 
 describe("/automod refer — slash intake wiring (#726)", () => {
   it("denies non-staff with the standard denial and records NOTHING", async () => {
@@ -563,28 +608,44 @@ describe("/automod refer — slash intake wiring (#726)", () => {
   });
 
   it("staff-role leg (no ManageGuild) files the case: ack, row, automod.refer audit", async () => {
-    const communityId = readyReferCommunity();
+    // Unique guild string for BOTH the community and the raw interaction:
+    // #771 the submit leg's staff gate maps the GUILD to the community
+    // (discordCommunityId) to resolve the staff-role membership.
+    const guild = `934${String(++seq).padStart(15, "0")}`; // digits-only: the strict link grammar
+    const communityId = communityKey(guild);
+    service.setEnabled(communityId, true);
+    service.setChannel(communityId, REFER_AMOD_CH);
+    service.setRules(communityId, "No spam. Be kind.");
     db.addStaffRole(communityId, "role-726-junior", "junior", "u-admin-725");
     const { ctx, replies } = makeCtx({
       commandName: "automod",
       communityId,
       sub: "refer",
       options: {
-        message: referLink(),
+        message: referLink(guild),
         user: { id: "u-target-726" },
-        note: "targeted harassment in #general",
       },
       manageGuild: false,
       memberRoleIds: ["role-726-junior"],
-      raw: makeReferRaw(),
+      externalGuildId: guild,
+      raw: makeReferRaw({ guildId: guild }),
     });
     await automod.handlers.automod(ctx, {});
 
+    // #771: the invoke opens the modal (the staff-role leg passed BOTH gates)
+    // and files NOTHING yet — the case rides on the submit.
+    assert.equal(replies.length, 0, "no ack before the form");
+    assert.match(ctx.rawInteraction.__shownModal.custom_id, /^am:refer:[0-9a-f]{32}$/);
+    assert.equal(db.listAutomodCases(communityId).length, 0);
+
+    const submit = await submitReferModal(ctx, false, {
+      problem: "targeted harassment in #general",
+    });
     assert.equal(
-      content(replies),
+      String(submit.replies[0]?.content ?? ""),
       `Case: **A-1** — recorded.\nRecommendations will post in <#${REFER_AMOD_CH}>.`,
     );
-    assert.equal(replies[0].sensitive, true, "the ack stays ephemeral");
+    assert.ok(submit.replies[0]?.flags != null, "the ack stays ephemeral");
 
     const row = db.listAutomodCases(communityId)[0];
     assert.equal(row.referrer_user_id, "u-admin-725");
@@ -592,6 +653,8 @@ describe("/automod refer — slash intake wiring (#726)", () => {
     assert.equal(row.channel_id, REFER_SRC_CH);
     assert.equal(row.target_user_id, "u-target-726");
     assert.equal(row.note, "targeted harassment in #general");
+    assert.equal(row.read_before, 100, "#771 default window (empty modal fields)");
+    assert.equal(row.read_after, 20);
     assert.equal(row.status, "recorded");
 
     const audit = db
@@ -604,7 +667,7 @@ describe("/automod refer — slash intake wiring (#726)", () => {
     assert.equal(repo.getAutomodBudget(communityId).used, 0);
   });
 
-  it("a malformed link through the slash arm names its own specific cause", async () => {
+  it("a malformed link names its own specific cause AT SUBMIT (#771)", async () => {
     const communityId = readyReferCommunity();
     const { ctx, replies } = makeCtx({
       commandName: "automod",
@@ -614,13 +677,16 @@ describe("/automod refer — slash intake wiring (#726)", () => {
       raw: makeReferRaw(),
     });
     await automod.handlers.automod(ctx, {});
-    assert.match(content(replies), /\*\*Message link:\*\*/);
+    assert.ok(ctx.rawInteraction.__shownModal, "the form opens with any target text");
+    const submit = await submitReferModal(ctx, true);
+    assert.match(String(submit.replies[0]?.content ?? ""), /\*\*Message link:\*\*/);
     assert.equal(db.listAutomodCases(communityId).length, 0);
+    void replies;
   });
 
-  it("an unpostable automod channel refuses the referral by name", async () => {
+  it("an unpostable automod channel refuses the referral by name AT SUBMIT (#771)", async () => {
     const communityId = readyReferCommunity();
-    const { ctx, replies } = makeCtx({
+    const { ctx } = makeCtx({
       commandName: "automod",
       communityId,
       sub: "refer",
@@ -628,7 +694,141 @@ describe("/automod refer — slash intake wiring (#726)", () => {
       raw: makeReferRaw({ automodSend: false }),
     });
     await automod.handlers.automod(ctx, {});
-    assert.match(content(replies), /\*\*Automod channel:\*\*.*not postable/);
+    const submit = await submitReferModal(ctx, true);
+    assert.match(
+      String(submit.replies[0]?.content ?? ""),
+      /\*\*Automod channel:\*\*.*not postable/,
+    );
     assert.equal(db.listAutomodCases(communityId).length, 0);
+  });
+
+  // ── #771 §1: the modal's own parse contract (reject/clamp/default) ───────
+
+  it("a non-integer window field refuses naming the EXACT field — nothing filed", async () => {
+    const communityId = readyReferCommunity();
+    const { ctx } = makeCtx({
+      commandName: "automod",
+      communityId,
+      sub: "refer",
+      options: { message: referLink() },
+      raw: makeReferRaw(),
+    });
+    await automod.handlers.automod(ctx, {});
+    const submit = await submitReferModal(ctx, true, { problem: "slurs", read_before: "lots" });
+    assert.equal(
+      String(submit.replies[0]?.content ?? ""),
+      "`Messages before` wasn't a number — nothing was filed.",
+    );
+    assert.equal(db.listAutomodCases(communityId).length, 0);
+  });
+
+  it("over-cap windows CLAMP and the reply SAYS SO", async () => {
+    const communityId = readyReferCommunity();
+    const { ctx } = makeCtx({
+      commandName: "automod",
+      communityId,
+      sub: "refer",
+      options: { message: referLink() },
+      raw: makeReferRaw(),
+    });
+    await automod.handlers.automod(ctx, {});
+    const submit = await submitReferModal(ctx, true, {
+      problem: "slurs",
+      read_before: "5000",
+      read_after: "9999",
+    });
+    const ack = String(submit.replies[0]?.content ?? "");
+    assert.match(ack, /Case: \*\*A-1\*\* — recorded\./);
+    assert.match(ack, /`Messages before` was above the 500 cap — clamped to 500\./);
+    assert.match(ack, /`Messages after` was above the 500 cap — clamped to 500\./);
+    const row = db.listAutomodCases(communityId)[0];
+    assert.equal(row.read_before, 500);
+    assert.equal(row.read_after, 500);
+  });
+
+  // ── #771 §6: /set-moderation-queue — the admin alias over the channel ────
+
+  describe("/set-moderation-queue — queue alias (#771)", () => {
+    it("admin sets the queue: same stored channel, own audit verb", async () => {
+      const communityId = readyReferCommunity({ channelId: null });
+      service.clearChannel(communityId);
+      const { ctx, replies } = makeCtx({
+        commandName: "set-moderation-queue",
+        communityId,
+        sub: "set",
+        options: { channel: { id: REFER_AMOD_CH } },
+      });
+      await automod.handlers["set-moderation-queue"](ctx, {});
+      assert.match(content(replies), /\*\*Moderation queue set:\*\*/);
+      assert.equal(service.readSettings(communityId).settings.channelId, REFER_AMOD_CH);
+      const audit = db
+        .listAdminAudit(communityId, { limit: 10 })
+        .find((r) => r.action === "automod.queue_set");
+      assert.ok(audit, "the alias names its OWN surface in the trail");
+      assert.equal(JSON.parse(audit.details_json).channel_id, REFER_AMOD_CH);
+    });
+
+    it("clear unsets it with the alias copy + automod.queue_clear", async () => {
+      const communityId = readyReferCommunity();
+      const { ctx, replies } = makeCtx({
+        commandName: "set-moderation-queue",
+        communityId,
+        sub: "clear",
+        options: {},
+      });
+      await automod.handlers["set-moderation-queue"](ctx, {});
+      assert.match(content(replies), /\*\*Moderation queue cleared\.\*\*/);
+      assert.equal(service.readSettings(communityId).settings.channelId, null);
+      assert.ok(
+        db
+          .listAdminAudit(communityId, { limit: 10 })
+          .some((r) => r.action === "automod.queue_clear"),
+      );
+    });
+
+    it("non-admin is denied; Fluxer contexts get NOT_ON_FLUXER", async () => {
+      const communityId = readyReferCommunity();
+      const denied = makeCtx({
+        commandName: "set-moderation-queue",
+        communityId,
+        sub: "set",
+        options: { channel: { id: REFER_AMOD_CH } },
+        manageGuild: false,
+      });
+      await automod.handlers["set-moderation-queue"](denied.ctx, {});
+      assert.equal(content(denied.replies), MSG_DENIED);
+
+      const fluxer = makeCtx({
+        commandName: "set-moderation-queue",
+        communityId,
+        sub: "clear",
+        options: {},
+        noRaw: true,
+      });
+      await automod.handlers["set-moderation-queue"](fluxer.ctx, {});
+      assert.equal(content(fluxer.replies), "That command is not available on Fluxer yet.");
+    });
+
+    it("the alias writes the SAME setting /automodconfig channel uses (one queue)", async () => {
+      const communityId = readyReferCommunity({ channelId: null });
+      service.clearChannel(communityId);
+      const setCtx = makeCtx({
+        commandName: "set-moderation-queue",
+        communityId,
+        sub: "set",
+        options: { channel: { id: REFER_SRC_CH } },
+      });
+      await automod.handlers["set-moderation-queue"](setCtx.ctx, {});
+      const viaConfig = makeCtx({
+        commandName: "automodconfig",
+        communityId,
+        group: "channel",
+        sub: "set",
+        options: { channel: { id: REFER_AMOD_CH } },
+      });
+      await automod.handlers.automodconfig(viaConfig.ctx, {});
+      // Last writer wins on the ONE column — no second queue exists.
+      assert.equal(service.readSettings(communityId).settings.channelId, REFER_AMOD_CH);
+    });
   });
 });

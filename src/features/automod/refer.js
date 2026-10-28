@@ -46,10 +46,20 @@ const { requireStaff } = require("../../core/permissions");
 const { replyEphemeral, safeErrorReply } = require("../../core/interaction");
 const { recordSlashAudit } = require("../../core/auditTrail");
 const { ensureCommunity } = require("../../platform/community");
-const { sliceSafe } = require("../../core/text");
+const { sliceSafe, snippet } = require("../../core/text");
+const { showModalFromContext } = require("../../platform/context");
 const { getAutomodBudget, createAutomodCase } = require("../../db");
-const { AUTOMOD_REFER_NOTE_MAX_LEN } = require("./constants");
+const {
+  AUTOMOD_REFER_NOTE_MAX_LEN,
+  AUTOMOD_REFER_CONTEXT_MAX_LEN,
+  AUTOMOD_CARD_SNIPPET_MAX,
+} = require("./constants");
 const { readSettings } = require("./settings");
+// #771: both intake surfaces open ONE referral modal (problem required +
+// required context + per-case window) BEFORE the case exists. The modal
+// module lazy-requires THIS module for the service, so the openers below
+// take the lazy direction (inside the arms) and the cycle never closes at
+// load time.
 
 /**
  * Strict message-link grammar: https, the production `discord.com` host or
@@ -140,6 +150,14 @@ function refusalNoteTooLong(length, cap) {
   return (
     `**Note too long:** the referral note is ${length} characters — the cap ` +
     `is ${cap}. Shorten it — nothing was recorded.`
+  );
+}
+
+/** @param {number} length @param {number} cap */
+function refusalContextTooLong(length, cap) {
+  return (
+    `**Required context too long:** the context field is ${length} characters — ` +
+    `the cap is ${cap}. Shorten it — nothing was recorded.`
   );
 }
 
@@ -314,7 +332,14 @@ function makeDiscordDeps(interaction) {
  * @param {{messageId?:string, channelId?:string}|null} [input.message]
  *   context-menu target (already resolved by Discord — no link parse/fetch)
  * @param {string|null} [input.targetUserId] slash `user:` option
- * @param {string|null} [input.note]       slash `note:` option (case input)
+ * @param {string|null} [input.note]       the modal's problem statement
+ *   (#771 §1 — the REQUIRED `Problem` field; the historic `note:` option
+ *   fed this same column and the same gate)
+ * @param {string|null} [input.requiredContext] the modal's optional
+ *   "what the reviewer needs to see or know" text (#771, verbatim input)
+ * @param {number|null} [input.readBefore] per-case window back from the
+ *   anchor (#771 §2; repository clamps to 0–500)
+ * @param {number|null} [input.readAfter]  per-case window forward (#771 §2)
  * @param {ReferDeps} input.deps
  * @param {number} [input.nowMs]           injectable UTC clock (budget view)
  * @returns {Promise<
@@ -331,6 +356,9 @@ async function referToAutomod(input = {}) {
     message = null,
     targetUserId = null,
     note = null,
+    requiredContext = null,
+    readBefore = null,
+    readAfter = null,
     deps,
     nowMs,
   } = input;
@@ -389,9 +417,28 @@ async function referToAutomod(input = {}) {
         error: refusalNoteTooLong(noteText.length, AUTOMOD_REFER_NOTE_MAX_LEN),
       };
     }
+    // #771: the modal's optional context field — same belt as the problem.
+    const contextText = optionalText(requiredContext);
+    if (contextText && contextText.length > AUTOMOD_REFER_CONTEXT_MAX_LEN) {
+      return {
+        ok: false,
+        error: refusalContextTooLong(contextText.length, AUTOMOD_REFER_CONTEXT_MAX_LEN),
+      };
+    }
 
     let messageId = null;
     let sourceChannelId = null;
+    // #771 §4: the single-line anchor excerpt the card renders under
+    // "**Reported message:**". Display-only — intake never depends on it.
+    let anchorSnippet = null;
+    const readSnippet = (m) => {
+      try {
+        const text = snippet(m?.content ?? "", AUTOMOD_CARD_SNIPPET_MAX);
+        return text === "" ? null : text;
+      } catch {
+        return null;
+      }
+    };
 
     if (hasResolved) {
       // Context-menu target: Discord delivered it — guild and the invoker's
@@ -401,6 +448,20 @@ async function referToAutomod(input = {}) {
       if (!mid || !cid) return { ok: false, error: REFUSAL_TARGET_UNRESOLVED };
       messageId = mid;
       sourceChannelId = cid;
+      // Best-effort excerpt read (the target may have been deleted between
+      // the invoke and the modal submit — a miss is NO snippet, never a
+      // referral failure: the platform already delivered the target once).
+      try {
+        const m = await deps.fetchMessage(guildId, cid, mid);
+        if (m) anchorSnippet = readSnippet(m);
+      } catch (err) {
+        if (err?.code !== 10003) {
+          console.error(
+            `[automod] refer anchor snippet read failed (${ids}) — display-only, continuing:`,
+            err?.message || err,
+          );
+        }
+      }
     } else if (hasLink) {
       const parsed = parseMessageLink(messageLink);
       if (!parsed) {
@@ -434,6 +495,7 @@ async function referToAutomod(input = {}) {
       if (!fetched) return { ok: false, error: REFUSAL_MESSAGE_GONE };
       messageId = parsed.messageId;
       sourceChannelId = parsed.channelId;
+      anchorSnippet = readSnippet(fetched);
     }
 
     // ── Intake: the case row. Referrer is NOT a subject (no staff note). ──
@@ -444,6 +506,10 @@ async function referToAutomod(input = {}) {
       channelId: sourceChannelId,
       targetUserId: namedUser,
       note: noteText,
+      requiredContext: contextText,
+      readBefore,
+      readAfter,
+      messageSnippet: anchorSnippet,
     });
     if (!created.ok) {
       console.error(`[automod] refer case write failed (${ids}):`, created.error);
@@ -542,47 +608,45 @@ function auditRefer(communityId, actorUserId, result) {
 }
 
 /**
- * `/automod refer` — the slash arm. Gates (requireStaff, NOT_ON_FLUXER) run
- * upstream in the feature handler exactly like `status`; this reads the
- * options, cross-enforces "at least one of message|user" (Discord cannot),
- * and surfaces the service verbatim.
+ * `/automod refer` — the slash arm (#771: OPENS THE REFERRAL MODAL).
+ * Gates (requireStaff, NOT_ON_FLUXER) run upstream in the feature handler
+ * exactly like `status`; this cross-enforces "at least one of message|user"
+ * (Discord cannot), then files the pending form and opens the modal. The
+ * whole refusal battery + the case write run on SUBMIT (referModal.js) —
+ * the problem statement, required context, and read window only exist
+ * there, and a submit that fails still names its specific cause.
  *
  * @param {import("../../platform/context").CommandContext} commandCtx
  */
 async function handleReferCommand(commandCtx) {
   const messageLink = commandCtx.options.getString("message");
   const targetUser = commandCtx.options.getUser("user");
-  const note = commandCtx.options.getString("note");
 
   if (!messageLink && !targetUser) {
     await commandCtx.reply({ content: REFUSAL_TARGET_REQUIRED, sensitive: true });
     return;
   }
 
-  const result = await referToAutomod({
+  // Lazy direction of the refer ↔ referModal cycle (see the import note).
+  const { buildReferModal, putPendingReferral, takePendingReferral } = require("./referModal");
+  const token = putPendingReferral({
     communityId: commandCtx.communityId,
     guildId: commandCtx.externalGuildId,
     referrerUserId: commandCtx.userId,
     messageLink,
+    resolvedMessage: null,
     targetUserId: targetUser?.id ?? null,
-    note,
-    deps: makeDiscordDeps(commandCtx.rawInteraction),
   });
-  if (!result.ok) {
-    await commandCtx.reply({ content: result.error, sensitive: true });
-    return;
+  const shown = await showModalFromContext(commandCtx, buildReferModal(token));
+  if (!shown) {
+    // Never leave an orphaned form behind when the modal cannot open.
+    takePendingReferral(token);
+    await commandCtx.reply({
+      content:
+        "This platform cannot open the referral form — auto-moderation intake is Discord-only.",
+      sensitive: true,
+    });
   }
-
-  auditRefer(commandCtx.communityId, commandCtx.userId, result);
-  await commandCtx.reply({ content: result.ack, sensitive: true });
-
-  // #728: trigger AFTER the ack reply resolves — detached, its own catch.
-  scheduleAutomodRun({
-    communityId: commandCtx.communityId,
-    guildId: commandCtx.externalGuildId,
-    caseRow: result.case,
-    referrerUserId: commandCtx.userId,
-  });
 }
 
 /**
@@ -590,8 +654,9 @@ async function handleReferCommand(commandCtx) {
  * interaction.commandName; api "interaction": the target message only exists
  * on the raw interaction — same posture as the #745 report invokes).
  * Staff gate FIRST: a denied invoke records nothing. Bot/system targets are
- * refused before the service runs (nothing to moderate). No note, no user
- * option — the target message IS the referral.
+ * refused before anything opens (#771: the invoke then opens the SAME
+ * referral modal the slash arm opens — problem + required context + window —
+ * and the case is written on submit, never before).
  *
  * @param {import("discord.js").MessageContextMenuCommandInteraction} interaction
  * @param {object} [ctx] router context (unused)
@@ -621,31 +686,33 @@ async function handleReferContextMenu(interaction, ctx) {
       externalGuildId: interaction.guildId,
     });
 
-    const result = await referToAutomod({
+    const { buildReferModal, putPendingReferral, takePendingReferral } = require("./referModal");
+    const token = putPendingReferral({
       communityId,
       guildId: interaction.guildId,
       referrerUserId: interaction.user?.id ?? null,
-      message: {
+      messageLink: null,
+      resolvedMessage: {
         messageId: message.id ?? null,
         channelId: message.channelId ?? message.channel?.id ?? null,
       },
-      deps: makeDiscordDeps(interaction),
+      targetUserId: null,
     });
-    if (!result.ok) {
-      await replyEphemeral(interaction, result.error);
-      return;
+    try {
+      await interaction.showModal(buildReferModal(token));
+    } catch (err) {
+      takePendingReferral(token);
+      console.error(
+        "[automod] refer context-menu modal open failed:",
+        `guild=${interaction?.guildId ?? "?"}`,
+        `user=${interaction?.user?.id ?? "?"}`,
+        err?.message || err,
+      );
+      await replyEphemeral(
+        interaction,
+        `Could not open the referral form (${err?.message || "Discord rejected the modal"}) — nothing was recorded.`,
+      );
     }
-
-    auditRefer(communityId, interaction.user?.id, result);
-    await replyEphemeral(interaction, result.ack);
-
-    // #728: trigger AFTER the ack reply resolves — detached, its own catch.
-    scheduleAutomodRun({
-      communityId,
-      guildId: interaction.guildId ?? null,
-      caseRow: result.case,
-      referrerUserId: interaction.user?.id ?? null,
-    });
   } catch (err) {
     console.error(
       "[automod] refer context-menu failed:",
@@ -674,12 +741,17 @@ module.exports = {
   refusalCrossGuild,
   refusalChannelInvisible,
   refusalNoteTooLong,
+  refusalContextTooLong,
   parseMessageLink,
   buildReferAck,
   makeDiscordDeps,
   referToAutomod,
   handleReferCommand,
   handleReferContextMenu,
+  // #771: the referral modal's submit arm re-uses the intake ack/audit/harness
+  // trigger helpers (lazy-required from ./referModal — see the import note).
+  auditRefer,
+  scheduleAutomodRun,
   // #728 harness trigger seam (wired by the feature boot hook):
   setRunCaseHook,
 };

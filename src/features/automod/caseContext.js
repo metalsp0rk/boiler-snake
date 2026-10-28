@@ -80,6 +80,7 @@ const {
   AUTOMOD_CONTEXT_USER_SCAN_PER_CHANNEL,
   AUTOMOD_CONTEXT_USER_SCAN_MAX_MESSAGES,
   AUTOMOD_CONTEXT_RECORDS_PAGE_MAX,
+  AUTOMOD_REFER_READ_MAX,
 } = require("./constants");
 const { readSettings } = require("./settings");
 const { projectWarningRow, projectNoteRow } = require("./lookups");
@@ -90,8 +91,88 @@ const {
 } = require("../gork/constants");
 const { sortOldestFirst } = require("../gork/tools/readDiscord");
 
-/** Bundle schema tag so #728/#730 can pin the shape they were built for. */
-const CONTEXT_SCHEMA = "automod-case-context/1";
+/**
+ * Bundle schema tag so #728/#730 can pin the shape they were built for.
+ * /2 (#771): `referral.required_context` joins the bundle and the window
+ * counts become PER-CASE (the modal decides; `meta.caps` reports what this
+ * case actually used).
+ */
+const CONTEXT_SCHEMA = "automod-case-context/2";
+
+/**
+ * The window ONE case reads (#771 §2): the per-case `read_before` /
+ * `read_after` captured by the referral modal (each clamped 0–500),
+ * falling back to the historical Gork-owned 40/10 for rows written before
+ * #771 — legacy cases keep the window they were filed under, new cases get
+ * the modal's 100/20 defaults. The CARD renders this same effective pair
+ * (`**Window:**` line) — one reader, no drift.
+ *
+ * @param {object|null} caseRow the automod_cases row
+ * @returns {{ before: number, after: number }}
+ */
+function effectiveReadWindow(caseRow) {
+  const clamp = (v, fallback) => {
+    if (v == null || v === "") return fallback;
+    const n = Math.floor(Number(v));
+    if (!Number.isFinite(n)) return fallback;
+    return Math.min(AUTOMOD_REFER_READ_MAX, Math.max(0, n));
+  };
+  return {
+    before: clamp(caseRow?.read_before, READ_DISCORD_BEFORE_WINDOW),
+    after: clamp(caseRow?.read_after, READ_DISCORD_AFTER_WINDOW),
+  };
+}
+
+/**
+ * Fetch ONE window direction with multi-pass pagination (#771 §2: a
+ * 500-back read is five Discord pages). Discord caps ONE fetch at 100
+ * messages, so past that the cursor walks away from the anchor. A throw
+ * anywhere (rate limit, dead channel, mid-pagination API error)
+ * PROPAGATES: the caller's fail-closed law refuses to judge a case on a
+ * half-read window — never analyze a silently truncated read.
+ *
+ * @param {{ fetchChannelMessages: Function }} d context deps
+ * @param {object} channel guild channel holding the anchor
+ * @param {string|number} anchorId anchor message id (the cursor seed)
+ * @param {"before"|"after"} key which side of the anchor
+ * @param {number} want how many messages this direction wants
+ * @returns {Promise<object[]>} deduped, anchor excluded
+ */
+async function fetchWindowDirection(d, channel, anchorId, key, want) {
+  const limit = Math.max(0, Math.floor(Number(want) || 0));
+  if (limit <= 0) return [];
+  const PAGE_MAX = 100; // Discord's per-fetch cap — the reason this paginates
+  const out = [];
+  const seen = new Set([String(anchorId)]);
+  let cursor = String(anchorId);
+  for (;;) {
+    const pageWant = Math.min(PAGE_MAX, limit - out.length);
+    if (pageWant <= 0) break;
+    const page = toMessageArray(
+      await d.fetchChannelMessages(channel, { limit: pageWant, [key]: cursor }),
+    );
+    if (page.length === 0) break;
+    const ids = [];
+    for (const m of page) {
+      if (m?.id == null) continue;
+      const id = String(m.id);
+      ids.push(id);
+      if (seen.has(id)) continue;
+      seen.add(id);
+      out.push(m);
+    }
+    if (ids.length === 0) break;
+    // Walk the cursor AWAY from the anchor: oldest id for `before`, newest
+    // for `after` (snowflakes are time-ordered digit strings — compare as
+    // BigInt, never lexicographically).
+    cursor = ids.reduce((a, b) =>
+      key === "before" ? (BigInt(b) < BigInt(a) ? b : a) : BigInt(b) > BigInt(a) ? b : a,
+    );
+    if (page.length < pageWant) break; // channel edge reached on this side
+    if (out.length >= limit) break;
+  }
+  return out;
+}
 
 // ── small readers ──────────────────────────────────────────────────────────
 
@@ -587,18 +668,17 @@ async function buildCaseContext({
         );
       }
 
+      // #771 §2: the PER-CASE window (modal values, clamped; legacy rows
+      // keep 40/10). Each side paginates past Discord's 100-per-fetch cap;
+      // a mid-pagination throw lands in the fail-closed catch below — a
+      // half-read window is NEVER analyzed.
+      const { before: wantBefore, after: wantAfter } = effectiveReadWindow(row);
       let before = [];
       let after = [];
       try {
         [before, after] = await Promise.all([
-          d.fetchChannelMessages(channel, {
-            limit: READ_DISCORD_BEFORE_WINDOW,
-            before: String(anchor.id),
-          }),
-          d.fetchChannelMessages(channel, {
-            limit: READ_DISCORD_AFTER_WINDOW,
-            after: String(anchor.id),
-          }),
+          fetchWindowDirection(d, channel, anchor.id, "before", wantBefore),
+          fetchWindowDirection(d, channel, anchor.id, "after", wantAfter),
         ]);
       } catch (err) {
         // A GONE window edge (10003 on a bulk page — never in practice) is
@@ -618,8 +698,8 @@ async function buildCaseContext({
       const capped = capAroundAnchor(
         sortOldestFirst([...merged.values()]),
         String(anchor.id),
-        READ_DISCORD_BEFORE_WINDOW,
-        READ_DISCORD_AFTER_WINDOW,
+        wantBefore,
+        wantAfter,
       );
       anchorMessage = anchor;
       windowBlock = {
@@ -838,7 +918,11 @@ async function buildCaseContext({
       rules,
       referral: {
         referrer_user_id: String(referrer),
+        // #771 §1: `note` now carries the modal's REQUIRED problem
+        // statement; `required_context` is the optional "what the reviewer
+        // needs to see or know" text, verbatim.
         note: optionalText(row.note),
+        required_context: optionalText(row.required_context),
         channel_id: anchorChannelId,
         message_id: anchorMessageId,
         message_url:
@@ -861,8 +945,17 @@ async function buildCaseContext({
       meta: {
         collected_at: Number(nowMs) || Date.now(),
         caps: {
-          before_window: READ_DISCORD_BEFORE_WINDOW,
-          after_window: READ_DISCORD_AFTER_WINDOW,
+          // What THIS case actually read: the per-case modal window for
+          // anchor cases (#771 §2); the historical constants for the
+          // user-only scan (its bound is the user_scan_* family below).
+          before_window:
+            windowBlock.kind === "message_anchor"
+              ? effectiveReadWindow(row).before
+              : READ_DISCORD_BEFORE_WINDOW,
+          after_window:
+            windowBlock.kind === "message_anchor"
+              ? effectiveReadWindow(row).after
+              : READ_DISCORD_AFTER_WINDOW,
           message_char_cap: READ_DISCORD_MESSAGE_CHAR_CAP,
           user_scan_max_channels: AUTOMOD_CONTEXT_USER_SCAN_MAX_CHANNELS,
           user_scan_per_channel: AUTOMOD_CONTEXT_USER_SCAN_PER_CHANNEL,
@@ -892,4 +985,8 @@ module.exports = {
   buildDefaultDeps,
   capAroundAnchor,
   projectWindowMessage,
+  // #771: the per-case effective window (the card renders it too) and the
+  // multi-pass page walker (Discord's 100-per-fetch cap lives here).
+  effectiveReadWindow,
+  fetchWindowDirection,
 };

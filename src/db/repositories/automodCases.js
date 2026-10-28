@@ -45,6 +45,44 @@ const AUTOMOD_CASE_STATUSES = Object.freeze([
  */
 const AUTOMOD_REFER_NOTE_MAX_LEN = 1000;
 
+/**
+ * Required-context cap (#771): the modal's optional "what the reviewer
+ * needs to see" field — sibling of the problem/note cap (same kind of case
+ * input, same belt: the service clamps shape, the repository re-checks so
+ * no caller can store an over-cap text).
+ */
+const AUTOMOD_REFER_CONTEXT_MAX_LEN = 1000;
+
+/** Persisted anchor-snippet cap (card "**Reported message:**" line). */
+const AUTOMOD_CASE_SNIPPET_MAX = 300;
+
+/**
+ * Case-level resolution vocabulary (migration 071 `resolution` column).
+ * #771: the FIRST valid staff click wins; the repository's single-winner
+ * UPDATE is the law. `recommended` runs the pending set through the
+ * executor; `manual`/`none` execute nothing and supersede the pending rows.
+ */
+const AUTOMOD_CASE_RESOLUTIONS = Object.freeze([
+  "recommended",
+  "manual",
+  "none",
+]);
+
+/**
+ * Hard ceiling for one window direction (#771 §2). The service/modal clamps
+ * first; the repository clamps again (belt — the stored value is ALWAYS
+ * inside 0–500, whatever a future caller attempts).
+ */
+const AUTOMOD_CASE_READ_WINDOW_MAX = 500;
+
+/** Clamp one read-window count into 0–500 (null/undefined pass through). */
+function clampReadWindow(value) {
+  if (value == null || value === "") return null;
+  const n = Math.floor(Number(value));
+  if (!Number.isFinite(n)) return null;
+  return Math.min(AUTOMOD_CASE_READ_WINDOW_MAX, Math.max(0, n));
+}
+
 /** Trim-to-null for the optional id/note fields ("" is absent, never stored). */
 function optionalText(value) {
   if (value == null) return null;
@@ -77,12 +115,30 @@ function nextCaseNumber(communityId) {
  * @param {string|null} [opts.messageId] referred message id (when given)
  * @param {string|null} [opts.channelId] channel the referred message lives in
  * @param {string|null} [opts.targetUserId] named member (when given)
- * @param {string|null} [opts.note] referrer's explanation (case input, capped)
+ * @param {string|null} [opts.note] referrer's problem statement (case input,
+ *   capped) — the #771 referral modal makes this the REQUIRED problem field
+ * @param {string|null} [opts.requiredContext] modal "what the reviewer needs
+ *   to see or know" text, verbatim case input (capped, #771)
+ * @param {number|null} [opts.readBefore] per-case window back from the
+ *   anchor (0–500, clamped here; #771 §2)
+ * @param {number|null} [opts.readAfter] per-case window forward (#771 §2)
+ * @param {string|null} [opts.messageSnippet] single-line anchor excerpt
+ *   captured at intake (capped/squashed here; #771 §4)
  * @returns {{ ok: true, case: object } | { ok: false, error: string }}
  */
 function createAutomodCase(opts = {}) {
-  const { communityId, referrerUserId, messageId, channelId, targetUserId, note } =
-    opts || {};
+  const {
+    communityId,
+    referrerUserId,
+    messageId,
+    channelId,
+    targetUserId,
+    note,
+    requiredContext = null,
+    readBefore = null,
+    readAfter = null,
+    messageSnippet = null,
+  } = opts || {};
   assertCommunityId(communityId);
 
   const referrer = optionalText(referrerUserId);
@@ -99,6 +155,20 @@ function createAutomodCase(opts = {}) {
       error: `Referral note is ${noteText.length} characters — the cap is ${AUTOMOD_REFER_NOTE_MAX_LEN}.`,
     };
   }
+  const contextText = optionalText(requiredContext);
+  if (contextText && contextText.length > AUTOMOD_REFER_CONTEXT_MAX_LEN) {
+    return {
+      ok: false,
+      error: `Required context is ${contextText.length} characters — the cap is ${AUTOMOD_REFER_CONTEXT_MAX_LEN}.`,
+    };
+  }
+  const before = clampReadWindow(readBefore);
+  const after = clampReadWindow(readAfter);
+  const snippetText = optionalText(messageSnippet);
+  const snippetStored =
+    snippetText != null && snippetText.length > AUTOMOD_CASE_SNIPPET_MAX
+      ? snippetText.slice(0, AUTOMOD_CASE_SNIPPET_MAX)
+      : snippetText;
 
   const t = now();
   try {
@@ -106,8 +176,9 @@ function createAutomodCase(opts = {}) {
       INSERT INTO automod_cases (
         community_id, case_number, referrer_user_id,
         message_id, channel_id, target_user_id, note,
+        required_context, read_before, read_after, message_snippet,
         status, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, 'recorded', ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'recorded', ?, ?)
     `);
     const tx = db.transaction(() => {
       const caseNumber = nextCaseNumber(communityId);
@@ -119,6 +190,10 @@ function createAutomodCase(opts = {}) {
         chan,
         target,
         noteText,
+        contextText,
+        before,
+        after,
+        snippetStored,
         t,
         t,
       );
@@ -234,13 +309,140 @@ function setAutomodCaseStatus(communityId, caseNumber, status) {
   }
 }
 
+/**
+ * Persist the harness's closing decision estimate (#771 §4, the card's
+ * "**What happened:**" line). NULL-safe: null clears. Written only by the
+ * harness metadata writer; the card only READS it.
+ *
+ * @param {number} caseId
+ * @param {string|null} text
+ * @returns {{ ok: true } | { ok: false, error: string }}
+ */
+function setAutomodCaseIncidentSummary(caseId, text) {
+  const id = Number(caseId);
+  if (!Number.isInteger(id) || id < 1) {
+    return { ok: false, error: "No such auto-mod case row." };
+  }
+  try {
+    const res = db
+      .prepare(`UPDATE automod_cases SET incident_summary=? WHERE id=?`)
+      .run(optionalText(text), id);
+    if (res.changes === 0) return { ok: false, error: `No auto-mod case row #${id}.` };
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: `Could not record the incident summary: ${err?.message || err}` };
+  }
+}
+
+/**
+ * Reveal the reporter on ONE case (#771 §3) — single-winner by shape:
+ * `WHERE revealed_at IS NULL` makes the FIRST staff press the only writer.
+ *
+ * @param {number} caseId
+ * @param {string} staffUserId the revealing staff member
+ * @param {{ nowMs?: number }} [opts]
+ * @returns {{ ok: true, revealed: boolean, alreadyRevealed: boolean, case: object }
+ *          | { ok: false, error: string }}
+ *   `revealed: true` on the winning press; `revealed: false,
+ *   alreadyRevealed: true` on an idempotent re-press (ZERO mutation — the
+ *   caller audits nothing new, #771: "re-press on a revealed card notes
+ *   it's already revealed; no duplicate audit rows").
+ */
+function revealAutomodCaseReporter(caseId, staffUserId, { nowMs } = {}) {
+  const id = Number(caseId);
+  if (!Number.isInteger(id) || id < 1) {
+    return { ok: false, error: "No such auto-mod case row." };
+  }
+  const staff = optionalText(staffUserId);
+  if (!staff) return { ok: false, error: "A reveal needs the revealing staff member's user id." };
+  try {
+    const stamp = Number.isFinite(Number(nowMs)) ? Math.floor(Number(nowMs)) : now();
+    const res = db
+      .prepare(
+        `UPDATE automod_cases
+            SET revealed_at=?, revealed_by_user_id=?, updated_at=?
+          WHERE id=? AND revealed_at IS NULL`,
+      )
+      .run(stamp, staff, stamp, id);
+    const row = getAutomodCaseById(id);
+    if (!row) return { ok: false, error: `No auto-mod case row #${id}.` };
+    return { ok: true, revealed: res.changes === 1, alreadyRevealed: res.changes === 0, case: row };
+  } catch (err) {
+    return { ok: false, error: `Could not reveal the reporter: ${err?.message || err}` };
+  }
+}
+
+/**
+ * Resolve ONE case at the CASE level (#771 §5) — the first valid staff
+ * click wins (single-winner UPDATE, same law as the row-level claim):
+ * a losing click gets `{ok:true, won:false, existing:{...}}` and mutates
+ * NOTHING (the callers show the EXISTING resolution — never an error).
+ *
+ * @param {number} caseId
+ * @param {string} resolution one of AUTOMOD_CASE_RESOLUTIONS
+ * @param {string} staffUserId the resolving staff member
+ * @param {{ nowMs?: number }} [opts]
+ * @returns {{ ok: true, won: boolean, existing: object|null, case: object }
+ *          | { ok: false, error: string }}
+ */
+function resolveAutomodCase(caseId, resolution, staffUserId, { nowMs } = {}) {
+  const id = Number(caseId);
+  if (!Number.isInteger(id) || id < 1) {
+    return { ok: false, error: "No such auto-mod case row." };
+  }
+  const kind = optionalText(resolution);
+  if (!AUTOMOD_CASE_RESOLUTIONS.includes(kind)) {
+    return {
+      ok: false,
+      error: `Unknown case resolution \`${resolution}\` — choose one of: ${AUTOMOD_CASE_RESOLUTIONS.join(", ")}.`,
+    };
+  }
+  const staff = optionalText(staffUserId);
+  if (!staff) return { ok: false, error: "A resolution needs the resolving staff member's user id." };
+  try {
+    const stamp = Number.isFinite(Number(nowMs)) ? Math.floor(Number(nowMs)) : now();
+    const res = db
+      .prepare(
+        `UPDATE automod_cases
+            SET resolved_at=?, resolution=?, resolved_by_user_id=?, updated_at=?
+          WHERE id=? AND resolved_at IS NULL`,
+      )
+      .run(stamp, kind, staff, stamp, id);
+    const row = getAutomodCaseById(id);
+    if (!row) return { ok: false, error: `No auto-mod case row #${id}.` };
+    return {
+      ok: true,
+      won: res.changes === 1,
+      existing:
+        res.changes === 1
+          ? null
+          : {
+              resolution: row.resolution,
+              resolvedByUserId: row.resolved_by_user_id,
+              resolvedAt: row.resolved_at,
+            },
+      case: row,
+    };
+  } catch (err) {
+    return { ok: false, error: `Could not resolve the case: ${err?.message || err}` };
+  }
+}
+
 module.exports = {
   AUTOMOD_CASE_STATUSES,
+  AUTOMOD_CASE_RESOLUTIONS,
   AUTOMOD_REFER_NOTE_MAX_LEN,
+  AUTOMOD_REFER_CONTEXT_MAX_LEN,
+  AUTOMOD_CASE_SNIPPET_MAX,
+  AUTOMOD_CASE_READ_WINDOW_MAX,
+  clampReadWindow,
   nextCaseNumber,
   createAutomodCase,
   getAutomodCaseById,
   getAutomodCase,
   listAutomodCases,
   setAutomodCaseStatus,
+  setAutomodCaseIncidentSummary,
+  revealAutomodCaseReporter,
+  resolveAutomodCase,
 };

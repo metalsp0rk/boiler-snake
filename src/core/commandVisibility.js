@@ -90,6 +90,10 @@ const COMMAND_VISIBILITY = Object.freeze({
   // (requireAdminFromContext) — the admin picker tier only hides the
   // command from staff-role members; no staff_roles allow overwrites.
   automodconfig: TIERS.admin,
+  // #771 §6: `/set-moderation-queue` is a thin admin ALIAS over the same
+  // automod-channel setting `/automodconfig channel` writes — same admin
+  // picker tier, ManageGuild in the handler too (requireAdminFromContext).
+  "set-moderation-queue": TIERS.admin,
   // #599: read-only twin of `/staff role list` + `/staff settings` (roles |
   // overview) so junior/senior staff can check their own staff-role status
   // and the staff settings without Manage Server. Handler gate is the staff

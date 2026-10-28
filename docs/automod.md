@@ -1,7 +1,7 @@
 # Auto-moderation (epic #723)
 
 !!! abstract "Ship state — this page tracks the epic"
-    **Shipped now:** the guild settings and their Manage-Guild commands — `/automod status` and `/automodconfig` (channel, rules, master switch, per-action modes, timeout cap, daily case budget, breaker state + `safety resume`) (#725) — plus **staff referral intake**: `/automod refer` and the **Refer to automod** message context menu, which record a case (**A-n**) and ack where recommendations will post (#726), the **case-context collector** + lookup tools the judge reads (#727 — no user-facing surface of its own; see [Case context](#case-context)), the **LLM harness**: the case runner that judges a recorded case, records intent through mode-gated tools, and commits every action through the executor (#728 — see [Harness](#harness)), the **case card**: the interactive one-post-per-case outcome post whose Approve/Dismiss buttons execute suggested actions straight from the ledger (#730 — see [Case card](#case-card)), the **staff-note reconciler**: one note per considered subject (narrative or harness-filled), dropped notes for non-subjects, outcomes merged into the same note (#731 — see [Staff notes](#staff-notes)), and the **warning tool**: `warn` records a real formal warning through the shipped warnings system — member-facing reason, the guild's own warn-DM and expiry settings, the case note linked, evidence defaulted (#733 — see [Warning tool](#warning-tool-733)), and the **delete-message tool**: `delete_message` removes specific messages of this case — case allow-list, one user per call, Manage Messages pre-flight, honest per-id results (#734 — see [Delete-message tool](#delete-message-tool-734)) — and the **ticket tool**: `ticket` opens the case's help ticket **with the subject in it** through the shipped ticket system — member-visible opening enforced in code, the subject's own ticket rate limit, honest causes on every refusal (#735 — see [Ticket tool](#ticket-tool-735)), and the **timeout tool**: `timeout` with the executor-owned [60 s, cap] clamp proven on the row, a required reason that becomes the Discord timeout reason, the card showing the applied duration, and the circuit-breaker refusal wired for both paths (#736 — see [Timeout tool](#timeout-tool-736)), and the **kick tool**: `kick` with a required reason that rides the Discord audit log through the platform outbound helper, the removal quoted on the card before staff approve, and the staff note surviving the removal it documents (#737 — see [Kick tool](#kick-tool-737)), and the **ban tool**: `ban` with the same required audit reason through the shipped `banMember` outbound, no message-history deletion, and the attempt row honest about every Discord cause (#738 — see [Ban tool](#ban-tool-738)), and the **circuit breaker**: auto kick/ban/timeout attempts counted per community in a rolling 5-minute window, tripping a persisted pause past the cap of 5 — gate, trip, and confirm-gated resume all live (#739 — see [Circuit breaker](#circuit-breaker-trip-gate-shipped-736-739)).
+    **Shipped now:** the guild settings and their Manage-Guild commands — `/automod status` and `/automodconfig` (channel, rules, master switch, per-action modes, timeout cap, daily case budget, breaker state + `safety resume`) (#725) — plus **staff referral intake**: `/automod refer` and the **Refer to automod** message context menu, which record a case (**A-n**) and ack where recommendations will post (#726), the **case-context collector** + lookup tools the judge reads (#727 — no user-facing surface of its own; see [Case context](#case-context)), the **LLM harness**: the case runner that judges a recorded case, records intent through mode-gated tools, and commits every action through the executor (#728 — see [Harness](#harness)), the **case card**: the interactive one-post-per-case outcome post whose Approve/Dismiss buttons execute suggested actions straight from the ledger (#730 — see [Case card](#case-card)), the **staff-note reconciler**: one note per considered subject (narrative or harness-filled), dropped notes for non-subjects, outcomes merged into the same note (#731 — see [Staff notes](#staff-notes)), and the **warning tool**: `warn` records a real formal warning through the shipped warnings system — member-facing reason, the guild's own warn-DM and expiry settings, the case note linked, evidence defaulted (#733 — see [Warning tool](#warning-tool-733)), and the **delete-message tool**: `delete_message` removes specific messages of this case — case allow-list, one user per call, Manage Messages pre-flight, honest per-id results (#734 — see [Delete-message tool](#delete-message-tool-734)) — and the **ticket tool**: `ticket` opens the case's help ticket **with the subject in it** through the shipped ticket system — member-visible opening enforced in code, the subject's own ticket rate limit, honest causes on every refusal (#735 — see [Ticket tool](#ticket-tool-735)), and the **timeout tool**: `timeout` with the executor-owned [60 s, cap] clamp proven on the row, a required reason that becomes the Discord timeout reason, the card showing the applied duration, and the circuit-breaker refusal wired for both paths (#736 — see [Timeout tool](#timeout-tool-736)), and the **kick tool**: `kick` with a required reason that rides the Discord audit log through the platform outbound helper, the removal quoted on the card before staff approve, and the staff note surviving the removal it documents (#737 — see [Kick tool](#kick-tool-737)), and the **ban tool**: `ban` with the same required audit reason through the shipped `banMember` outbound, no message-history deletion, and the attempt row honest about every Discord cause (#738 — see [Ban tool](#ban-tool-738)), and the **circuit breaker**: auto kick/ban/timeout attempts counted per community in a rolling 5-minute window, tripping a persisted pause past the cap of 5 — gate, trip, and confirm-gated resume all live (#739 — see [Circuit breaker](#circuit-breaker-trip-gate-shipped-736-739)), and the **moderation queue**: referral-modal intake (required problem + required context + a per-case read window), reporter anonymity until an audited Reveal press, and three first-click-wins case resolutions with `/set-moderation-queue` as the queue-channel alias (#771 — see [Moderation queue](#moderation-queue-771)).
     **Live verification:** the epic's shipped claims earn dated real-Discord records on the live-verification milestone before the feature is called verified. The intake ack never claims a recommendation was produced — the **harness posts its outcome separately**, after the ack. The mode gate itself (off/suggest/auto, guards, atomic claims) is already shipped in the executor (#729) — a suggest-mode decision is recorded as a pending ledger row and surfaces on the case card for staff approval.
 
 Auto-moderation is a staff-referred judgment pipeline: a staff member refers a message or a user, a separate LLM harness recommends staff actions against the guild's written rules, and each action type is gated `off` / `suggest` / `auto` by the guild. **Recommendations are the default** — enabling the master switch never starts kicking or banning by itself.
@@ -71,11 +71,30 @@ command for this and nothing in message-create opens a case.
 |--------|---------|
 | `message:` | **Full message link** of the offending message (right-click → *Copy Link*). Bare message ids are refused — the full link is what lets the bot cross-check the guild. |
 | `user:` | The member the referral is about. |
-| `note:` | Your explanation — stored as **case input** for the harness (max **1000** characters). |
 
-At least one of `message:` / `user:` is required. A successful referral stores
-one `automod_cases` row (status `recorded`), lands one `automod.refer` row in
-the admin audit trail, and acks ephemerally:
+At least one of `message:` / `user:` is required. **#771:** with a target
+given, the command opens the **referral modal** — the case is written when
+you SUBMIT the form, never before (the retired `note:` option's column is
+filled by the modal's required Problem field):
+
+| Modal field | Kind | Rule |
+|-------------|------|------|
+| **Problem — what is wrong?** | paragraph | **Required.** What is wrong with the reported message (max 1000). Goes to the harness; rendered `**Reported problem:**` on the card. |
+| **Required context (optional)** | paragraph | What the reviewer needs to see or know (e.g. "the thread that started this"). Verbatim case input; rendered `**Required context:**`. |
+| **Messages before (optional)** | short | How many messages to read **back** from the anchor — default **100**, cap **500**. |
+| **Messages after (optional)** | short | How many to read **forward** — default **20**, cap **500**. |
+
+Never a silent misread: a non-integer window field refuses **naming the
+exact field** (`` `Messages before` wasn't a number — nothing was filed. ``),
+and an over-cap value **clamps and the ack says so** (`… was above the 500
+cap — clamped to 500.`). The form lives 10 minutes; submitting after a bot
+restart or expiry answers `**Modal expired:** …  — nothing was filed.` with
+zero state written.
+
+A successful referral stores one `automod_cases` row (status `recorded`,
+including the modal's problem/context/window values and a one-line excerpt of
+the anchor), lands one `automod.refer` row in the admin audit trail, and
+acks ephemerally:
 
 ```text
 Case: **A-3** — recorded.
@@ -91,10 +110,12 @@ not even be merged yet). Every refusal names its specific cause; see
 
 Right-click a message → **Apps → Refer to automod** — the context-menu twin of
 `/automod refer` (#726). The right-clicked message IS the referral: no link to
-paste, no note option, no separately named user. Same battery, same refusal
-copy, same ack. Discord additionally resolves the target, so the platform
-already guarantees the guild and the invoker's view of the channel — and
-bot/system messages are refused here before anything runs
+paste, no separately named user. Since #771 the invoke opens the **same
+referral modal** the slash command opens — the full refusal battery and the
+case write run on SUBMIT. Same refusal copy, same ack. Discord additionally
+resolves the target, so the platform already guarantees the guild and the
+invoker's view of the channel — and bot/system messages are refused here
+BEFORE the modal even opens
 (`Cannot refer a bot or system message to automod — nothing was recorded.`).
 
 ### `/automodconfig` (admin — Manage Server in the picker AND the handler)
@@ -115,13 +136,27 @@ Every `/automodconfig` mutation lands an `automod.*` row in the admin audit
 trail and a config-change embed on the audit log channel (best-effort
 mirror).
 
+### `/set-moderation-queue` (admin — the queue alias, #771)
+
+| Subcommand | What it does |
+|------------|--------------|
+| `set channel:` | Point the **moderation queue** (the automod case-card channel) at a text channel. |
+| `clear` | Unset it (referrals then refuse naming the missing channel). |
+
+A **thin alias** over the already-shipped `automod_channel_id` setting — the
+ONE queue `channel set\|clear` under `/automodconfig` writes (one queue, one
+source of truth; last writer wins). Same admin gate (Manage Guild in the
+picker AND the handler), same `@everyone`-visibility warning, but its own
+audit verbs (`automod.queue_set` / `automod.queue_clear`) so the trail shows
+which surface a guild used. Discord-only, like `automodconfig`.
+
 ## Staff referral intake and refusals
 
 A referral is **intake only**: no model call, no enforcement, no budget
-consumption. BEFORE anything is stored, the full refusal battery runs — every
-gate has its OWN specific ephemeral cause (staff-facing copy always names the
-cause; never "check logs"), and nothing is recorded without the fix. Gate
-order:
+consumption. The full refusal battery runs on the modal **submit**, BEFORE
+anything is stored (#771 — the surfaces only open the form) — every gate has
+its OWN specific ephemeral cause (staff-facing copy always names the cause;
+never "check logs"), and nothing is recorded without the fix. Gate order:
 
 1. master switch · 2. automod channel unset · 3. channel not postable ·
 4. rules not set · 5. budget blocked · 6. budget exhausted · 7. no target ·
@@ -169,7 +204,8 @@ The exact replies (tests pin them byte-for-byte):
 **Target required:** include at least one of `message:` (a message link) or `user:` (the member) — nothing was recorded.
 ```
 
-**Note over cap** (gate 8 — also enforced by the slash option's max length)
+**Note over cap** (gate 8 — a belt since #771: the modal's Problem field
+already caps at 1000 characters)
 
 ```text
 **Note too long:** the referral note is 1200 characters — the cap is 1000. Shorten it — nothing was recorded.
@@ -217,8 +253,12 @@ Cannot refer a bot or system message to automod — nothing was recorded.
 ### What a recorded case is (and is not)
 
 - One `automod_cases` row: per-community `A-n` number, referrer, referred
-  message + its channel, target user, note, `status = recorded`. At least one
-  of message/user is set; the other pair stays NULL.
+  message + its channel, target user, note (= the modal's Problem),
+  `status = recorded`. At least one of message/user is set; the other pair
+  stays NULL. #771 also stores the modal's `required_context`, the per-case
+  `read_before`/`read_after` window (each clamped 0–500), a one-line
+  `message_snippet` of the anchor, and starts `incident_summary`,
+  `revealed_*` and `resolved_*` empty (migration `071_automod_case_queue`).
 - The **referrer is not a subject** merely because they filed, and the note is
   case input, NOT a staff note — intake writes **zero** `staff_notes` rows.
   The harness owns notes for considered users (locked decision 4).
@@ -251,13 +291,18 @@ no setting and no env var. The harness (#728) calls
 - **Guild rules text** — from the current settings. Intake already refused an
   empty rules text; if an admin clears it *after* recording, the case cannot
   be judged and the collector refuses naming that cause.
-- **Referral block** — referrer id, their explanation note, the message link
-  (channel + message ids when the case has one), and the named user — read
-  from the `automod_cases` row.
+- **Referral block** — referrer id, the modal's Problem (`note`) and
+  `required_context`, the message link (channel + message ids when the case
+  has one), and the named user — read from the `automod_cases` row.
 - **Message window**
-  - *Message referral:* the anchor message plus a bounded surround — up to
-    **40 older / 10 newer**, capped by Gork's own `read_discord` window
-    constants (single source, decision 45). Per message: id, author id,
+  - *Message referral:* the anchor message plus a bounded surround — **per
+    case** since #771: the referral modal's `read_before` / `read_after`
+    (defaults **100 back / 20 forward**, each capped at **500**, walked past
+    Discord's 100-per-fetch cap in pages; a mid-pagination read failure
+    refuses the case outright — never a half-read window). Rows written
+    before #771 keep the historical Gork-owned **40 older / 10 newer**
+    (the legacy `read_discord` constants remain the fallback, decision 45).
+    Per message: id, author id,
     content (capped at 500 chars with an honest `content_truncated` flag),
     timestamp, attachment **names** only. The anchor channel is re-checked
     against the **referrer's** current View Channel access (intake checked
@@ -383,7 +428,12 @@ unchanged — it still only says where recommendations will post.
    `last_run_error`. Entries whose `decision_log` `tool` starts with `_` are
    structured card meta (`_card_participants` powers the rebuild's bystander
    line, `_card_post_error` records a card that never posted) — never model
-   calls.
+   calls. Since #771 the run ALSO persists its final plain-text decision as
+   `incident_summary` (migration `071`, capped at 1000) — the card renders
+   it as `**What happened:**`; a failed run leaves it NULL rather than
+   faking an estimate. Runs whose case is unrevealed keep the reporter
+   anonymous on the placeholder and the interrupted notice too (the
+   reviewing placeholder reads `Reporter hidden until staff reveal them`).
 
 **Enforcement in the tool layer** (locked decision 4 — not prompt-only):
 consideration is mechanical — a user becomes considered by a RECORDED ACTION
@@ -410,8 +460,10 @@ tool call, the cap, or an empty-but-returned body). Only then
 `consumeAutomodCase` runs — **exactly once per run**. An HTTP 4xx/5xx, a
 network/timeout failure, or an AI-not-configured provider consumes
 **nothing** (test-pinned) and the post names the provider's own words:
-`**Referred by:** <@staff> — provider error: <cause>` (card header line —
-same copy convention as the case card, [Case card](#case-card)).
+`**Reporter:** hidden — provider error: <cause>` on an unrevealed case
+(#771 — the lead is anonymity-aware; a revealed case leads
+`**Referred by:** <@staff>`), card header line — same copy convention as
+the case card, [Case card](#case-card).
 
 **Isolation.** A broken provider, garbage tool arguments, or a repo failure
 can never kill the client: the runner never throws, detached work owns its
@@ -431,9 +483,17 @@ staff decision re-edits that same message from fresh ledger rows.
 
 **Embed shape.** Title `Automod — case A-n — decision` (green) or
 `— run failed` (red, the run died — the description names the specific
-cause). Description: the referrer-visible line (`**Referred by:** <@staff> —
-review complete.` etc.) plus, when the judge saw window participants it did
-not consider, a `**Seen, not considered:** <@id> …` line (bystanders only,
+cause). Description: the state line (`… — review complete.` etc.) under the
+#771 ANONYMITY LEAD — `**Reporter:** hidden` while the case is unrevealed,
+`**Referred by:** <@staff>` only after a Reveal press — followed by the
+queue lines, all derived from the case row alone (a rebuild renders
+byte-identically): `**Reported message:** [jump](url) — "snippet"`,
+`**Reported problem:**`, `**Required context:**`, `**What happened:**` (the
+persisted harness estimate — omitted, never faked, when absent), then the
+bystander line, then `**Window:** N before / M after` (the window the case
+actually reads; anchor cases only) and `**Resolved:** <@staff> — <label> · <stamp>`
+after a case-level resolution. When the judge saw window participants it did
+not consider: a `**Seen, not considered:** <@id> …` line (bystanders only,
 **never** with note refs; clamped to 25 names with an honest `… +N more`).
 Field `Decision`: per-subject sections —
 
@@ -456,14 +516,18 @@ columns; rounds are run-time data and show `?`).
 `Approve <action>` / `Dismiss <action>` with customIds
 `am:card:approve:<actionRowId>` / `am:card:dismiss:<actionRowId>` — the row
 id is all a click needs; the case, community, and current states are re-read
-from the ledger at click time. Buttons are clamped to
-**10 pending rows per card** (`AUTOMOD_CARD_MAX_BUTTON_ROWS`; 20 buttons in
-five ActionRows — inside Discord's 25-button/25-component message cap, which
-is why the clamp counts rows and not the 25 suggested in review). Overflow is
+from the ledger at click time. The row clamp is
+**10 pending rows per card** (`AUTOMOD_CARD_MAX_BUTTON_ROWS`), or **8** once
+the card carries the #771 **queue row** (`Reveal reporter` + the three
+resolutions as a packed ActionRow) — 8×2 + 4 = 20 buttons in five ActionRows,
+inside Discord's 25-button/25-component message cap, which is why the clamp
+counts rows and not the 25 suggested in review. Overflow is
 honest: a `**More pending rows:** N pending row(s) have no buttons on this
 card — …` line names the count, and the buttons **regenerate after earlier
 decisions** — approve or dismiss the front of the queue and the rebuilt card
-carries the tail.
+carries the tail. Once the CASE is resolved every button on the card renders
+disabled (row buttons too — and the arms re-check anyway, see [Moderation
+queue](#moderation-queue-771)).
 
 **Who may press.** Any staff member (the shipped `requireStaff` gate —
 ManageGuild or any `staff_roles` level; denial is the standard
@@ -546,6 +610,53 @@ above are the ledger's truth.` The ledger rows stay the operational truth.
 components; the Fluxer dispatcher has no component/customId path at all, so
 `am:card:*` is structurally unreachable there (the arms keep a shape belt
 answering the shipped Discord-only sentence anyway).
+
+## Moderation queue (#771)
+
+The automod channel IS the queue: one card per reported message, the reporter
+anonymous until staff lift it, and three explicit ways to close an item.
+
+**Reporter anonymity is the default.** While a case is unrevealed
+(`revealed_at IS NULL`) nothing renders the reporter — the card, the
+reviewing placeholder (`Reporter hidden until staff reveal them`), and the
+interrupted notice all keep the id off screen. The ONE way to lift it is the
+card's **Reveal reporter** button:
+
+- Single-winner: the FIRST staff press stamps WHO revealed WHICH case WHEN
+  (`revealed_at` / `revealed_by_user_id`) — an idempotent re-press answers
+  `**Already revealed:** <@who> … — no duplicate audit row.` and writes
+  NOTHING.
+- The reveal lands an `automod.reporter_revealed` admin-audit row and the
+  audit-channel embed (the `/automodconfig` mutation idiom).
+- The rebuild restores the shipped `**Referred by:** <@staff>` line
+  byte-for-byte and renders Reveal disabled.
+
+**Three case-level resolutions** (`am:case:resolve:{recommended|manual|none}:<caseId>`)
+— mutually exclusive, the **first valid staff click wins**:
+
+| Button | What it does |
+|--------|--------------|
+| **Take recommended action** | Loops every pending non-`no_action` row through the REAL executor (the same atomic claim + mode/staff/hierarchy/breaker guards the Approve button runs). Every outcome reports **per action** — partial failure never claims total success. |
+| **Manual action taken** | **Zero bot execution.** Pending suggestions are marked superseded on the ledger; the outcome lands on the subjects' SAME staff notes and the case's decision log. |
+| **No action taken** | Same as manual but `closed without sanction`. |
+
+A losing click (double press, race) sees
+``**Case:** A-n → **already resolved** — <@who> closed it as <label> … — nothing was run.``
+and mutates NOTHING. The claim stamps `resolved_at` / `resolution` /
+`resolved_by_user_id`, appends a `_queue_resolution` entry to the case's
+`decision_log`, lands an `automod.case_resolve` audit row, and the rebuild
+disables EVERY button. Row-level Approve/Dismiss on a resolved case answer
+`**Case resolved:** … per-row Approve/Dismiss are retired. Nothing was run.`
+(the belt for an old card whose rebuild failed).
+
+**Queue channel.** `/set-moderation-queue set|clear` (admin) is a thin alias
+over the SAME automod-channel setting `/automodconfig channel` writes — see
+[Commands](#commands).
+
+**Modal lifetime.** Pending referral forms are in-memory (10-minute TTL, a
+token inside the modal customId, one-shot on submit): a restart or expiry
+answers `**Modal expired:**` with zero state written — intake never
+half-reads.
 
 ## Staff notes (locked decision 4)
 
@@ -1200,7 +1311,15 @@ layer, and its system-prompt builder are `harness.js` / `harnessTools.js` /
 `prompt.js` (#728, see [Harness](#harness)); the run-metadata columns
 (`last_model`, `last_duration_ms`, `last_tool_names`, `decision_log`,
 `last_run_error`) ship in migration `070_automod_case_run_metadata` and are
-written only by the runner and its boot sweep.
+written only by the runner and its boot sweep. The #771 queue columns ship in
+migration `071_automod_case_queue` (`required_context`, `read_before` /
+`read_after`, `message_snippet`, `incident_summary`, `revealed_at` /
+`revealed_by_user_id`, `resolved_at` / `resolution` /
+`resolved_by_user_id`) with the repository's single-winner seams
+`revealAutomodCaseReporter` / `resolveAutomodCase` and
+`setAutomodCaseIncidentSummary` on the same repository (plus the
+`AUTOMOD_CASE_RESOLUTIONS` vocabulary). The referral modal (pending-form
+store + submit arm) is `src/features/automod/referModal.js`.
 
 ## Related
 

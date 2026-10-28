@@ -246,7 +246,7 @@ describe("migration 041 heals the real partial 034 cutover (#285 drill state)", 
   it("full migrate() boot on the partial DB heals both stragglers and stamps the current version", () => {
     const result = migrate.runMigrations(); // user_version is 0 → full replay path
     assert.equal(result.skipped, false);
-    assert.equal(result.version, 70);
+    assert.equal(result.version, 71);
 
     const stragglers = heal041.findStragglers(fixture.db, fixture.helpers);
     assert.deepEqual(stragglers, [], "no straggler may survive the repair");
@@ -373,14 +373,14 @@ describe("migration 041 heals the real partial 034 cutover (#285 drill state)", 
 
   it("re-running the full migrate() converges: user_version skip first, full replay second, zero schema drift", () => {
     const skip = migrate.runMigrations(); // #202 guard: version already 41
-    assert.deepEqual(skip, { skipped: true, version: 70, latest: 70 });
+    assert.deepEqual(skip, { skipped: true, version: 71, latest: 71 });
 
     const beforeSchema = fullSchema(fixture.db);
     const beforeCommunities = fixture.db.prepare("SELECT * FROM communities ORDER BY id").all();
     fixture.db.pragma("user_version = 0"); // force the FULL replay incl. 041
     const replay = migrate.runMigrations();
     assert.equal(replay.skipped, false);
-    assert.equal(replay.version, 70);
+    assert.equal(replay.version, 71);
     assert.deepEqual(fullSchema(fixture.db), beforeSchema, "replay must not drift the healed schema");
     assert.deepEqual(fixture.db.prepare("SELECT * FROM communities ORDER BY id").all(), beforeCommunities,
       "replay must not add communities rows");
@@ -433,7 +433,7 @@ describe("migration 041 is a pure no-op on a healthy DB", () => {
     const { runMigrations } = require("../src/db/migrate");
     api.db.pragma("user_version = 0");
     assert.equal(runMigrations().skipped, false);
-    assert.equal(Number(api.db.pragma("user_version", { simple: true })), 70);
+    assert.equal(Number(api.db.pragma("user_version", { simple: true })), 71);
     assert.deepEqual(fullSchema(api.db), schemaBefore);
     assert.deepEqual(api.db.prepare("SELECT * FROM communities ORDER BY id").all(), communitiesBefore);
   });
@@ -644,8 +644,8 @@ describe("migration 041 refuses to half-repair a tickets straggler (transcript-p
 describe("migration 041 registry wiring", () => {
   it("registry wiring is append-only: 041 stays directly after 040, new migrations extend the tail", () => {
     const { migrations, LATEST_VERSION } = require("../src/db/migrate");
-    assert.equal(migrations.length, 70);
-    assert.equal(LATEST_VERSION, 70);
+    assert.equal(migrations.length, 71);
+    assert.equal(LATEST_VERSION, 71);
     assert.equal(migrations[39].id, "040_schema_hygiene");
     assert.equal(migrations[40].id, "041_heal_partial_community_cutover");
     assert.equal(migrations[41].id, "042_events_core");
