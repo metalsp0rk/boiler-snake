@@ -13,8 +13,13 @@ COPY package.json package-lock.json ./
 RUN npm ci --omit=dev
 
 # ---- forge console assets (Vite + Shoelace). dist/ is dockerignored, so the
-# image builds it here. Chrome is not needed for the asset build. ----
+# image builds it here. Chrome is not needed for the asset build. npm ci still
+# compiles better-sqlite3, so this stage needs the same toolchain as deps. ----
 FROM node:22-bookworm-slim AS assets
+
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends python3 make g++ \
+  && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 ENV PUPPETEER_SKIP_DOWNLOAD=1
