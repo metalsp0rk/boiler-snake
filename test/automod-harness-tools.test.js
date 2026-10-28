@@ -326,6 +326,26 @@ test("the prompt states the timeout law — duration + required reason + executo
   assert.match(sys, /the reason becomes the Discord timeout reason/);
 });
 
+// ── #737: kick — required reason at dispatch ───────────────────────────────
+
+test("the kick schema makes `reason` REQUIRED — it rides the Discord audit log - issue #737", () => {
+  const kick = buildActionSchemas(modes()).find((t) => t.function.name === "kick");
+  assert.deepEqual(kick.function.parameters.required, ["user_id", "reason"]);
+  assert.match(kick.function.description, /`reason` is required/);
+});
+
+test("kick without `reason` refuses with the audit-log law and keeps the slot - issue #737", async () => {
+  const d = dispatcherFor();
+  const refused = await d.executeTool("kick", { user_id: SUB });
+  assert.match(refused, /^`kick` needs `reason` — it rides the Discord audit log/);
+  assert.match(refused, /not recordable/);
+  assert.deepEqual(d.actionIntents, [], "a refused call records nothing");
+
+  const ok = await d.executeTool("kick", { user_id: SUB, reason: "raid leader, second wave" });
+  assert.match(ok, /^Recorded: kick/, "the refusal must not burn the (action,user) slot");
+  assert.deepEqual(d.actionIntents.at(-1).params, { reason: "raid leader, second wave" });
+});
+
 // ── #734: delete tool dispatch law ─────────────────────────────────────────
 
 test("delete_message defaults to the referred message; user-only cases must name ids - issue #734", async () => {

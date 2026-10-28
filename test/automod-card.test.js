@@ -274,6 +274,24 @@ test("suggested timeout shows the APPLIED duration and the clamp proof - issue #
   );
 });
 
+test("suggested kick quotes the reason that will ride the Discord audit log - issue #737", () => {
+  const { cid, caseRow } = seededCase("kick-suggested");
+  const row = db.getAutomodAction(
+    suggest(cid, caseRow, "kick", SUB2, { reason: "raid coordinator, second wave" }).id,
+  );
+  const field = decisionField(card.buildCardPayload({ caseRow, rows: [row], summaryText: "s" }));
+  assert.match(
+    field,
+    /`kick` — \*\*pending approval\*\* — a staff decision is due — Approve removes the member from this server with the reason below on the audit log; Dismiss leaves them\./,
+  );
+  assert.match(field, /Reason: "raid coordinator, second wave"\./);
+
+  // A legacy/direct row without a reason stays honest — never an empty quote.
+  const bare = db.getAutomodAction(suggest(cid, caseRow, "kick", SUB, {}).id);
+  const bareField = decisionField(card.buildCardPayload({ caseRow, rows: [bare], summaryText: "s" }));
+  assert.match(bareField, /Reason: none recorded\./);
+});
+
 test("card buttons clamp honestly: 10 pending rows max, the overflow line names the rest - issue #730", () => {
   const { cid, caseRow } = seededCase("clamp");
   const acts = ["warn", "timeout", "kick", "ban", "delete_message", "ticket"];

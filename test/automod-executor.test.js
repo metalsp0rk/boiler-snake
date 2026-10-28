@@ -37,7 +37,7 @@ function makeRecorder(overrides = {}) {
   const calls = [];
   // Last Discord timeout reason — #736 pins that the STATED reason rides
   // the audit entry (calls stay id-only so existing pins never churn).
-  const record = { lastTimeoutReason: null };
+  const record = { lastTimeoutReason: null, lastKickReason: null };
   const deps = {
     fetchMemberRoleIds: async () => {
       calls.push("roles");
@@ -81,6 +81,16 @@ function makeRecorder(overrides = {}) {
         calls.push("kick");
       },
     }),
+    // #737: the kick rides the outbound helper through this seam (the
+    // fake KICK_SCRIPT below scripts successes and Discord causes).
+    createKick: async (_cid, userId, { reason } = {}) => {
+      calls.push("kick");
+      record.lastKickReason = reason ?? null;
+      if (overrides.kickError) {
+        return { ok: false, error: overrides.kickError, code: overrides.kickCode };
+      }
+      return { ok: true };
+    },
     createBan: async (guildId, userId, { reason } = {}) => {
       calls.push(`ban:${userId}`);
     },
@@ -541,6 +551,93 @@ describe("timeout clamp — [60 s, min(guild cap, 28 days)]", () => {
     } finally {
       db.clearAutomodPause(cid);
     }
+  });
+});
+
+// ── #737: the kick tool — outbound helper, audit reason, honest failures ───
+
+describe("kick tool — required reason rides the audit log through the outbound kick helper", () => {
+  it("the stated reason becomes the audit reason (case-tagged) on the outbound call - issue #737", async () => {
+    const cid = freshCommunity();
+    setMode(cid, "kick", "auto");
+    const { record, promise } = run(cid, "kick", {
+      exec: { caseId: 240, params: { reason: "raid leader, second wave" } },
+    });
+    const res = await promise;
+    assert.equal(res.ok, true);
+    assert.equal(res.result, "Kicked <@200000000000000002>.");
+    assert.equal(
+      record.lastKickReason,
+      "raid leader, second wave (automod case #240)",
+      "the audit-log sentence is the STATED reason, case-tagged",
+    );
+  });
+
+  it("a legacy row without a reason rides the generic audit line (belt) - issue #737", async () => {
+    const cid = freshCommunity();
+    setMode(cid, "kick", "auto");
+    const { record, promise } = run(cid, "kick", { exec: { caseId: 241 } });
+    const res = await promise;
+    assert.equal(res.ok, true, "the reason law lives at dispatch — the executor belt must not dead-end");
+    assert.equal(record.lastKickReason, "Auto-mod kick (case #241)");
+  });
+
+  it("a Discord failure refuses with the outbound cause verbatim, nobody kicked twice - issue #737", async () => {
+    const cid = freshCommunity();
+    setMode(cid, "kick", "auto");
+    const { calls, promise } = run(cid, "kick", {
+      recorderOverrides: { kickError: "Missing Permissions", kickCode: 50013 },
+      exec: { caseId: 242, params: { reason: "hierarchy problem case" } },
+    });
+    const res = await promise;
+    assert.equal(res.ok, false);
+    assert.match(
+      res.error,
+      /kickMember: user .* failed: Missing Permissions — nobody was kicked\.|Missing Permissions — nobody was kicked\./,
+    );
+    assert.equal(calls.filter((c) => c === "kick").length, 1, "exactly one kick ATTEMPT (the breaker counts it)");
+    assert.equal(
+      repo.getAutomodActionBySlot({ communityId: cid, caseId: 242, subjectUserId: SUBJECT, action: "kick" }).state,
+      "refused",
+    );
+  });
+
+  it("breaker pause refuses the auto kick and the outbound is never called - issue #737", async () => {
+    const cid = freshCommunity();
+    setMode(cid, "kick", "auto");
+    db.setAutomodPause(cid, { reason: "ban storm" });
+    try {
+      const { calls, promise } = run(cid, "kick", {
+        exec: { caseId: 243, params: { reason: "raid" } },
+      });
+      const res = await promise;
+      assert.equal(res.ok, false);
+      assert.match(res.error, /circuit breaker is tripped/);
+      assert.match(res.error, /`kick` runs stay dark/);
+      assert.ok(!calls.includes("kick"), "a paused kick never reaches the outbound");
+    } finally {
+      db.clearAutomodPause(cid);
+    }
+  });
+
+  it("idempotent Approve: a second click reports the first kick, never a second attempt - issue #737", async () => {
+    const cid = freshCommunity();
+    setMode(cid, "kick", "suggest");
+    const first = run(cid, "kick", {
+      exec: { caseId: 244, params: { reason: "raid" } },
+    });
+    const recorded = await first.promise;
+    assert.equal(recorded.ok, true, "suggest mode records the pending row");
+    const row = rowsFor(cid, 244)[0];
+
+    const rec = makeRecorder();
+    const a1 = await executor.approveSuggestion({ actionRowId: row.id, claimant: "staff-1", deps: rec.deps });
+    assert.equal(a1.ok, true);
+    const a2 = await executor.approveSuggestion({ actionRowId: row.id, claimant: "staff-1", deps: rec.deps });
+    assert.equal(rec.calls.filter((c) => c === "kick").length, 1, "ONE outbound kick across two clicks");
+    assert.equal(a2.ok, true);
+    assert.match(String(a2.result ?? ""), /Kicked <@200000000000000002>\./, "the second click reports the existing result");
+    assert.equal(a2.deduped, true);
   });
 });
 

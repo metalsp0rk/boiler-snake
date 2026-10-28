@@ -324,6 +324,19 @@ function renderRowLine(row, ctx = {}) {
             (reason ? `Reason: "${reason}".` : "Reason: none recorded.")
           );
         }
+        if (act === "kick") {
+          // #737: a suggested kick quotes the reason that will ride the
+          // Discord audit log — staff see the defensible sentence before
+          // the removal happens. Approve removes; Dismiss leaves the member.
+          const params = parseAutomodActionParams(row)?.params ?? {};
+          const reason = snippet(params.reason ?? "", 160);
+          return (
+            "a staff decision is due — Approve removes the member from this " +
+            "server with the reason below on the audit log; Dismiss leaves " +
+            "them. " +
+            (reason ? `Reason: "${reason}".` : "Reason: none recorded.")
+          );
+        }
         return "a staff decision is due — Approve runs the shared executor, Dismiss declines.";
       }
       case "approved":
