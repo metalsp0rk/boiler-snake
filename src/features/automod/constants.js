@@ -170,6 +170,18 @@ const AUTOMOD_NOTE_ACTION_ENTRY_MAX = 200;
  *  section would otherwise crowd it out of the 2000-char cap. */
 const AUTOMOD_NOTE_MIN_NARRATIVE = 160;
 
+/**
+ * State word on a note's **Actions:** line when the note is created by the
+ * two-phase commit PRE-PASS (#733) for an AUTO-mode action: the action is
+ * recorded and about to run; the real commit state lands as a merged entry
+ * under the note's **Outcome:** header BEFORE the case card posts (the
+ * shipped card.updateNoteOutcome merge law — identical lines never
+ * duplicate). Suggest-mode pre-pass lines carry "pending approval" instead
+ * (deterministic: a suggest run can only record the suggestion row), and a
+ * `no_action` line is "recorded decision" from birth (it IS the decision).
+ */
+const AUTOMOD_NOTE_PLANNED_LABEL = "planned";
+
 /** Slash command builders use these for their option choices. */
 const MODE_CHOICES = AUTOMOD_MODES.map((m) => ({ name: m, value: m }));
 const ACTION_CHOICES = AUTOMOD_ACTIONS.map((a) => ({ name: a, value: a }));
@@ -224,4 +236,6 @@ module.exports = {
   AUTOMOD_NOTE_TRUNCATION_MARKER,
   AUTOMOD_NOTE_ACTION_ENTRY_MAX,
   AUTOMOD_NOTE_MIN_NARRATIVE,
+  // Warning tool (#733): the two-phase note pre-pass state word.
+  AUTOMOD_NOTE_PLANNED_LABEL,
 };

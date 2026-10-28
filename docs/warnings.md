@@ -161,6 +161,35 @@ On `/warn add`:
 | `message` | Validated Discord jump URL for **this** server | Staff: info / export / issue confirm. **Not** in member DMs or `/warn mine` |
 | `evidence` | Freeform notes (max 500 chars) | Same as above |
 
+## Automod-issued warnings (#733)
+
+Auto-moderation's `warn` tool ([Auto-moderation → Warning tool](automod.md#warning-tool-733))
+files through this SAME record path — an automod warning is a normal **W-n**
+row, not a parallel store:
+
+- **Issuer** is the run's referring staff member (the case referrer; a claim
+  label only when no staff id is known), so `/warn list` and `/warn info`
+  read exactly like slash-issued warnings.
+- **Same numbering, same surfaces:** automod warnings appear in `/warn list`,
+  `/warn count`, `/warn mine`, and exports like any other, void with
+  `/warn void` as usual, and expire through the same opt-in ticker.
+- **The guild's own settings govern:** the member DM follows `/setwarn dm`
+  and the expiry follows `/setwarn expiry` (a proposal carries its own
+  `expiresDays` only when the card row explicitly proposed one). There is
+  no automod-specific warn setting.
+- Each automod warning links the case's ONE staff note (`related_note_id`)
+  and its `message` evidence defaults to the referred message's jump link —
+  both visible to staff in `/warn info`, both invisible to the member (the
+  DM carries the standard framing and the reason only).
+- A suggested automod warn is **not yet a warning** — the record is filed
+  when auto mode commits or staff click **Approve** on the case card;
+  a double Approve never files twice.
+- Staff members are exempt: automod never warns a holder of a
+  [staff role](staff-roles.md) (#723 decision 6).
+
+There is no separate command for automod warnings — everything runs through
+the existing `/warn` surface.
+
 ## Export
 
 ```bash
@@ -219,6 +248,7 @@ See [Database Schema](database.md) for indexes and migrations `009_warnings`, `0
 ## Related
 
 - [Staff Notes](staff-notes.md)
+- [Auto-moderation](automod.md) — the `warn` action tool files through this system (#733)
 - [Staff roles](staff-roles.md) — junior vs senior; who passes the staff gate
 - `/userinfo` — staff card with note/warning counts and drill-down buttons
 - [ROADMAP — Warning System](https://github.com/metalsp0rk/boiler-snake/blob/main/roadmap/warnings.md#6-warning-system)

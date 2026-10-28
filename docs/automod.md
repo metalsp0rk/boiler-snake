@@ -1,8 +1,8 @@
 # Auto-moderation (epic #723)
 
 !!! abstract "Ship state — this page tracks the epic"
-    **Shipped now:** the guild settings and their Manage-Guild commands — `/automod status` and `/automodconfig` (channel, rules, master switch, per-action modes, timeout cap, daily case budget, breaker state + `safety resume`) (#725) — plus **staff referral intake**: `/automod refer` and the **Refer to automod** message context menu, which record a case (**A-n**) and ack where recommendations will post (#726), the **case-context collector** + lookup tools the judge reads (#727 — no user-facing surface of its own; see [Case context](#case-context)), the **LLM harness**: the case runner that judges a recorded case, records intent through mode-gated tools, and commits every action through the executor (#728 — see [Harness](#harness)), and the **case card**: the interactive one-post-per-case outcome post whose Approve/Dismiss buttons execute suggested actions straight from the ledger (#730 — see [Case card](#case-card)), and the **staff-note reconciler**: one note per considered subject (narrative or harness-filled), dropped notes for non-subjects, outcomes merged into the same note (#731 — see [Staff notes](#staff-notes)).
-    **Landing in sibling issues:** the individual action tools' surfaces (#733–#738), plus the circuit breaker trip logic (#739). The intake ack never claims a recommendation was produced — the **harness posts its outcome separately**, after the ack. The mode gate itself (off/suggest/auto, guards, atomic claims) is already shipped in the executor (#729) — a suggest-mode decision is recorded as a pending ledger row and surfaces on the case card for staff approval.
+    **Shipped now:** the guild settings and their Manage-Guild commands — `/automod status` and `/automodconfig` (channel, rules, master switch, per-action modes, timeout cap, daily case budget, breaker state + `safety resume`) (#725) — plus **staff referral intake**: `/automod refer` and the **Refer to automod** message context menu, which record a case (**A-n**) and ack where recommendations will post (#726), the **case-context collector** + lookup tools the judge reads (#727 — no user-facing surface of its own; see [Case context](#case-context)), the **LLM harness**: the case runner that judges a recorded case, records intent through mode-gated tools, and commits every action through the executor (#728 — see [Harness](#harness)), the **case card**: the interactive one-post-per-case outcome post whose Approve/Dismiss buttons execute suggested actions straight from the ledger (#730 — see [Case card](#case-card)), the **staff-note reconciler**: one note per considered subject (narrative or harness-filled), dropped notes for non-subjects, outcomes merged into the same note (#731 — see [Staff notes](#staff-notes)), and the **warning tool**: `warn` records a real formal warning through the shipped warnings system — member-facing reason, the guild's own warn-DM and expiry settings, the case note linked, evidence defaulted (#733 — see [Warning tool](#warning-tool-733)).
+    **Landing in sibling issues:** the remaining action tools' surfaces (#734–#738), plus the circuit breaker trip logic (#739). The intake ack never claims a recommendation was produced — the **harness posts its outcome separately**, after the ack. The mode gate itself (off/suggest/auto, guards, atomic claims) is already shipped in the executor (#729) — a suggest-mode decision is recorded as a pending ledger row and surfaces on the case card for staff approval.
 
 Auto-moderation is a staff-referred judgment pipeline: a staff member refers a message or a user, a separate LLM harness recommends staff actions against the guild's written rules, and each action type is gated `off` / `suggest` / `auto` by the guild. **Recommendations are the default** — enabling the master switch never starts kicking or banning by itself.
 
@@ -349,15 +349,25 @@ unchanged — it still only says where recommendations will post.
    nothing mutates until commit, and each tool result tells the model so
    (`applied at commit`; suggest-mode lines read
    `**Status:** awaiting staff approval`).
-6. When the model stops (or the round cap hits), the harness **commits**:
-   every recorded action goes through the executor (`executeAutomodAction`
-   with `claimant: "harness"`) — the executor owns the mode gate, staff /
-   hierarchy guards, atomic claims, and the timeout clamp; the harness
-   clamps nothing itself. Then the **staff-note reconciler** (#731,
-   [Staff notes](#staff-notes)) writes through the real `createStaffNote`
-   (author = the bot's user id): exactly one note per considered subject,
-   narrative or harness-filled, and queued note calls for users with no
-   action intent are DROPPED — zero rows plus one honest card line.
+6. When the model stops (or the round cap hits), the harness **commits in
+   two phases around the actions** (#733): first the **note pre-pass** — the
+   one-note law enforced BEFORE any action runs (exactly one note per
+   considered subject through the real `createStaffNote`, author = the bot's
+   user id, narrative or harness-filled; the case's existing automod note is
+   REUSED, never doubled) — so a `warn` intent records its subject's note as
+   `relatedNoteId` and the warning links the case's ONE staff note, auto AND
+   a later Approve. Then every recorded action goes through the executor
+   (`executeAutomodAction` with `claimant: "harness"`) — the executor owns
+   the mode gate, staff / hierarchy guards, atomic claims, and the timeout
+   clamp; the harness clamps nothing itself. Finally the **note post-pass**
+   completes the note story (#731 + #733): queued note calls for users with
+   no action intent are DROPPED (zero rows plus one honest card line), and
+   each action's real commit outcome MERGES into the subject's same note
+   through the card's outcome-merge law — identical lines never duplicate,
+   so a suggest run writes the note once and never touches it again, while
+   auto rows gain their executed/refused entry BEFORE the card posts. Either
+   pass is a guarded hook: a dead one degrades to a partial-failure card
+   line, never a dead commit.
 7. The outcome **edits the placeholder** (or posts fresh when the
    placeholder never landed) into the interactive **case card** (#730,
    [Case card](#case-card)): the Decision field renders from a FRESH re-read
@@ -429,7 +439,7 @@ Field `Decision`: per-subject sections —
 
 ```text
 **Subject:** <@user> · **Staff note:** N-7
-  - `warn` — **pending approval** — a staff decision is due — Approve runs the shared executor, Dismiss declines.
+  - `warn` — **pending approval** — a staff decision is due — Approve records the formal warning and DMs the member per the server's warn settings. Proposed reason: "posted targeted harassment". Evidence: <https://discord.com/channels/…/…/…>. Expiry: in 14 day(s) — as proposed on this row. (#733 — the warn line shows the member-visible record: the reason the warning will file, the evidence link the row carries or the referred message's jump link, and the expiry the warning will honour; see [Warning tool](#warning-tool-733).)
   - `timeout` — **executed** — Timed out <@user> for 120s (clamped from 99999s) — …
 ```
 
@@ -513,8 +523,10 @@ The identical line never duplicates (a re-click leaves the note byte-identical,
 no edit stamp); the narrative is cut only with the explicit
 `…[narrative truncated to fit the note cap]` marker; and a note that vanished
 or was erased is a reported warning with the card still updated — never a
-dead end. Auto mode writes its outcome into the note at birth (the note is
-created already carrying `executed` / `refused` state).
+dead end. Auto mode never waits for a click for its record: the note
+PRE-PASS writes it with the action's planned state and the POST-PASS merges
+the real `executed` / `refused` entry under the same `**Outcome:**` header
+BEFORE the card posts (#733 two-phase commit — see [Harness](#harness)).
 
 **Rebuild law.** Card updates render ONLY from a fresh read of
 `automod_case_actions` for the case — never from the old embed. An hour-old
@@ -540,7 +552,9 @@ answering the shipped Discord-only sentence anyway).
 Every case leaves its human record in the existing
 [staff notes](staff-notes.md) system — no parallel table, no new commands, no
 special delete path (`/note delete`'s confirm step stays the ONLY way to
-remove one). Reconciliation runs at COMMIT (enforcement, not prompt hope):
+remove one). Reconciliation runs at COMMIT — in the two-phase order (#733):
+notes are written BEFORE the actions run, outcomes merge in AFTER (enforcement,
+not prompt hope):
 
 **Who gets exactly one note:**
 
@@ -571,8 +585,12 @@ remove one). Reconciliation runs at COMMIT (enforcement, not prompt hope):
 
 - The model's narrative when it wrote one; otherwise the marker
   `**Narrative:** harness-filled — the model recorded no narrative for this user; this note is rebuilt from the structured decision.`
-- `**Actions:**` lines listing each recorded action for that user with its
-  outcome — several actions against one user still share ONE note.
+- `**Actions:**` lines listing each recorded action for that user in its
+  PLANNED state (suggest: *pending approval*; auto: *planned*; `no_action`:
+  *recorded decision*) — several actions against one user still share ONE
+  note. The commit post-pass then merges each action's real outcome entry
+  into the same note under `**Outcome:**` (identical lines never duplicate,
+  so a suggest run's note is written once and never rewritten).
 - `**Evidence:** <message link>` when the case carries an anchor message.
 - The discovery suffix `(automod case A-n)` at the end — together with the
   bot author it is how the card and later decisions find THIS case's note;
@@ -616,6 +634,84 @@ the record should exist without a warning.
 - The call itself is what marks a user considered — the judge must not use it
   as a bystander bin (the prompt says so, and the reconciler enforces what
   actually gets written).
+
+## Warning tool (#733)
+
+The `warn` action tool is shipped — the judge's formal sanction through the
+existing [warnings](warnings.md) system. Every recorded warn is a real
+`createWarning` row that shows up in `/warn list` and `/warn mine` with
+normal **W-n** numbering — never a parallel automod warning store.
+
+**Member-facing copy.** The tool's `reason` is what the warned member reads:
+it becomes the formal record's reason and the ONLY prose the warning DM
+carries. The staff-note body, the model's rationale, note refs, and the
+evidence link NEVER enter the DM — the payload is the standard framing
+`/warn add` ships (W-n / issuer / active count / reason / when, plus
+expires), built by the shared warnings DM builder. The tool schema says so
+to the model:
+
+```text
+Record a FORMAL warning against the user (the permanent warnings record, distinct from a staff note). Read their history first. `reason` is MEMBER-FACING — the warned user reads it verbatim in their warning DM, so write what they did, never your private rationale or anything from a staff note.
+```
+
+**No new settings — the guild's own warn settings govern**, exactly like
+`/warn add` (there is no automod-specific DM or expiry knob):
+
+- `warn_dm_members` (`/setwarn dm`) decides whether the member gets the
+  standard warning DM; the DM's **Issued by** shows the referring staff (or
+  approving run's issuer) as a mention — never a note ref or staff label.
+- `warn_expiry_days` (`/setwarn expiry`) decides the expiry: a row's own
+  `expiresDays` proposal wins when present (same override law as `/warn
+  add`, `0` = never), otherwise the CURRENT guild setting applies when the
+  warning is filed (auto at commit, or at Approve time later).
+- The case's ONE staff note links the warning (`related_note_id`): the
+  two-phase PRE-PASS writes the note before the action runs and records the
+  link on the row, so auto AND a later Approve both carry it; replaying an
+  older row re-discovers the note through the shared `(automod case A-n)`
+  discovery law. Best-effort by contract — an unresolvable note never costs
+  the warning.
+- `evidence_message_url` defaults to the referred message's jump link,
+  recorded once when the intent is made (an explicit link always wins; a
+  case with no anchor message carries no evidence — never a fabricated
+  link). Evidence is staff-only: it rides the warning record and the card,
+  not the DM.
+
+**Approve and auto are the same path.** A suggest-mode warn records the
+pending row; Approve runs the shared executor — the gate is mode, never the
+code path (locked decision 2). The executed row's result line is the
+staff-visible outcome:
+
+```text
+Formal warning W-7 recorded against <@user> (issuer <issuer-id>). Member notified by DM.
+```
+
+```text
+Formal warning W-7 recorded against <@user> (issuer <issuer-id>). Member DM skipped — member DMs are disabled for this server (`/setwarn dm`).
+```
+
+```text
+Formal warning W-7 recorded against <@user> (issuer <issuer-id>) — warning recorded, member DM failed: Cannot send messages to this user.
+```
+
+The last line is the partial success (AGENTS rule 5): a failed DM NEVER
+rolls the warning back — the card line and the note outcome carry the
+cause. Approving twice does not create two warnings (the executor's
+claim-before-commit owns that, as for every mutating action).
+
+**The suggested row shows the member-visible record.** A suggested warn's
+card line quotes the proposed reason, the evidence link the row carries (or
+the referred message's jump link), and the expiry the warning will honour —
+labeled *as proposed on this row* or *current guild setting* (the setting
+still governs at Approve time). Staff never guess what the DM will contain,
+and staff-only text never appears there.
+
+**Staff are never auto-warned.** `warn` — like every mutating action —
+refuses a subject holding ANY `staff_roles` role or sitting at/above the
+bot's highest role; the refusal is recorded and still counts as
+consideration (#723 decision 6).
+
+**Fluxer: explicit no-parity** (epic decision 8). The warn tool is part of
+the Discord-only pipeline; it adds no Fluxer surface of its own.
 
 ## Daily case budget
 
@@ -671,7 +767,8 @@ written only by the runner and its boot sweep.
 ## Related
 
 - [Commands reference](commands/index.md) · [Configuration](configuration.md)
-- [Warnings](warnings.md) (the formal record the `warn` tool will issue) ·
+- [Warnings](warnings.md) (the formal record the `warn` tool issues — see
+  [Warning tool](#warning-tool-733)) ·
   [Staff notes](staff-notes.md) (always-on note tool) ·
   [Help tickets](tickets.md) (the `ticket` tool's target) ·
   [Honeypot](honeypot.md) (the `safety resume` confirm idiom precedent)

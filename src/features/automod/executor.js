@@ -41,17 +41,43 @@
  *
  * Deps seam: every Discord touch is injectable (`deps`), with production
  * defaults wired to `deps.client` (a discord.js v14 Client). The `warn`
- * default calls the real `createWarning` service. The `ticket` default
- * deliberately refuses with a specific #735 sentence — the ticket tool
- * ships in its own issue. The circuit breaker gate (#739) will add its
- * `isAutomodPaused` check inside runClaimedAction — one choke point, both
- * auto and approve already flow through it.
+ * default calls the real `createWarning` service AND the guild's warn-DM
+ * setting (#733 — see the warn handler's member-facing law). The `ticket`
+ * default deliberately refuses with a specific #735 sentence — the ticket
+ * tool ships in its own issue. The circuit breaker gate (#739) will add
+ * its `isAutomodPaused` check inside runClaimedAction — one choke point,
+ * both auto and approve already flow through it.
+ *
+ * THE WARN TOOL (#733, epic #723) — member-facing law lives HERE:
+ *  - `params.reason` is the MEMBER-FACING reason: it is the formal record's
+ *    reason and the ONLY prose the warning DM carries. The staff-note body,
+ *    the model's rationale, note refs, and evidence NEVER enter the DM
+ *    (locked contract: "Do not put the staff note body in the DM"); the DM
+ *    is the standard framing `/warn add` ships, built by the shared
+ *    `buildWarnDmPayload` (src/features/warnings/helpers.js).
+ *  - The guild's `warn_dm_members` gate (warnDmEnabled) decides whether the
+ *    DM goes, exactly like `/warn add` (no automod-specific setting); the
+ *    send itself is the `deps.sendWarnDm` seam so tests record calls. A DM
+ *    failure never rolls the warning back — the executed result line
+ *    reports `warning recorded, member DM failed: <cause>` (rule 5).
+ *  - `relatedNoteId` = the case's ONE staff note for that user (#731's
+ *    row). The harness's two-phase commit (#733) injects it when the intent
+ *    is recorded (so the suggestion row carries it and Approve replays
+ *    it); a row without it resolves the note through `deps.resolveCaseNoteId`
+ *    (production default: the shared card.js discovery law in
+ *    ./caseNote.js — author = bot/'automod' + the `(automod case A-n)`
+ *    suffix). Best-effort by contract: an unresolvable note NEVER costs the
+ *    warning — the note itself is the record, the link is the convenience.
+ *  - Expiry honours the guild's `warn_expiry_days` (guildDefaultDays —
+ *    `params.expiresDays` overrides per row, same law as `/warn add`).
  */
 
 const {
   getGuildSettings,
   listStaffRoles,
   createWarning,
+  countActiveWarnings,
+  getAutomodCaseById,
   now,
   insertAutomodActionSuggestion,
   claimAutomodActionSlot,
@@ -62,6 +88,12 @@ const {
   getAutomodAction,
   parseAutomodActionParams,
 } = require("../../db");
+// READ-ONLY imports of the shipped warnings feature (#733): the same member
+// DM gate and the same standard DM framing `/warn add` uses — no parallel
+// warning copy. (Deliberate cross-feature import named by the #733 contract;
+// NOT the gork isolation case of locked decision 7.)
+const { warnDmEnabled, buildWarnDmPayload } = require("../warnings/helpers");
+const { findCaseNoteRow } = require("./caseNote");
 const {
   AUTOMOD_ACTIONS,
   AUTOMOD_MODES,
@@ -203,10 +235,24 @@ function requireClient(deps) {
 }
 
 /**
+ * Member-facing "Issued by" label for the warning DM (#733): a snowflake
+ * issuer (the referring staff member / the approving staff id) renders as a
+ * mention; anything else ("automod", a legacy label) gets the neutral
+ * moderation-team wording. NEVER a note ref or staff-only label.
+ */
+function warnDmIssuerLabel(issuerId) {
+  const id = String(issuerId ?? "");
+  return /^[0-9]{5,20}$/.test(id) ? `<@${id}>` : "the moderation team";
+}
+
+/**
  * Production default for every Discord seam. Each seam is individually
  * overridable: `deps.fetchMemberRoleIds = ...` replaces just the role read.
  * With no deps.client the seams throw the specific "no Discord client"
  * error, which the executor records as a `failed` row — never a silent run.
+ * The #733 warn seams (`fetchGuildName`, `sendWarnDm`, `resolveCaseNoteId`)
+ * degrade per the warn handler's own error paths — a missing client shows
+ * up as the DM-failure partial line, never a lost warning.
  */
 function buildDefaultDeps(deps = {}) {
   const guildOf = (guildId) => {
@@ -242,6 +288,40 @@ function buildDefaultDeps(deps = {}) {
       guildOf(guildId).members.fetch(String(userId)),
     createBan: async (guildId, userId, { reason }) =>
       guildOf(guildId).bans.create(String(userId), { reason }),
+    // ── #733 warn-tool seams ───────────────────────────────────────────────
+    // Guild display name for the warning DM (cache read; a plain no-guild
+    // "this server" fallback — this read must never kill the DM attempt).
+    fetchGuildName: async (guildId) => {
+      const guild = deps?.client?.guilds?.cache?.get?.(String(guildId));
+      return guild?.name ?? "this server";
+    },
+    // The member DM. THROWING with a specific cause is the contract — the
+    // warn handler turns it into the partial-success line (rule 5); the
+    // warnings feature's tryDmUser swallows the cause, which is exactly why
+    // this seam does not use it (staff must see WHY the DM failed).
+    sendWarnDm: async (userId, payload) => {
+      const client = deps?.client;
+      if (!client?.users?.fetch) {
+        throw new Error("no Discord client users cache — the member DM cannot be sent");
+      }
+      const user = await client.users.fetch(String(userId));
+      if (!user || typeof user.send !== "function") {
+        throw new Error(`member ${userId} did not resolve to a DM-able user`);
+      }
+      await user.send(payload);
+    },
+    // The case's ONE automod note for this subject → its staff_notes row id
+    // (= createWarning's relatedNoteId). Production default = the shared
+    // card.js discovery law (./caseNote.js), read against the real db.
+    resolveCaseNoteId: async ({ communityId, subjectUserId, caseRow }) => {
+      const note = findCaseNoteRow({
+        communityId,
+        userId: subjectUserId,
+        caseNumber: caseRow?.case_number,
+        botUserId: deps?.client?.user?.id ?? null,
+      });
+      return note?.id ?? null;
+    },
   };
 
   // Shallow merge: explicit seams win over the defaults.
@@ -664,14 +744,60 @@ function buildActionHandler(act, { resolved, row, params, referrerUserId = null 
         // Real formal warning (locked decision 3): createWarning owns the
         // reason/evidence/expiry validation and THROWS typed errors —
         // translated to {ok:false} here (rule 6: services don't throw).
+        //
+        // #733 MEMBER-FACING LAW: `params.reason` is what the warned member
+        // reads — it lands on the formal record and is the ONLY prose the
+        // warning DM carries. The staff-note body, the model's rationale,
+        // note refs, and evidence NEVER enter the DM: the payload comes
+        // from buildWarnDmPayload, which accepts nothing but the standard
+        // warning framing (W-n / issuer / count / reason / when / expiry).
+        const ids = {
+          communityId: row.community_id,
+          guildId,
+          subjectUserId: subject,
+          caseId: row.case_id,
+          action: act,
+          actionRowId: row.id,
+        };
         const reason =
           String(params.reason ?? "").trim() ||
           `Auto-moderation sanction from ${caseTag}`;
         const guildDefaultDays = Number(
           getGuildSettings(row.community_id)?.warn_expiry_days,
         );
+
+        // relatedNoteId = the case's ONE staff note for this subject
+        // (#733). The harness's two-phase commit injects it when the row
+        // is RECORDED (so auto AND approve both carry it from the row's
+        // own params); a row without one — a replay of an older suggestion
+        // or a direct executor call — resolves it here through the card's
+        // discovery law. Best-effort by contract: an unresolvable link
+        // never costs the warning (the note itself is the record), and a
+        // createWarning INVALID_NOTE surfaces below as its specific cause.
+        if (params.relatedNoteId == null && row.case_id != null) {
+          try {
+            const caseRowForNote = getAutomodCaseById(Number(row.case_id));
+            if (
+              caseRowForNote &&
+              Number(caseRowForNote.community_id) === Number(row.community_id)
+            ) {
+              const found = await resolved.resolveCaseNoteId({
+                communityId: row.community_id,
+                subjectUserId: subject,
+                caseRow: caseRowForNote,
+              });
+              if (found != null && Number.isFinite(Number(found))) {
+                params.relatedNoteId = Math.floor(Number(found));
+              }
+            }
+          } catch (err) {
+            logFail("warn note-link (best effort)", ids, err);
+          }
+        }
+
+        let warn;
         try {
-          const warn = createWarning({
+          warn = createWarning({
             communityId: row.community_id,
             // Evidence URLs embed the external (Discord) snowflake —
             // same posture as the /warn handler.
@@ -688,16 +814,47 @@ function buildActionHandler(act, { resolved, row, params, referrerUserId = null 
             evidenceMessageUrl: params.evidenceMessageUrl ?? null,
             evidenceText: params.evidenceText ?? null,
           });
-          return {
-            ok: true,
-            result:
-              `Formal warning W-${warn.warning_number} recorded against <@${subject}> ` +
-              `(issuer ${warn.issuer_id}).`,
-          };
         } catch (err) {
           return {
             ok: false,
             error: `Could not record the warning: ${err?.message || err}`,
+          };
+        }
+
+        // Member DM (#733): honour the guild's warn-DM setting EXACTLY like
+        // /warn add does — same shipped gate (warnDmEnabled), same standard
+        // framing (buildWarnDmPayload). Auto AND Approve both land here —
+        // one code path, mode is not the DM gate (locked decision 2).
+        const base =
+          `Formal warning W-${warn.warning_number} recorded against <@${subject}> ` +
+          `(issuer ${warn.issuer_id}).`;
+        if (!warnDmEnabled(row.community_id)) {
+          return {
+            ok: true,
+            result:
+              `${base} Member DM skipped — member DMs are disabled for this ` +
+              "server (`/setwarn dm`).",
+          };
+        }
+        try {
+          const guildName = await resolved.fetchGuildName(guildId);
+          const payload = buildWarnDmPayload({
+            warn,
+            guildName: guildName || "this server",
+            issuedByLabel: warnDmIssuerLabel(warn.issuer_id),
+            activeCount: countActiveWarnings(row.community_id, subject),
+          });
+          await resolved.sendWarnDm(subject, payload);
+          return { ok: true, result: `${base} Member notified by DM.` };
+        } catch (err) {
+          // Partial success, reported (rule 5): the warning row EXISTS and
+          // this row is executed — the card/note line names the DM cause.
+          logFail("warn member DM (warning stays recorded)", ids, err);
+          return {
+            ok: true,
+            result:
+              `${base.slice(0, -1)} — warning recorded, member DM failed: ` +
+              `${err?.message || err}.`,
           };
         }
       };

@@ -153,6 +153,45 @@ test("card payload: sections, note refs, pending approval word, footer, meta fam
   ]);
 });
 
+test("a suggested warn row shows the member-visible record: proposed reason, evidence, and the expiry the warning will honour - issue #733", () => {
+  const { cid, caseRow } = seededCase("warn-line");
+  const anchorUrl = `https://discord.com/channels/${GUILD}/${AMOD_CH}/${MSG}`;
+
+  // Row carrying its own proposal (what the #733 dispatcher records): the
+  // explicit evidence link wins and the row's own expiry is shown as such.
+  const proposed = db.getAutomodAction(suggest(cid, caseRow, "warn", SUB, {
+    reason: "posted targeted harassment",
+    evidenceMessageUrl: "https://discord.com/channels/1/2/3",
+    expiresDays: 14,
+  }).id);
+  // Bare row: the case anchor is the evidence default; the CURRENT guild
+  // setting (unset here → never) shows, labeled as the setting it is.
+  const bare = db.getAutomodAction(suggest(cid, caseRow, "warn", SUB2, { reason: "second" }).id);
+
+  let field = decisionField(card.buildCardPayload({ caseRow, rows: [proposed, bare], summaryText: "s" }));
+  assert.match(
+    field,
+    /`warn` — \*\*pending approval\*\* — a staff decision is due — Approve records the formal warning and DMs the member per the server's warn settings\./,
+  );
+  assert.match(field, /Proposed reason: "posted targeted harassment"\./);
+  assert.match(field, /Evidence: <https:\/\/discord\.com\/channels\/1\/2\/3>\./);
+  assert.match(field, /Expiry: in 14 day\(s\) — as proposed on this row\./);
+  assert.ok(field.includes(`Evidence: <${anchorUrl}>.`),
+    "the suggested row falls back to the case anchor's jump link (#733 evidence default)");
+  assert.match(field, /Expiry: never — current guild setting\./);
+
+  // The SAME rows re-rendered after the staff change the setting show the
+  // NEW expiry — the card never promises an older date than the record lands.
+  db.updateGuildSettings(cid, { warn_expiry_days: 30 });
+  field = decisionField(card.buildCardPayload({ caseRow, rows: [bare], summaryText: "s" }));
+  assert.match(field, /Expiry: in 30 day\(s\) — current guild setting\./);
+
+  // A case with no anchor message carries NO evidence — never a fabricated link.
+  const orphan = { ...caseRow, channel_id: null, message_id: null };
+  field = decisionField(card.buildCardPayload({ caseRow: orphan, rows: [bare], summaryText: "s" }));
+  assert.match(field, /Evidence: none recorded\./);
+});
+
 test("card buttons clamp honestly: 10 pending rows max, the overflow line names the rest - issue #730", () => {
   const { cid, caseRow } = seededCase("clamp");
   const acts = ["warn", "timeout", "kick", "ban", "delete_message", "ticket"];
