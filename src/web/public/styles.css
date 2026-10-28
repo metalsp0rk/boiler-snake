@@ -545,22 +545,30 @@ th {
 }
 
 /* Card chrome is .bs-panel (primitives.css). Wide rows still span the grid. */
-.dashboard-count { font-size: 1.1rem; margin: 0 0 0.75rem; }
+/* Integer px, not fractional rem. Full-page screenshots drift by a pixel
+   when FreeType rounds a 0.9rem / 1.45 line box differently (host vs the
+   Bookworm visual image). Stat cards stay on their own integer rules. */
+.dashboard-count { font-size: 18px; line-height: 24px; margin: 0 0 12px; }
 
 .dashboard-dl {
   display: grid;
   grid-template-columns: auto 1fr;
-  gap: 0.3rem var(--space-4);
+  gap: 5px 16px;
   margin: 0;
-  font-size: 0.9rem;
+  font-size: 14px;
+  line-height: 20px;
 }
 .dashboard-dl dt { color: var(--fg-muted); }
 .dashboard-dl dd { margin: 0; text-align: right; }
 
-.dashboard-leaders { margin: 0; padding-left: 1.4rem; font-size: 0.9rem; }
-.dashboard-leaders li { padding: 0.15rem 0; }
+.dashboard-leaders { margin: 0; padding-left: 22px; font-size: 14px; line-height: 20px; }
+.dashboard-leaders li { padding: 2px 0; }
 
-.dashboard-nowplaying { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--space-2); margin: 0; }
+.dashboard-nowplaying { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px; margin: 0; line-height: 20px; }
+.dashboard .subheading { font-size: 14px; line-height: 20px; }
+.dashboard .panel-foot { margin: 12px 0 0; font-size: 14px; line-height: 20px; }
+.dashboard .bs-panel h2 { line-height: 22px; }
+.dashboard .bs-panel h3 { line-height: 18px; }
 
 /* Full-width freshness line under the grid. */
 .dashboard-stamp { grid-column: 1 / -1; margin: 0; }
@@ -578,11 +586,13 @@ th {
   width: 100%;
   border-collapse: collapse;
   table-layout: auto;
+  font-size: 14px;
+  line-height: 20px;
 }
 
 .dashboard-table th,
 .dashboard-table td {
-  padding: 0.35rem 0.55rem;
+  padding: 6px 9px;
   text-align: left;
   vertical-align: top;
 }
@@ -1216,15 +1226,16 @@ p.panel-foot {
    the canvas itself stays UNSIZED/UNSTYLED — library-managed. The SSR
    tables are the JS-off + accessible fallback; nothing here gates content. */
 .dashboard-charts .chart-figure {
-  margin: 0 0 1.1rem;
+  margin: 0 0 18px;
 }
 .dashboard-charts .chart-figure:last-of-type {
   margin-bottom: 0;
 }
 .dashboard-charts .chart-figure figcaption {
-  font-size: 0.85rem;
+  font-size: 14px;
   font-weight: 600;
-  margin-bottom: 0.35rem;
+  line-height: 20px;
+  margin-bottom: 6px;
 }
 .dashboard-charts .chart-box {
   position: relative;
@@ -1232,7 +1243,7 @@ p.panel-foot {
   height: 260px; /* explicit height + maintainAspectRatio:false (client) */
 }
 .dashboard-charts .chart-unavailable {
-  margin: 0.4rem 0 0;
+  margin: 6px 0 0;
   font-size: 0.8rem;
   color: var(--fg-muted);
   font-style: italic;
