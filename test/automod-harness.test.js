@@ -1668,3 +1668,83 @@ test("ban auto: the outbound banMember carries the case-tagged reason and the no
     KNOWN.add(SUB);
   }
 });
+
+test("breaker E2E: six auto kicks across six cases trip the pause and the trip lands in the automod channel - issue #739", async () => {
+  const { cid, w } = await seededCommunity("breaker-e2e", {
+    settings: { modes: { kick: "auto" } },
+  });
+  const kickCalls = [];
+  try {
+    const referAgain = async () => {
+      const r = await refer.referToAutomod({
+        communityId: cid,
+        guildId: GUILD,
+        referrerUserId: REF,
+        messageLink: `https://discord.com/channels/${GUILD}/${SRC_CH}/${MSG}`,
+        targetUserId: null,
+        note: "another burst from the same pattern",
+        deps: w.referDeps,
+      });
+      assert.equal(r.ok, true, r.error);
+      return r.case;
+    };
+
+    const kickRun = async (caseRow) => {
+      const chat = scripted([
+        { tools: [{ name: "kick", args: { user_id: SUB, reason: "raid burst" } }] },
+      ]);
+      const res = await harness.runAutomodCase({
+        communityId: cid,
+        guildId: GUILD,
+        caseId: caseRow.id,
+        deps: w.deps({
+          chat,
+          // client on actionDeps: the trip POST rides the default seam
+          // (automod channel from guild settings over the real client).
+          actionDeps: {
+            ...w.actionDeps,
+            client: w.client,
+            createKick: async (_cidArg, uid) => {
+              kickCalls.push(String(uid));
+              return { ok: true };
+            },
+          },
+        }),
+      });
+      assert.equal(res.ok, true, res.error);
+    };
+
+    // Five attempts = the cap, NOT over it.
+    for (let i = 0; i < 5; i += 1) await kickRun(await referAgain());
+    assert.equal(db.isAutomodPaused(cid).paused, false, "five attempts sit AT the cap — the pause has not fired");
+    assert.equal(kickCalls.length, 5);
+
+    // The sixth trips.
+    await kickRun(await referAgain());
+    assert.equal(db.isAutomodPaused(cid).paused, true, "the sixth attempt trips the breaker");
+    assert.match(
+      db.isAutomodPaused(cid).reason,
+      /^6 auto kick\/ban\/timeout attempts in the last 5 minutes \(cap 5\)$/,
+    );
+
+    // The trip post rides the default seam into the automod channel —
+    // distinguishable from card embeds by its plain `content`.
+    const tripPost = w.posts.find((p) => typeof p.content === "string" && /circuit breaker tripped/.test(p.content));
+    assert.ok(tripPost, "the trip posted to the automod channel");
+    assert.match(tripPost.content, /\*\*6\*\* auto kick\/ban\/timeout attempts in the last \*\*5 minutes\*\* \(cap 5\)/);
+
+    // The seventh run: recorded, executed NOTHING — the gate refuses with
+    // the persisted pause reason; the kick seam stays untouched.
+    await kickRun(await referAgain());
+    assert.equal(kickCalls.length, 6, "a paused kick never reaches the outbound");
+    const lastEdit = w.edits.at(-1);
+    assert.match(
+      decisionField(lastEdit),
+      /\*\*Safety paused:\*\* the auto-moderation circuit breaker is tripped/,
+      "the card names the pause cause verbatim on the refused line",
+    );
+  } finally {
+    db.clearAutomodPause(cid);
+    executor.clearBreakerWindow(cid);
+  }
+});
