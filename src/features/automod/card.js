@@ -88,6 +88,8 @@ const {
   AUTOMOD_NOTE_OUTCOME_HEADER,
   AUTOMOD_NOTE_TRUNCATION_MARKER,
   AUTOMOD_DELETE_MAX_MESSAGES,
+  AUTOMOD_CARD_TICKET_SUGGESTED_HEAD,
+  AUTOMOD_CARD_TICKET_PROPOSED_LABEL,
 } = require("./constants");
 const { readSettings } = require("./settings");
 // Shared case-note discovery law + the anchor jump link (#733): card, harness,
@@ -271,6 +273,24 @@ function renderRowLine(row, ctx = {}) {
               (reason ? `Reason: "${reason}".` : "")
             );
           }
+        }
+        if (act === "ticket") {
+          // #735: a suggested ticket shows the PROPOSED MEMBER-VISIBLE
+          // OPENING — the exact text the subject will read in the ticket
+          // channel if staff approve (quote style mirrors the warn row).
+          // Approve opens the ticket WITH the subject in it through the
+          // shipped ticket system; Dismiss opens nothing. Staff-only
+          // history never belongs in this line's quoted text — the card
+          // quotes what the MEMBER sees, nothing else.
+          const params = parseAutomodActionParams(row)?.params ?? {};
+          const reason = snippet(
+            params.reason ?? params.rationale ?? "",
+            160,
+          );
+          return (
+            AUTOMOD_CARD_TICKET_SUGGESTED_HEAD +
+            `${AUTOMOD_CARD_TICKET_PROPOSED_LABEL} ${reason ? `"${reason}".` : "none recorded."}`
+          );
         }
         return "a staff decision is due — Approve runs the shared executor, Dismiss declines.";
       }

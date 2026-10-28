@@ -192,6 +192,39 @@ const AUTOMOD_NOTE_PLANNED_LABEL = "planned";
 /** Max message ids per `delete_message` call (counted AFTER dedupe). */
 const AUTOMOD_DELETE_MAX_MESSAGES = 10;
 
+/* ── Ticket tool (#735, epic #723) ──────────────────────────────────────────
+ * The `ticket` action opens the case's help ticket WITH the subject in it
+ * through the shipped ticket system. The ticket opening text is MEMBER-
+ * VISIBLE — it is what the subject reads in the ticket channel — so the
+ * member-visible law is enforced in code (dispatcher belt + commit-time
+ * overlap scrub, see harnessTools.js / executor.js), never by prompt hope.
+ * The copy below is shipped: docs/automod.md quotes it verbatim — grep
+ * before renaming. */
+
+/**
+ * Head of the case card's suggested-ticket row (#735). Mirrors the warn
+ * suggested row: the QUOTED opening below the head is the proposed member-
+ * visible ticket reason — what the subject will READ in the ticket channel
+ * if staff approve. Approve opens the ticket; Dismiss does not.
+ */
+const AUTOMOD_CARD_TICKET_SUGGESTED_HEAD =
+  "a staff decision is due — Approve opens the case's help ticket WITH the " +
+  "subject in it; the quoted opening below is the member-visible text the " +
+  "subject will read in the ticket channel. ";
+
+/** Label introducing the quoted member-visible reason on the ticket row. */
+const AUTOMOD_CARD_TICKET_PROPOSED_LABEL = "Proposed opening:";
+
+/**
+ * Commit-time overlap-scrub floor (#735): a queued staff-note narrative of
+ * at least this many normalized characters whose start the ticket reason
+ * reproduces makes the reason a STAFF-NOTE DUPLICATE — the member-visible
+ * opening would hand the subject their own private note, so the row refuses.
+ * Below the floor a quoted phrase is coincidence, not a reproduction (the
+ * dispatcher's machine-marker belt already covers literal note artifacts).
+ */
+const AUTOMOD_TICKET_NOTE_OVERLAP_MIN = 40;
+
 /** Slash command builders use these for their option choices. */
 const MODE_CHOICES = AUTOMOD_MODES.map((m) => ({ name: m, value: m }));
 const ACTION_CHOICES = AUTOMOD_ACTIONS.map((a) => ({ name: a, value: a }));
@@ -250,4 +283,9 @@ module.exports = {
   AUTOMOD_NOTE_PLANNED_LABEL,
   // Delete tool (#734): the per-call message-id cap.
   AUTOMOD_DELETE_MAX_MESSAGES,
+  // Ticket tool (#735): the suggested-card row copy + the note-overlap scrub
+  // floor (the member-visible law's shipped strings — docs quote them).
+  AUTOMOD_CARD_TICKET_SUGGESTED_HEAD,
+  AUTOMOD_CARD_TICKET_PROPOSED_LABEL,
+  AUTOMOD_TICKET_NOTE_OVERLAP_MIN,
 };

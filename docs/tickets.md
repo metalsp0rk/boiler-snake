@@ -39,6 +39,29 @@ Configure: `/staff role add role level`, `/staff role setlevel`, `/staff role li
 | Transcript URL | Staff archive embed **plus** a best-effort DM to the **requester** (ticket ref + close reason + `[View transcript]` link when `TICKET_PUBLIC_BASE_URL` is set) on archive. Non-sensitive only — **sensitive tickets never receive any URL**, and no one but the requester is DMed |
 | Sensitive | No message fetch, no HTML, no AI; channel delete is disposal |
 
+### Automod-opened tickets (#735)
+
+Auto-moderation's `ticket` action opens tickets through **this exact
+pipeline** (`openTicketChannel`) — no parallel system. The differences are
+who acts, not what happens:
+
+- **The subject is the creator.** The ticket opens with the subject as
+  creator (their overwrite is the shipped member-add path), so **their own
+  self-create rate limit applies** — an automod open inside their window
+  refuses and says so on the automod case card, naming when a retry can
+  succeed. The staff note for the case always stands.
+- **The referring staff member** rides as the named opener (plus the usual
+  senior staff-role overwrites); a referral-less open still never orphans
+  the channel.
+- **The opening notice carries the automod reason** — a member-safe text the
+  automod harness enforces as member-visible before opening (never staff-note
+  text). Full mechanics: [Auto-moderation → Ticket tool](automod.md#ticket-tool-735).
+- **Discord only.** An automod-opened ticket is a Discord ticket channel;
+  Fluxer has no ticket-create surface to open one from.
+
+Everything after opening is the normal lifecycle: **T-n** numbering, close →
+archive, transcripts, the works.
+
 ## Setup
 
 1. Give the bot **Manage Channels** (and keep **Manage Roles** if you use level/reaction roles). Without Manage Channels, Discord returns `50013 Missing Permissions` on create.

@@ -1,8 +1,8 @@
 # Auto-moderation (epic #723)
 
 !!! abstract "Ship state — this page tracks the epic"
-    **Shipped now:** the guild settings and their Manage-Guild commands — `/automod status` and `/automodconfig` (channel, rules, master switch, per-action modes, timeout cap, daily case budget, breaker state + `safety resume`) (#725) — plus **staff referral intake**: `/automod refer` and the **Refer to automod** message context menu, which record a case (**A-n**) and ack where recommendations will post (#726), the **case-context collector** + lookup tools the judge reads (#727 — no user-facing surface of its own; see [Case context](#case-context)), the **LLM harness**: the case runner that judges a recorded case, records intent through mode-gated tools, and commits every action through the executor (#728 — see [Harness](#harness)), the **case card**: the interactive one-post-per-case outcome post whose Approve/Dismiss buttons execute suggested actions straight from the ledger (#730 — see [Case card](#case-card)), the **staff-note reconciler**: one note per considered subject (narrative or harness-filled), dropped notes for non-subjects, outcomes merged into the same note (#731 — see [Staff notes](#staff-notes)), and the **warning tool**: `warn` records a real formal warning through the shipped warnings system — member-facing reason, the guild's own warn-DM and expiry settings, the case note linked, evidence defaulted (#733 — see [Warning tool](#warning-tool-733)), and the **delete-message tool**: `delete_message` removes specific messages of this case — case allow-list, one user per call, Manage Messages pre-flight, honest per-id results (#734 — see [Delete-message tool](#delete-message-tool-734)).
-    **Landing in sibling issues:** the remaining action tools' surfaces (#735–#738), plus the circuit breaker trip logic (#739). The intake ack never claims a recommendation was produced — the **harness posts its outcome separately**, after the ack. The mode gate itself (off/suggest/auto, guards, atomic claims) is already shipped in the executor (#729) — a suggest-mode decision is recorded as a pending ledger row and surfaces on the case card for staff approval.
+    **Shipped now:** the guild settings and their Manage-Guild commands — `/automod status` and `/automodconfig` (channel, rules, master switch, per-action modes, timeout cap, daily case budget, breaker state + `safety resume`) (#725) — plus **staff referral intake**: `/automod refer` and the **Refer to automod** message context menu, which record a case (**A-n**) and ack where recommendations will post (#726), the **case-context collector** + lookup tools the judge reads (#727 — no user-facing surface of its own; see [Case context](#case-context)), the **LLM harness**: the case runner that judges a recorded case, records intent through mode-gated tools, and commits every action through the executor (#728 — see [Harness](#harness)), the **case card**: the interactive one-post-per-case outcome post whose Approve/Dismiss buttons execute suggested actions straight from the ledger (#730 — see [Case card](#case-card)), the **staff-note reconciler**: one note per considered subject (narrative or harness-filled), dropped notes for non-subjects, outcomes merged into the same note (#731 — see [Staff notes](#staff-notes)), and the **warning tool**: `warn` records a real formal warning through the shipped warnings system — member-facing reason, the guild's own warn-DM and expiry settings, the case note linked, evidence defaulted (#733 — see [Warning tool](#warning-tool-733)), and the **delete-message tool**: `delete_message` removes specific messages of this case — case allow-list, one user per call, Manage Messages pre-flight, honest per-id results (#734 — see [Delete-message tool](#delete-message-tool-734)) — and the **ticket tool**: `ticket` opens the case's help ticket **with the subject in it** through the shipped ticket system — member-visible opening enforced in code, the subject's own ticket rate limit, honest causes on every refusal (#735 — see [Ticket tool](#ticket-tool-735)).
+    **Landing in sibling issues:** the remaining action tools' surfaces (#736–#738), plus the circuit breaker trip logic (#739). The intake ack never claims a recommendation was produced — the **harness posts its outcome separately**, after the ack. The mode gate itself (off/suggest/auto, guards, atomic claims) is already shipped in the executor (#729) — a suggest-mode decision is recorded as a pending ledger row and surfaces on the case card for staff approval.
 
 Auto-moderation is a staff-referred judgment pipeline: a staff member refers a message or a user, a separate LLM harness recommends staff actions against the guild's written rules, and each action type is gated `off` / `suggest` / `auto` by the guild. **Recommendations are the default** — enabling the master switch never starts kicking or banning by itself.
 
@@ -302,7 +302,7 @@ is refused with the specific cause.
 
 **Privacy** — staff notes and full warning history stay in the harness and
 the staff channel. The collector never composes ticket or warning-DM text;
-the ticket tool (#735) must scrub member-visible ticket text before anything
+the ticket tool (#735) scrubs member-visible ticket text before anything
 from a bundle could reach it, and window message content is raw data — any
 renderer quoting it escapes markdown/mentions first (the #745 report-evidence
 escaping convention).
@@ -600,9 +600,9 @@ not prompt hope):
   a long story still produces the note; a case never fails because of one.
 
 **Never:** the note is never DM'd and its text never enters ticket openings or
-warning DMs (member-visible copy is scrubbed by design — the ticket tool
-issue restates the rule). Notes and warning history stay in staff-channel
-scope.
+warning DMs — the ticket tool's commit-time overlap scrub (#735) enforces the
+rule in code, not by prompt hope ([Ticket tool](#ticket-tool-735)). Notes and
+warning history stay in staff-channel scope.
 
 ## Modes (locked decision 2)
 
@@ -818,6 +818,127 @@ Approve.
 
 **Fluxer: explicit no-parity** (epic decision 8). The delete tool is part of
 the Discord-only pipeline; it adds no Fluxer surface of its own.
+
+## Ticket tool (#735)
+
+The `ticket` action tool is shipped — it opens one of the guild's ordinary
+**help tickets** ([Help tickets](tickets.md)) **with the subject in it**, so
+staff can discuss what happened or explain the rules. There is **no second
+ticket system**: the executor drives the shipped `openTicketChannel` pipeline
+(the same one `/ticket create` uses) behind the executor's `openCaseTicket`
+seam. Mode-gated like every action (`/automodconfig mode action:ticket`),
+default **suggest**. No new commands, settings, or env vars.
+
+**The opening text is MEMBER-VISIBLE — enforced in code, not by prompt hope.**
+`openTicketChannel` posts the ticket's `reason` verbatim into the open
+notice, and the subject IS IN THE CHANNEL reading it. So the opening is the
+one automod string a member is guaranteed to see, and the member-visible law
+ships as three mechanical seams:
+
+1. **Dispatch (the model's call).** `reason` is **required** by the schema
+   and re-validated by the dispatcher, which refuses above the slot check
+   with the law spelled out. The schema tells the model:
+
+   ```text
+   Open a help ticket WITH the subject in it — to discuss what happened or explain the rules. Ticket text is member-visible: never put staff-note bodies or staff-only history in `reason`.
+   ```
+
+   A call without `reason` refuses:
+
+   ```text
+   `ticket` needs `reason` — it is the MEMBER-VISIBLE opening of the ticket: the subject reads it in the ticket channel. Write what the ticket should discuss in ordinary language — never staff-note text, your private rationale, or a warning dump. If no member-safe wording can be written, call nothing — a human can open the ticket themselves.
+   ```
+
+   (No member-safe wording ⇒ **call nothing** — a human can open the ticket.)
+   The cap is the ticket system's own `MAX_TICKET_REASON` (1000) — naming it
+   beats letting `createTicket` reject the row later:
+
+   ```text
+   `ticket` reason is 1200 characters — the cap is 1000 (the ticket system's own reason limit). Shorten it — nothing was recorded.
+   ```
+
+   Reasons carrying machine-owned staff-note strings (the note's discovery
+   suffix `(automod case A-` or the harness-filled marker) refuse by label:
+
+   ```text
+   ticket refused: the reason contains the staff-note discovery suffix — automod staff-note text. The ticket opening is MEMBER-VISIBLE and must never reproduce a staff note (#723 decision 3). Rewrite it in member-safe language or call nothing — nothing was recorded.
+   ```
+
+2. **Commit (the overlap scrub).** The note may be queued AFTER the ticket
+   call, so commit is the authoritative seam: the harness threads the
+   subject's queued note narrative into the executor (never persisted into
+   `params_json`, never shown to the model). If the reason reproduces the
+   start of that narrative (normalized; floor 40 characters — below it a
+   shared phrase is coincidence, not a reproduction), the row refuses:
+
+   ```text
+   Refusing to open the case ticket: the member-visible reason reproduces <@user>'s queued staff-note narrative — the opening would leak private staff-note text (#735 member-visible law). The staff note stands; the ticket was not opened.
+   ```
+
+3. **The card (staff eyes).** A suggested ticket row quotes the EXACT text
+   the subject will read, so approving staff always see the member-visible
+   wording before it ships:
+
+   ```text
+   `ticket` — **pending approval** — a staff decision is due — Approve opens the case's help ticket WITH the subject in it; the quoted opening below is the member-visible text the subject will read in the ticket channel. Proposed opening: "let's talk about last night's messages and the rules around them".
+   ```
+
+   (A row whose recorded text is empty quotes honestly:
+   `Proposed opening: none recorded.`)
+
+**Suggest: Approve opens it, Dismiss does not.** The suggestion records with
+zero Discord calls; **Approve** runs the shared executor (claim-before-commit
+— a double click opens exactly ONE ticket); **Dismiss** never opens anything.
+
+**Auto: open it and put the channel link on the card.** The success line is
+built only from a real ticket + real channel (never fabricated), carries the
+**T-n** ticket ref, a clickable channel mention, and the case ref:
+
+```text
+Opened ticket T-7 with <@user>: <#channel-id> (case A-3).
+```
+
+The same line lands on the case card (rendered verbatim) and merges into the
+subject's staff note under **Outcome:** — that is where the ticket number is
+stored. If some senior staff roles could not get channel overwrites, the
+shipped honest access note (`_Note: N staff role(s) could not get channel
+access:_` + one line per role) is appended, never hidden.
+
+**Participants: the subject + the referring staff member.** The subject is
+the ticket's **creator** — the shipped member-add path (their creator
+overwrite is what puts them IN the channel) — and the case's referrer rides
+as `openedByStaffId` (the named-staff overwrite). A belt referrer-less call
+(direct executor use with no referral) still opens with the subject + the
+staff-role overwrites: a ticket is **never orphaned**.
+
+**The subject's own rate limit applies — and refuses honestly.** Because the
+subject IS the creator, the ticket system's atomic one-self-create-per-window
+slot is claimed for THEM before anything is created (the claim is
+synchronous — two racing commits cannot double-open the window). A refusal
+names BOTH minute counts and never touches the staff note:
+
+```text
+Could not open the case ticket: <@user> already opened a ticket inside the rate window — the ticket system allows one self-created ticket per 60 minute(s); the next attempt can succeed in about 42 minute(s). The staff note for this case stands — the ticket was not opened.
+```
+
+A refused claim took no slot, so nothing is "released" (the #420 slot law);
+only a create attempt that then **fails** hands the EXACT stamp back — the
+subject never pays for the bot's problem, and the row carries the thrown
+Discord cause **verbatim** (the typed `BOT_PERMISSIONS` / channel-create
+causes already ride `formatChannelCreateError` and name what staff must fix).
+A rate-limit refusal never deletes the staff note; a throwing slot claim
+refuses with `Could not check the subject's ticket-create rate limit: … —
+nothing was opened.`
+
+**Staff are never ticketed by the machine.** A staff-role subject's ticket
+can still be **recorded** as a suggestion (the card may recommend that a
+human handle it), but Approve and auto refuse through the shipped
+decision-6 subject guard.
+
+**Fluxer: explicit no-parity** (epic decision 8). The ticket tool opens
+Discord ticket channels through the Discord-only pipeline; the ticket system
+already answers Fluxer callers that create is not available there, and this
+tool adds **no Fluxer path** of its own.
 
 ## Daily case budget
 

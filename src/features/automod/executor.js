@@ -43,10 +43,12 @@
  * defaults wired to `deps.client` (a discord.js v14 Client). The `warn`
  * default calls the real `createWarning` service AND the guild's warn-DM
  * setting (#733 — see the warn handler's member-facing law). The `ticket`
- * default deliberately refuses with a specific #735 sentence — the ticket
- * tool ships in its own issue. The circuit breaker gate (#739) will add
- * its `isAutomodPaused` check inside runClaimedAction — one choke point,
- * both auto and approve already flow through it.
+ * defaults ride the REAL ticket system through dedicated seams (#735 — see
+ * the ticket handler's member-visible law): the rate-slot pair over
+ * `claimTicketCreateSlot`/`releaseTicketCreateSlot` and `openCaseTicket`
+ * over the real `openTicketChannel`. The circuit breaker gate (#739) will
+ * add its `isAutomodPaused` check inside runClaimedAction — one choke
+ * point, both auto and approve already flow through it.
  *
  * THE WARN TOOL (#733, epic #723) — member-facing law lives HERE:
  *  - `params.reason` is the MEMBER-FACING reason: it is the formal record's
@@ -91,6 +93,38 @@
  *    line IS the report, #733 partial idiom); ALL failed is the failed row
  *    with the same list. A vanished message is that id's 10003 failure,
  *    never a crash.
+ *
+ * THE TICKET TOOL (#735, epic #723) — member-visible law lives HERE too:
+ *  - `params.reason` is the ticket's MEMBER-VISIBLE opening: `openTicketChannel`
+ *    posts it VERBATIM into the open notice the subject reads in the ticket
+ *    channel. No second ticket system: the subject is the CREATOR (that IS
+ *    the shipped member-add path — the creator overwrite grants them the
+ *    channel), the referring staff rides as `openedByStaffId` (named staff
+ *    overwrite); a null referrer opens subject + staff-roles only — the
+ *    ticket is never orphaned. ZERO DMs anywhere: the member-visible
+ *    opening IS the ticket channel's own open notice.
+ *  - Commit-time NOTE-OVERLAP SCRUB (decision 4 spirit — enforcement, not
+ *    prompt hope): the harness passes the subject's queued note narrative as
+ *    the optional `queuedNoteNarrative` input (NEVER persisted into
+ *    params_json). Normalized (trimmed, space-collapsed), a narrative of
+ *    ≥ AUTOMOD_TICKET_NOTE_OVERLAP_MIN chars whose start the reason
+ *    reproduces makes the reason a staff-note DUPLICATE — the row refuses
+ *    naming the duplication. Shorter/absent narratives never refuse (the
+ *    dispatcher's machine-marker belt covers literal note artifacts).
+ *  - Rate limit (#420 law): the subject IS the rate-limited creator, so the
+ *    claim runs SYNCHRONOUSLY before the first await via
+ *    `deps.claimTicketRateSlot`; a refusal names both minute counts and
+ *    states the staff note stands. ANY open failure releases the EXACT
+ *    stamp (release failure logged only); a success keeps the reservation
+ *    (it ages out). The thrown cause rides the refusal VERBATIM — the typed
+ *    BOT_PERMISSIONS / CHANNEL_CREATE causes already name themselves (they
+ *    ride `formatChannelCreateError`; the K8 elevation gate belongs to the
+ *    Fluxer arm this Discord-only path never reaches).
+ *  - Success line (result-line idiom, mirrors warn's `Formal warning W-n
+ *    recorded…`): `Opened ticket T-<n> with <@subject>: <#channelId> (case
+ *    A-<n>).` — the channel MENTION is the card's channel link. Skipped
+ *    staff-role overwrites append the shipped honest access note. A
+ *    refusal NEVER deletes or omits the subject's staff note (#731 law).
  */
 
 const { PermissionFlagsBits } = require("discord.js");
@@ -100,6 +134,8 @@ const {
   createWarning,
   countActiveWarnings,
   getAutomodCaseById,
+  claimTicketCreateSlot,
+  releaseTicketCreateSlot,
   now,
   insertAutomodActionSuggestion,
   claimAutomodActionSlot,
@@ -115,6 +151,13 @@ const {
 // warning copy. (Deliberate cross-feature import named by the #733 contract;
 // NOT the gork isolation case of locked decision 7.)
 const { warnDmEnabled, buildWarnDmPayload } = require("../warnings/helpers");
+// READ-ONLY imports of the shipped ticket system (#735): the ONE ticket
+// opening pipeline (creator = the subject — that IS the existing member-add
+// path) and the honest skipped-overwrite access note `/ticket create`
+// renders. No second ticket system (contract), and both are pure imports of
+// exported functions — no interaction context is dragged in.
+const { openTicketChannel } = require("../tickets/helpers");
+const { formatStaffRoleAccessNote } = require("../tickets/overwrites");
 const { findCaseNoteRow } = require("./caseNote");
 const {
   AUTOMOD_ACTIONS,
@@ -122,6 +165,7 @@ const {
   AUTOMOD_TIMEOUT_CAP_MIN,
   AUTOMOD_TIMEOUT_CAP_MAX,
   AUTOMOD_DEFAULT_TIMEOUT_CAP,
+  AUTOMOD_TICKET_NOTE_OVERLAP_MIN,
   automodModeColumn,
   normalizeAutomodMode,
 } = require("./constants");
@@ -246,6 +290,39 @@ function resolveDeleteTargets(params = null) {
 }
 
 /**
+ * #735 NOTE-OVERLAP SCRUB — the ONE normalized form a queued staff-note
+ * narrative and a ticket reason are compared in: trimmed, inner whitespace
+ * collapsed. No case-folding: the scrub catches VERBATIM reproduction, not
+ * paraphrase (the dispatcher's machine-marker belt already refuses literal
+ * note artifacts).
+ */
+function normalizeNarrativeText(text) {
+  return String(text ?? "").trim().replace(/\s+/g, " ");
+}
+
+/**
+ * THE COMMIT-TIME OVERLAP LAW (#735, epic #723 decision 4's spirit): the
+ * ticket reason is MEMBER-VISIBLE; the subject's staff note is NOT. The
+ * harness threads the subject's queued note narrative at commit (the note
+ * may be queued AFTER the ticket call, so dispatch cannot judge this).
+ * Rule: a narrative that normalizes to ≥ AUTOMOD_TICKET_NOTE_OVERLAP_MIN
+ * characters and whose first AUTOMOD_TICKET_NOTE_OVERLAP_MIN characters the
+ * reason (same normalization) contains ⇒ the reason reproduces the private
+ * note ⇒ the row refuses. A narrative below the floor (or absent) never
+ * refuses — quoted phrases under the floor are coincidence, not leakage.
+ *
+ * @param {string|null|undefined} reason the member-visible ticket reason
+ * @param {string|null|undefined} narrative the subject's queued note content
+ * @returns {boolean} true ⇒ the reason duplicates the note — refuse the row
+ */
+function ticketReasonDuplicatesNote(reason, narrative) {
+  const narr = normalizeNarrativeText(narrative);
+  if (narr.length < AUTOMOD_TICKET_NOTE_OVERLAP_MIN) return false;
+  const needle = narr.slice(0, AUTOMOD_TICKET_NOTE_OVERLAP_MIN);
+  return normalizeNarrativeText(reason).includes(needle);
+}
+
+/**
  * Re-project an existing (claimed/terminal) row into an outcome — the
  * single-winner loser's answer ("a second click returns the existing
  * result"). `inFlight:true` means another claimer owns a still-running row.
@@ -306,7 +383,11 @@ function warnDmIssuerLabel(issuerId) {
  * error, which the executor records as a `failed` row — never a silent run.
  * The #733 warn seams (`fetchGuildName`, `sendWarnDm`, `resolveCaseNoteId`)
  * degrade per the warn handler's own error paths — a missing client shows
- * up as the DM-failure partial line, never a lost warning.
+ * up as the DM-failure partial line, never a lost warning. The #735 ticket
+ * seams (`claimTicketRateSlot` / `releaseTicketRateSlot` over the real repo
+ * slot pair, `openCaseTicket` over the real `openTicketChannel`) open the
+ * case ticket through the shipped help-ticket system — a missing client
+ * throws the specific cause, which the handler reports verbatim.
  */
 function buildDefaultDeps(deps = {}) {
   const guildOf = (guildId) => {
@@ -417,6 +498,36 @@ function buildDefaultDeps(deps = {}) {
       });
       return note?.id ?? null;
     },
+    // ── #735 ticket-tool seams ─────────────────────────────────────────────
+    // The subject's ticket-create rate slot over the REAL repo claim
+    // (#420 law — synchronous, no await inside; the handler takes it before
+    // its first await). Tests record calls / script refusals here.
+    claimTicketRateSlot: (communityId, userId) =>
+      claimTicketCreateSlot(communityId, userId),
+    // Hand the EXACT claimed stamp back after a FAILED open (release is
+    // stamp-guarded in the repo — a newer claim is never clobbered). A
+    // successful open never calls this: the reservation ages out.
+    releaseTicketRateSlot: (communityId, userId, stamp) =>
+      releaseTicketCreateSlot(communityId, userId, stamp),
+    // The REAL ticket pipeline. The subject is the CREATOR (the shipped
+    // member-add path: the creator overwrite is what puts them IN the
+    // channel), the referring staff rides as openedByStaffId (named staff
+    // overwrite; null opens subject + staff-role overwrites — never
+    // orphaned). Typed throws ride through untouched: "Bot user not ready",
+    // code BOT_PERMISSIONS, code CHANNEL_CREATE (already through
+    // formatChannelCreateError) — the handler reports them verbatim.
+    openCaseTicket: async ({ guildId: gid, communityId, subjectUserId, reason, openedByStaffId }) => {
+      const client = requireClient(deps);
+      const guild = guildOf(gid);
+      return openTicketChannel({
+        guild,
+        client,
+        communityId,
+        creatorUserId: String(subjectUserId),
+        reason,
+        openedByStaffId: openedByStaffId ? String(openedByStaffId) : null,
+      });
+    },
   };
 
   // Shallow merge: explicit seams win over the defaults.
@@ -509,7 +620,12 @@ async function guardSubject({ action, communityId, guildId, subjectUserId, deps 
  * @param {string} opts.action one of AUTOMOD_ACTIONS
  * @param {string} opts.subjectUserId the considered member's snowflake
  * @param {object} [opts.params] per-action params (see the action handlers)
- * @param {string|null} [opts.referrerUserId] referring staff (warn issuer)
+ * @param {string|null} [opts.referrerUserId] referring staff (warn issuer;
+ *   #735: the ticket's `openedByStaffId` participant)
+ * @param {string|null} [opts.queuedNoteNarrative] #735 commit-time ticket
+ *   scrub input — the subject's queued staff-note content, threaded by the
+ *   harness. Read by the ticket overlap law only; NEVER persisted into
+ *   params_json and never member-visible.
  * @param {string} [opts.claimant] label recorded as the slot claimer
  * @param {string|null} [opts.mode] caller override (validated); default =
  *   read the guild setting via the shipped accessors
@@ -545,6 +661,12 @@ async function executeAutomodActionInner(opts) {
     subjectUserId = null,
     params = {},
     referrerUserId = null,
+    // #735 commit-time member-visible scrub: the subject's QUEUED staff-note
+    // narrative, supplied by the harness at commit (the note may be queued
+    // after the ticket call, so commit is the authoritative seam). Read by
+    // the ticket handler's overlap law only — NEVER persisted into
+    // params_json, never offered to the model.
+    queuedNoteNarrative = null,
     claimant = "auto",
     mode: modeOverride = null,
     deps = {},
@@ -644,7 +766,12 @@ async function executeAutomodActionInner(opts) {
     // never re-run the mutation.
     return outcomeFromRow(slot.existing);
   }
-  return runClaimedAction(slot.row, { deps, referrerUserId, nowMs });
+  return runClaimedAction(slot.row, {
+    deps,
+    referrerUserId,
+    nowMs,
+    queuedNoteNarrative,
+  });
 }
 
 /**
@@ -715,7 +842,14 @@ async function dismissSuggestion({
 
 // ── Claimed-row execution: guards → clamp → handler → record ───────────────
 
-async function runClaimedAction(row, { deps, referrerUserId = null, nowMs = now() }) {
+async function runClaimedAction(row, {
+  deps,
+  referrerUserId = null,
+  nowMs = now(),
+  // #735: the subject's queued staff-note narrative (ticket overlap scrub
+  // input — read by the ticket handler only, never persisted).
+  queuedNoteNarrative = null,
+} = {}) {
   const resolved = buildDefaultDeps(deps);
   const ids = {
     communityId: row.community_id,
@@ -794,7 +928,8 @@ async function runClaimedAction(row, { deps, referrerUserId = null, nowMs = now(
   }
 
   const handler =
-    resolved.actions?.[act] ?? buildActionHandler(act, { resolved, row, params, referrerUserId });
+    resolved.actions?.[act] ??
+    buildActionHandler(act, { resolved, row, params, referrerUserId, queuedNoteNarrative });
   let outcome;
   try {
     // Injected handlers (deps.actions.<action>, e.g. #735's ticket tool)
@@ -835,8 +970,16 @@ async function runClaimedAction(row, { deps, referrerUserId = null, nowMs = now(
  * Action handlers behind the deps seam. Every one closes over the resolved
  * deps, the claimed row, and the EFFECTIVE (post-clamp) params; a caller
  * overrides any single action via `deps.actions.<action>`.
+ * `queuedNoteNarrative` (#735) is the ticket handler's commit-time scrub
+ * input — never persisted, never shown to the model, never DM'd.
  */
-function buildActionHandler(act, { resolved, row, params, referrerUserId = null }) {
+function buildActionHandler(act, {
+  resolved,
+  row,
+  params,
+  referrerUserId = null,
+  queuedNoteNarrative = null,
+}) {
   const guildId = row.guild_id;
   const subject = row.subject_user_id;
   const caseTag = row.case_id != null ? `case #${row.case_id}` : "referral";
@@ -1080,13 +1223,126 @@ function buildActionHandler(act, { resolved, row, params, referrerUserId = null 
       };
 
     case "ticket":
-      return async () => ({
-        ok: false,
-        error:
-          "the ticket action is not wired yet (#735) — the automod ticket tool must " +
-          "open the case ticket through the help-ticket system with the subject in it. " +
-          "Nothing was opened.",
-      });
+      return async () => {
+        // #735 — open this case's HELP TICKET with the subject in it. NO
+        // second ticket system: openTicketChannel IS the shipped pipeline
+        // (subject = creator — that IS the member-add path; the referring
+        // staff rides as openedByStaffId). That pipeline posts `reason`
+        // VERBATIM into the member-visible open notice the subject reads —
+        // the member-visible law is why the dispatcher requires/scrubs
+        // `reason` and why the note-overlap scrub below runs BEFORE
+        // anything opens. ZERO DMs anywhere: the open notice is the whole
+        // member-facing surface.
+        const ids = {
+          communityId: row.community_id,
+          guildId,
+          subjectUserId: subject,
+          caseId: row.case_id,
+          action: act,
+          actionRowId: row.id,
+        };
+        const reason = String(params.reason ?? "").trim();
+        if (!reason) {
+          return {
+            ok: false,
+            error:
+              "The `ticket` action needs params.reason — the member-visible opening the subject reads in the ticket. Nothing was opened.",
+          };
+        }
+        // COMMIT-TIME OVERLAP SCRUB (#735, decision 4's spirit): a reason
+        // reproducing the subject's queued staff-note narrative would hand
+        // them their own private note through the member-visible opening.
+        if (ticketReasonDuplicatesNote(reason, queuedNoteNarrative)) {
+          return {
+            ok: false,
+            error:
+              `Refusing to open the case ticket: the member-visible reason reproduces <@${subject}>'s queued staff-note narrative — the opening would leak private staff-note text (#735 member-visible law). The staff note stands; the ticket was not opened.`,
+          };
+        }
+        // Case ref for the success line — read BEFORE the open so a failed
+        // lookup can never force a dishonest line on a ticket that exists.
+        let caseRef = null;
+        if (row.case_id != null) {
+          try {
+            const caseRowForRef = getAutomodCaseById(Number(row.case_id));
+            if (caseRowForRef?.case_number != null) {
+              caseRef = `A-${caseRowForRef.case_number}`;
+            }
+          } catch (err) {
+            logFail("ticket case-ref read (display only)", ids, err);
+          }
+        }
+        // THE RATE SLOT FIRST (#420 law): the subject IS the ticket
+        // creator, so the shipped self-create limit applies to THEM — the
+        // claim is SYNCHRONOUS, taken before the first await (two racing
+        // commits can never double-open the subject's window away).
+        let claim;
+        try {
+          claim = resolved.claimTicketRateSlot(row.community_id, subject);
+        } catch (err) {
+          logFail("ticket rate-slot claim", ids, err);
+          return {
+            ok: false,
+            error: `Could not check the subject's ticket-create rate limit: ${err?.message || err} — nothing was opened.`,
+          };
+        }
+        if (!claim?.ok) {
+          const minutes = Number(claim?.minutes);
+          const retryMinutes = Math.max(
+            1,
+            Math.ceil(Number(claim?.retryAfterMs ?? 0) / 60000),
+          );
+          return {
+            ok: false,
+            error:
+              `Could not open the case ticket: <@${subject}> already opened a ticket inside the rate window — the ticket system allows one self-created ticket per ${Number.isFinite(minutes) ? minutes : "?"} minute(s); the next attempt can succeed in about ${retryMinutes} minute(s). The staff note for this case stands — the ticket was not opened.`,
+          };
+        }
+        // Open through the REAL ticket pipeline. ANY throw: hand the EXACT
+        // stamp back (a create that never happened never costs the subject
+        // a window) and refuse with the THROWN message VERBATIM — the typed
+        // BOT_PERMISSIONS / CHANNEL_CREATE causes ride formatChannelCreateError
+        // and already name what staff must fix (rule 3: no invented generic).
+        let opened;
+        try {
+          opened = await resolved.openCaseTicket({
+            guildId,
+            communityId: row.community_id,
+            subjectUserId: subject,
+            reason,
+            // Referrer resolution (decision 3 participants): the harness
+            // commit and the card's Approve arm both thread the case's
+            // referrer here — they always supply it. A null belt (direct
+            // executor call without a referral) still opens the ticket
+            // subject + staff-role overwrites: never orphaned.
+            openedByStaffId: referrerUserId ?? null,
+          });
+        } catch (err) {
+          try {
+            resolved.releaseTicketRateSlot(row.community_id, subject, claim.stamp);
+          } catch (releaseErr) {
+            // The slot ages out on its own; the OPEN cause is what staff
+            // must see — the release failure is a log line, nothing more.
+            logFail("ticket rate-slot release (open already failed)", ids, releaseErr);
+          }
+          return { ok: false, error: err?.message || String(err) };
+        }
+        // SUCCESS keeps the reservation (it ages out — only a FAILED open
+        // hands the slot back, #420). This line is only reachable with a
+        // real ticket + channel; it is never fabricated. The channel
+        // MENTION is the case card's channel link (contract auto law); the
+        // skipped-staff-role note is the shipped honest access report.
+        const ticketNumber = opened?.ticket?.ticket_number ?? "?";
+        const channelId = opened?.channel?.id != null ? String(opened.channel.id) : null;
+        let result =
+          `Opened ticket T-${ticketNumber} with <@${subject}>: ` +
+          (channelId ? `<#${channelId}>` : "(channel id unrecorded)") +
+          (caseRef ? ` (case ${caseRef})` : "") +
+          ".";
+        const skippedNote = formatStaffRoleAccessNote(opened?.skippedStaffRoles ?? []);
+        if (skippedNote) result += skippedNote;
+        return { ok: true, result };
+      };
 
     default:
       return async () => ({
@@ -1161,4 +1417,8 @@ module.exports = {
   // Delete tool (#734): the ONE target-reading law (canonical messages +
   // legacy single pair) shared by the handler and the case card.
   resolveDeleteTargets,
+  // Ticket tool (#735): the commit-time note-overlap law (pure) + the ONE
+  // normalization the scrub compares in.
+  ticketReasonDuplicatesNote,
+  normalizeNarrativeText,
 };

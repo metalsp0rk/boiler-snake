@@ -613,3 +613,45 @@ test("the feature exports both button arms behind the am:card prefixes (router w
   assert.equal(feature.buttonHandlers[CARD_DISMISS_PREFIX], card.handleCardDismiss);
   assert.equal(feature.card, card, "the card module rides the feature export (#731+ read surfaces)");
 });
+
+// ── 8. #735: the ticket row arms ─────────────────────────────────────────────
+
+test("suggested ticket row quotes the MEMBER-VISIBLE opening staff are approving - issue #735", () => {
+  const { cid, caseRow } = seededCase("ticket-sug");
+  const reason = "let's talk about last night's messages and the rules around them";
+  const row = db.getAutomodAction(suggest(cid, caseRow, "ticket", SUB, { reason }).id);
+  const field = decisionField(card.buildCardPayload({ caseRow, rows: [row], summaryText: "s" }));
+  assert.match(field, /a staff decision is due — Approve opens the case's help ticket WITH the subject in it/);
+  assert.match(field, /the quoted opening below is the member-visible text the subject will read in the ticket channel\./);
+  assert.match(field, new RegExp(`Proposed opening: "${reason}"\\.`),
+    "the QUOTED text is exactly what the subject will read on approval");
+
+  // A row with no recorded reason says so honestly — the card never invents
+  // an opening for a ticket whose text vanished.
+  const bareRow = db.getAutomodAction(
+    suggest(cid, caseRow, "ticket", SUB2, { reason: "   " }).id,
+  );
+  const bareField = decisionField(card.buildCardPayload({ caseRow, rows: [bareRow], summaryText: "s" }));
+  assert.match(bareField, /Proposed opening: none recorded\./);
+});
+
+test("executed / refused / dismissed ticket rows render their recorded outcome verbatim - issue #735", () => {
+  const { cid, caseRow } = seededCase("ticket-out");
+  const done = toExecuted(
+    suggest(cid, caseRow, "ticket", SUB, { reason: "talk it through" }),
+    `Opened ticket T-7 with <@${SUB}>: <#901000000000000099> (case A-${caseRow.case_number}).`,
+  );
+  const field = decisionField(card.buildCardPayload({ caseRow, rows: [done], summaryText: "s" }));
+  assert.ok(
+    field.includes(`Opened ticket T-7 with <@${SUB}>: <#901000000000000099>`),
+    "the success line rides the card EXACTLY as the executor wrote it — no paraphrase layer",
+  );
+
+  const denied = toRefused(
+    suggest(cid, caseRow, "ticket", SUB2, { reason: "talk it through" }),
+    `Could not open the case ticket: <@${SUB2}> already opened a ticket inside the rate window.`,
+  );
+  const deniedField = decisionField(card.buildCardPayload({ caseRow, rows: [denied], summaryText: "s" }));
+  assert.ok(deniedField.includes("already opened a ticket inside the rate window"),
+    "the rate-limit cause rides verbatim — the card never re-writes causes");
+});
