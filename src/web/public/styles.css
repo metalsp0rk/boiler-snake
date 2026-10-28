@@ -14,8 +14,8 @@
  * FILE INDEX (fixed section order):
  *   1. Tokens      — every color/space/radius/type value lives here.
  *   2. Base        — resets, body, focus ring, reduced motion.
- *   3. Shell       — skip link, header, nav rail + Menu button, page grid,
- *                    breadcrumb, footer.
+ *   3. Page frame  — subheading + page actions. Shell chrome (header, nav,
+ *                    grid, breadcrumb, footer) lives in assets/primitives.css.
  *   4. Components  — buttons (+aliases), banners, panels, forms, inputs,
  *                    tables (.table-stack/.table-scroll), badges, pills,
  *                    tabs, .kv, .stat, find box, section nav, search form,
@@ -23,9 +23,9 @@
  *   5. Pages       — per-surface blocks (dashboard, settings, moderation,
  *                    leaderboard, integrations, staff, voice, system/audit,
  *                    tickets, archive, transcript, charts, landing).
- *   6. Responsive  — ALL media queries: the 719 / 720–1099 / 1100+ shell
- *                    grid contract, the phone nav collapse, the phone
- *                    table/form stack, and legacy per-page tweaks.
+ *   6. Responsive  — phone table/form stack and legacy per-page tweaks.
+ *                    The 719 / 720–1099 / 1100+ shell grid lives in
+ *                    assets/primitives.css.
  */
 
 /* ==========================================================================
@@ -56,8 +56,11 @@
   --info: #9cc6ff;
   --info-bg: #16283c;
 
-  --chart-line: #5b9dff;
-  --chart-fill: rgba(91, 157, 255, 0.18);
+  /* Resolved against forge --bs-action / --bs-info when that sheet loads.
+     Literals here keep a chart readable if the token is missing. */
+  --chart-line: #29a8bd;
+  --chart-bar: #86a9c6;
+  --chart-fill: rgba(41, 168, 189, 0.18);
 
   --line: #3a3e46;
   --line-strong: #4c525c;
@@ -126,162 +129,21 @@ a { color: var(--link); }
 
 .muted { color: var(--fg-muted); }
 
-/* Reduced motion (#642): instant scroll, no transitions on the shell/nav
-   or the popovers. Chart.js keeps its own animation: false (app.js). */
+/* Reduced motion (#642): instant scroll, no transitions on the popovers.
+   Nav transitions live in primitives.css. Chart.js keeps animation: false. */
 @media (prefers-reduced-motion: reduce) {
   html { scroll-behavior: auto; }
-  .shell-nav,
   .lookup-pop,
   .user-card { transition: none; }
 }
 
 /* ==========================================================================
- * 3. SHELL
+ * 3. PAGE FRAME
+ * Shell chrome (skip link, header, nav, grid, breadcrumb, footer) moved to
+ * assets/primitives.css at the #711 cutover. Do not re-add .shell-* rules
+ * here — two stylesheets painting the same chrome is the dual look #711
+ * forbids. Subheading and page actions stay; unmigrated pages still use them.
  * ========================================================================== */
-
-/* Skip link (#642): first focusable on every shell page; invisible until
-   focused. Target is <main id="content">. */
-.skip-link {
-  position: absolute;
-  left: -9999px;
-  top: 0;
-  z-index: 100;
-}
-
-.skip-link:focus {
-  left: var(--space-2);
-  top: var(--space-2);
-  padding: 0.5rem 0.9rem;
-  background: var(--bg-raised);
-  color: var(--fg);
-  border: 1px solid var(--link);
-  border-radius: 6px;
-  text-decoration: none;
-}
-
-/* ---- header bar: logo lockup, switcher, tier badge, user box, Menu ------ */
-
-.shell-bar {
-  display: flex;
-  align-items: center;
-  gap: 0.85rem;
-  flex-wrap: wrap;                 /* phone rows (see the 719 query) */
-  min-height: var(--header-h);
-  padding: 0.6rem 1rem;
-  background: var(--bg-raised);
-  border-bottom: 1px solid var(--line);
-}
-
-.brand {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-2);
-  font-weight: 700;
-  text-decoration: none;
-  color: var(--fg);
-  margin-right: auto;
-}
-
-/* 28×28 lockup; alt="" — the "Boiler Snake" word stays visible at every
-   width, so the image is decoration (#642). */
-.brand-logo {
-  width: 28px;
-  height: 28px;
-  border-radius: 6px;
-  display: block;
-}
-
-/* Menu button (#642): base hidden; ONLY the phone query shows it
-   (display:inline-flex). It is never [hidden] — an author display rule
-   would override the UA [hidden] style, so the two never combine. */
-.nav-toggle {
-  display: none;
-  align-items: center;
-  justify-content: center;
-  min-height: 44px;                /* touch target */
-  padding: 0.35rem 0.9rem;
-  background: var(--btn-bg);
-  color: var(--btn-fg);
-  border: 1px solid var(--line);
-  border-radius: 6px;
-  font: inherit;
-  cursor: pointer;
-}
-
-.nav-toggle:hover { border-color: var(--link); }
-
-.guild-switcher {
-  display: flex;
-  align-items: center;
-  gap: 0.4rem;
-  min-width: 0;
-}
-
-.guild-switcher label {
-  font-size: 0.75rem;
-  text-transform: uppercase;
-  letter-spacing: 0.03em;
-  color: var(--fg-muted);
-}
-
-.guild-switcher select {
-  max-width: 40vw;                 /* long guild names never break the bar */
-  min-height: 44px;                /* touch target (ui standards §testing) */
-  background: var(--bg);
-  color: var(--fg);
-  border: 1px solid var(--line);
-  border-radius: 6px;
-  padding: 0.3rem 0.5rem;
-  font: inherit;
-}
-
-.user-box {
-  display: flex;
-  align-items: center;
-  gap: 0.6rem;
-}
-
-.user-tag {
-  font-size: 0.85rem;
-  color: var(--fg-muted);
-  overflow-wrap: anywhere;
-}
-
-.logout-form { margin: 0; }
-
-/* ---- two-column console grid -------------------------------------------- */
-
-/* Nav rail + fluid content. max-width STAYS 1400px (#642 contract); the
-   grid queries in the Responsive section set the column widths. */
-.shell-body {
-  display: grid;
-  grid-template-columns: var(--nav-w) minmax(0, 1fr);
-  gap: 1.6rem;
-  width: 100%;
-  max-width: 1400px;
-  margin: 0 auto;
-  padding: 1.1rem 1.25rem 2.5rem;
-  flex: 1 0 auto;
-}
-
-/* Inside the shell the content column is the grid track — no second cap. */
-.shell-body .shell-main {
-  max-width: none;
-  margin: 0;
-  padding: 0 0 2rem;
-  min-width: 0;
-}
-
-/* Centered fallback for the non-shell lobby pages (root guild list, /t). */
-.shell-main {
-  flex: 1 0 auto;
-  width: 100%;
-  max-width: 1100px;
-  margin: 0 auto;
-  padding: 1.25rem 1rem 2.5rem;
-}
-
-.shell-main h1 { font-size: var(--text-lg); margin: 0.25rem 0; }
 
 /* #642: quiet text rides --fg-muted at opacity 1 — never opacity muting. */
 .subheading { color: var(--fg-muted); opacity: 1; font-size: 0.9rem; margin: 0 0 1rem; }
@@ -296,76 +158,6 @@ a { color: var(--link); }
 }
 
 /* ---- sidebar nav (desktop default: sticky column) ------------------------ */
-
-.shell-nav {
-  align-self: start;
-  position: sticky;
-  top: 0.9rem;
-  display: flex;
-  flex-direction: column;
-  gap: 1.1rem;
-}
-
-.shell-nav-group h2 {
-  font-size: var(--text-xs);
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-  color: var(--fg-muted);
-  margin: 0 0 0.35rem;
-}
-
-.shell-nav a {
-  display: block;
-  padding: 0.45rem 0.6rem 0.45rem calc(0.6rem - 3px); /* room for the inset bar */
-  min-height: 44px;                /* touch target */
-  box-sizing: border-box;
-  border-radius: 6px;
-  color: var(--fg);
-  text-decoration: none;
-  font-size: 0.95rem;
-}
-
-.shell-nav a:hover { background: var(--bg-raised); }
-
-/* Current page: inset bar + raised fill + weight — NOT color alone (#642). */
-.shell-nav a.active {
-  background: var(--bg-raised);
-  box-shadow: inset 3px 0 0 var(--link);
-  font-weight: 700;
-}
-
-/* ---- breadcrumb (first node inside <main>) -------------------------------- */
-
-.breadcrumb {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: baseline;
-  gap: var(--space-2);
-  font-size: var(--text-sm);
-  color: var(--fg-muted);
-  margin: 0 0 var(--space-3);
-}
-
-.breadcrumb a { color: var(--link); text-decoration: none; }
-.breadcrumb a:hover { text-decoration: underline; }
-
-.breadcrumb > * + *::before {
-  content: "/";
-  margin-right: var(--space-2);
-  color: var(--line-strong);
-}
-
-/* ---- footer ---------------------------------------------------------------- */
-
-.shell-footer {
-  flex-shrink: 0;
-  text-align: center;
-  font-size: var(--text-xs);
-  color: var(--fg-muted);
-  opacity: 1;                      /* quiet by color, not opacity (#642) */
-  padding: var(--space-4);
-  border-top: 1px solid var(--line);
-}
 
 /* ==========================================================================
  * 4. COMPONENTS  (shared system later console issues compose on — land the
@@ -383,10 +175,8 @@ a { color: var(--link); }
   font-size: 0.85rem;
 }
 
-/* Inside the shell grid a centered auto-margin banner would float — pages
-   keep their banners flush with the content column. */
-.shell-body .banner { margin-left: 0; }
-
+/* Signed-in shell banners are flushed by primitives.css (.bs-shell .banner).
+   These rules remain for the sign-in landing, which does not load forge CSS. */
 .banner-degraded,
 .banner-warn { background: var(--warn-bg); color: var(--warn); }
 .banner-info { background: var(--info-bg); color: var(--info); }
@@ -636,36 +426,6 @@ th {
 .kv dt { color: var(--fg-muted); }
 .kv dd { margin: 0; }
 
-/* Dashboard-at-a-glance row (#651): the .stat blocks ARE the cards — never
-   nest a .stat inside a padded .panel (double padding). */
-.stat-row {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr));
-  gap: var(--space-3);
-  margin: 0 0 var(--space-4);
-}
-
-.stat {
-  background: var(--bg-raised);
-  border: 1px solid var(--line);
-  border-radius: var(--radius);
-  padding: var(--space-3) var(--space-4);
-}
-
-.stat-label {
-  font-size: var(--text-xs);
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  color: var(--fg-muted);
-  margin: 0;
-}
-
-.stat-value {
-  font-size: var(--text-xl);
-  margin: var(--space-1) 0 0;
-  font-variant-numeric: tabular-nums; /* #651: digits align, no jitter on refresh */
-}
-
 /* ---- find box + in-page section nav (consumed by #643/#644) -------------------------- */
 
 .find-setting {
@@ -784,21 +544,7 @@ th {
   align-items: start;
 }
 
-/* Each panel is a card; overflow-x keeps wide tables scrolling INSIDE the
-   dashboard panel instead of breaking the page at 375px (the UX v1.1
-   dashboard contract — pages outside the dashboard use .table-scroll). */
-.dashboard-panel {
-  background: var(--bg-raised);
-  border: 1px solid var(--line);
-  border-radius: 6px;
-  padding: 1rem 1.15rem;
-  min-width: 0;
-  overflow-x: auto;
-}
-
-.dashboard-panel h2 { font-size: var(--text-md); margin: 0 0 0.6rem; }
-.dashboard-panel h3 { font-size: 0.85rem; margin: var(--space-4) 0 0.4rem; }
-
+/* Card chrome is .bs-panel (primitives.css). Wide rows still span the grid. */
 .dashboard-count { font-size: 1.1rem; margin: 0 0 0.75rem; }
 
 .dashboard-dl {
@@ -1684,11 +1430,10 @@ a.btn-signin {
 .danger-zone-inline input { width: 9ch; }
 
 /* ==========================================================================
- * 6. RESPONSIVE  (every @media lives here; the shell grid contract is
- * 719 / 720–1099 / 1100+. The old ≤880px "nav becomes a horizontal strip"
- * block is DELETED (#642): it forced .shell-nav { flex-direction: row } at
- * 720–880px and a later 719px rule could never override it. The phone
- * sidebar now COLLAPSES behind the Menu button instead.)
+ * 6. RESPONSIVE
+ * The shell grid (719 / 720–1099 / 1100+) lives in primitives.css. The old
+ * ≤880px horizontal nav strip stays deleted (#642). Phone table and form
+ * stacks remain here.
  * ========================================================================== */
 
 /* ---- legacy per-page tweaks (unchanged breakpoints) ----------------------- */
@@ -1733,32 +1478,8 @@ a.btn-signin {
 /* ---- very narrow phones (kept from the Phase-4 pass) ------------------------ */
 
 @media (max-width: 480px) {
-  .shell-bar { padding: 0.5rem 0.6rem; gap: 0.5rem 0.7rem; }
-  .guild-switcher select { max-width: 60vw; }
-  .user-box { flex-wrap: wrap; }
   .lb-user-xp .kv { grid-template-columns: 1fr; gap: 0.1rem; }
   .lb-user-xp .kv dd { margin-bottom: 0.5rem; }
-}
-
-/* ---- #642 phone shell contract (719px) — verbatim grid/menu rules ---------- */
-
-@media (max-width: 719px) {
-  .nav-toggle { display: inline-flex; }
-  .shell-body { grid-template-columns: 1fr; }
-  /* app.js adds/removes body.nav-collapsed; the SERVER never ships it. */
-  body.nav-collapsed .shell-nav { display: none; }
-  .shell-nav { flex-direction: column; position: static; }
-}
-
-/* Phone header rows: brand + tier badge + Menu on row 1, switcher full-width
-   on row 2, user box on row 3 (flex-wrap lines ordered explicitly). */
-@media (max-width: 719px) {
-  .shell-bar { row-gap: 0.5rem; }
-  .brand { margin-right: 0; }
-  .nav-toggle { margin-left: auto; }
-  .guild-switcher { order: 3; flex: 1 1 100%; }
-  .guild-switcher select { flex: 1 1 auto; min-width: 0; max-width: none; }
-  .user-box { order: 4; flex: 1 1 100%; }
 }
 
 /* ---- #642 .table-stack phone block --------------------------------------------
@@ -1879,18 +1600,4 @@ a.btn-signin {
     background: var(--bg);
     padding: var(--space-2) 0;
   }
-}
-
-/* ---- #642 shell grid: tablet column ------------------------------------------------ */
-
-@media (min-width: 720px) and (max-width: 1099px) {
-  .shell-body { grid-template-columns: 13rem minmax(0, 1fr); }
-  .shell-nav { position: sticky; flex-direction: column; }
-}
-
-/* ---- #642 shell grid: desktop column ------------------------------------------------ */
-
-@media (min-width: 1100px) {
-  .shell-body { grid-template-columns: 15.5rem minmax(0, 1fr); }
-  .shell-nav { position: sticky; flex-direction: column; }
 }

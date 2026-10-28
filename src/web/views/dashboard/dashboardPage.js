@@ -89,18 +89,18 @@ function renderStatRow(data) {
         ` (${tickers.filter((t) => t.status === "ok").length} ok)`
       : UNKNOWN;
   return html`
-    <div class="stat-row">
-      <div class="stat">
-        <p class="stat-label">Open tickets</p>
-        <p class="stat-value">${ticketVal}</p>
+    <div class="bs-stat-grid">
+      <div class="bs-stat">
+        <p class="bs-stat-label">Open tickets</p>
+        <p class="bs-stat-value">${ticketVal}</p>
       </div>
-      <div class="stat">
-        <p class="stat-label">Leader rows</p>
-        <p class="stat-value">${leaderVal}</p>
+      <div class="bs-stat">
+        <p class="bs-stat-label">Leader rows</p>
+        <p class="bs-stat-value">${leaderVal}</p>
       </div>
-      <div class="stat">
-        <p class="stat-label">Background jobs</p>
-        <p class="stat-value">${jobVal}</p>
+      <div class="bs-stat">
+        <p class="bs-stat-label">Background jobs</p>
+        <p class="bs-stat-value">${jobVal}</p>
       </div>
     </div>`;
 }
@@ -109,9 +109,9 @@ function renderTicketsSection(tickets, ctx = {}) {
   const { guildId = "", names = null } = ctx;
   if (!tickets || tickets.available !== true) {
     return html`
-      <section class="dashboard-panel dashboard-panel-wide dashboard-tickets">
+      <section class="bs-panel dashboard-panel-wide dashboard-tickets">
         <h2>Open tickets</h2>
-        <p class="empty-state">Ticket data is unavailable right now.</p>
+        <p class="bs-empty">Ticket data is unavailable right now.</p>
       </section>`;
   }
   const countLabel = tickets.openCountSaturated
@@ -126,7 +126,7 @@ function renderTicketsSection(tickets, ctx = {}) {
     </tr>`
   );
   return html`
-    <section class="dashboard-panel dashboard-panel-wide dashboard-tickets">
+    <section class="bs-panel dashboard-panel-wide dashboard-tickets">
       <h2>Open tickets</h2>
       <p class="dashboard-count">${countLabel} open in this guild${tickets.openCountSaturated ? html` (display capped at 50)` : html``}.</p>
       ${newest.length
@@ -136,7 +136,7 @@ function renderTicketsSection(tickets, ctx = {}) {
             </thead>
             <tbody>${newest}</tbody>
           </table>`
-        : html`<p class="empty-state">Nothing open.</p>`}
+        : html`<p class="bs-empty">Nothing open.</p>`}
       ${guildId
         ? html`<p class="panel-foot"><a href="/g/${guildId}/t">Ticket archive →</a></p>`
         : html``}
@@ -168,19 +168,19 @@ function renderActivitySection(activity, ctx = {}) {
         30 s). Per-window (24 h / 7 d) activity helpers do not exist in the
         db layer yet — see the Phase 1 data-source gaps report.
       </p>`
-    : html`<p class="empty-state">Activity totals are unavailable right now.</p>`;
+    : html`<p class="bs-empty">Activity totals are unavailable right now.</p>`;
 
   const leadersBlock =
     leaders === null
-      ? html`<p class="empty-state">XP leaders are unavailable right now.</p>`
+      ? html`<p class="bs-empty">XP leaders are unavailable right now.</p>`
       : leaders.length
         ? html`<ol class="dashboard-leaders">
             ${leaders.map((l) => html`<li>${userRef(guildId, l.userId, names)} — ${formatCount(l.xp)} XP</li>`)}
           </ol>`
-        : html`<p class="empty-state">No XP rows yet.</p>`;
+        : html`<p class="bs-empty">No XP rows yet.</p>`;
 
   return html`
-    <section class="dashboard-panel dashboard-activity">
+    <section class="bs-panel dashboard-activity">
       <h2>Activity</h2>
       ${trackingBlock}
       <h3>Top XP (all time, top 10)</h3>
@@ -205,10 +205,10 @@ function renderJobsSection(tickers, ctx = {}) {
         </thead>
         <tbody>${rows}</tbody>
       </table>`
-    : html`<p class="empty-state">No background jobs report in yet — features have not started publishing job state to the console.</p>`;
+    : html`<p class="bs-empty">No background jobs report in yet — features have not started publishing job state to the console.</p>`;
 
   return html`
-    <section class="dashboard-panel dashboard-tickers">
+    <section class="bs-panel dashboard-tickers">
       <h2>Background jobs</h2>
       <p class="subheading">
         Automated tasks that keep features fresh. <strong>ok</strong> = ran
@@ -236,14 +236,14 @@ function renderNowPlayingSection(nowPlaying, ctx = {}) {
         ${Number.isFinite(Number(np.upcoming)) ? html` <span class="subheading">· ${formatCount(np.upcoming)} queued</span>` : html``}
       </p>`;
   } else if (status === "idle") {
-    body = html`<p class="empty-state">Nothing playing${np.detail ? html` (${np.detail})` : html``}.</p>`;
+    body = html`<p class="bs-empty">Nothing playing${np.detail ? html` (${np.detail})` : html``}.</p>`;
   } else if (status === "unavailable") {
-    body = html`<p class="empty-state">Music node unavailable${np.detail ? html` (${np.detail})` : html``}.</p>`;
+    body = html`<p class="bs-empty">Music node unavailable${np.detail ? html` (${np.detail})` : html``}.</p>`;
   } else {
-    body = html`<p class="empty-state">Now-playing status: ${UNKNOWN}.</p>`;
+    body = html`<p class="bs-empty">Now-playing status: ${UNKNOWN}.</p>`;
   }
   return html`
-    <section class="dashboard-panel dashboard-nowplaying-panel">
+    <section class="bs-panel dashboard-nowplaying-panel">
       <h2>Music · now playing</h2>
       ${body}
       ${guildId
@@ -272,7 +272,7 @@ function renderChartsSection(ctx) {
   const activitySrc = guildId ? `/g/${guildId}/api/dashboard/activity.json` : "";
   const leadersSrc = guildId ? `/g/${guildId}/api/dashboard/xp-leaders.json` : "";
   return html`
-    <section class="dashboard-panel dashboard-panel-wide dashboard-charts">
+    <section class="bs-panel dashboard-panel-wide dashboard-charts">
       <h2>Trends</h2>
       <p class="subheading">
         Charts render in your browser from the guild JSON API (cached

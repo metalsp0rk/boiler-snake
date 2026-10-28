@@ -224,7 +224,7 @@ describe("participant ticket round-trip + own-tickets list (§8.15-15.13)", () =
     const { res, body } = await get(`/t/${ticketToken}?logged-in=1`, cookie);
     assert.equal(res.status, 200, "participant opens their transcript directly");
     assert.ok(body.includes(markerReason), "the record renders");
-    assert.ok(!body.includes('<aside class="shell-nav"'), "still chrome-free");
+    assert.ok(!body.includes('<aside class="bs-nav"'), "still chrome-free");
     assert.ok(body.includes("Signed in with Discord"), "landing banner shown");
   });
 

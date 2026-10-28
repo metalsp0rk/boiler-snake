@@ -350,25 +350,25 @@ describe("web dashboard (GET /g/:guildId, staff tier, query budget)", () => {
 
     it("#651: the stat row leads with snapshot counts (no new query)", async () => {
       const { body } = await req(`/g/${CID_A}`, { cookie: cookieOf.staff });
-      assert.ok(body.includes('<div class="stat-row">'), "stat row ships");
+      assert.ok(body.includes('<div class="bs-stat-grid">'), "stat row ships");
       assert.equal(
-        (body.match(/class="stat"/g) || []).length,
+        (body.match(/class="bs-stat"/g) || []).length,
         3,
-        "three .stat blocks: tickets / leaders / jobs",
+        "three stat cards: tickets / leaders / jobs",
       );
       assert.match(
         body,
-        /Open tickets<\/p>\s*<p class="stat-value">3</,
+        /Open tickets<\/p>\s*<p class="bs-stat-value">3</,
         "ticket count mirrors the section's snapshot count",
       );
       assert.match(
         body,
-        /Leader rows<\/p>\s*<p class="stat-value">\d+/,
+        /Leader rows<\/p>\s*<p class="bs-stat-value">\d+/,
         "leader count is numeric when the source reported",
       );
       assert.match(
         body,
-        /Background jobs<\/p>\s*<p class="stat-value">unknown/,
+        /Background jobs<\/p>\s*<p class="bs-stat-value">unknown/,
         "no job reports in this harness ⇒ unknown, never a fabricated count",
       );
       assert.ok(body.includes("Voice console →"), "now-playing links to the voice page");
@@ -400,11 +400,11 @@ describe("web dashboard (GET /g/:guildId, staff tier, query budget)", () => {
       );
       assert.match(
         out,
-        /Background jobs<\/p>\s*<p class="stat-value">2 \(1 ok\)</,
+        /Background jobs<\/p>\s*<p class="bs-stat-value">2 \(1 ok\)</,
         "count + ok tally from the snapshot's ticker rows",
       );
-      assert.match(out, /Leader rows<\/p>\s*<p class="stat-value">2</, "leader row count");
-      assert.match(out, /Open tickets<\/p>\s*<p class="stat-value">2</, "open ticket count");
+      assert.match(out, /Leader rows<\/p>\s*<p class="bs-stat-value">2</, "leader row count");
+      assert.match(out, /Open tickets<\/p>\s*<p class="bs-stat-value">2</, "open ticket count");
     });
   });
 
@@ -425,7 +425,7 @@ describe("web dashboard (GET /g/:guildId, staff tier, query budget)", () => {
       // #651: unreported job state degrades the JOBS stat to "unknown" —
       // an empty registry is never rendered as "0 jobs".
       assert.ok(
-        body.includes('<p class="stat-value">unknown</p>'),
+        body.includes('<p class="bs-stat-value">unknown</p>'),
         "unreported sources never render a fabricated zero",
       );
     });

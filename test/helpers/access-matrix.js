@@ -27,10 +27,10 @@ const assert = require("node:assert/strict");
 
 /**
  * Stable structural marker of the authenticated guild shell (src/web/views/
- * layout.js `<header class="shell-bar">`). Used by the shellOk outcome —
+ * layout.js `<header class="bs-header">`). Used by the shellOk outcome —
  * a denied/plain page can never contain it.
  */
-const SHELL_MARKER = "shell-bar";
+const SHELL_MARKER = "bs-header";
 
 // ---------------------------------------------------------------------------
 // Live-app route enumeration (Express 5: `app.router` lazy getter → Router

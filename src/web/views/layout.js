@@ -19,10 +19,10 @@
  * the old <noscript> guild hint is gone (typing /g/<id> is still a URL).
  * The signed-out landing page loads no app.js and is untouched.
  *
- * SHELL STRUCTURE (#642, fixed order):
+ * SHELL STRUCTURE (#642, fixed order; #711 forge chrome):
  *   skip link (first focusable) → header (logo lockup, guild switcher, tier
  *   badge, user box + sign out, Menu button) → [degraded banner] →
- *   .shell-body grid (sidebar nav + <main id="content">). Inside main the
+ *   .bs-shell grid (sidebar nav + <main id="content">). Inside main the
  *   breadcrumb is the FIRST node; the optional `flash` slot (SafeString)
  *   follows it, BEFORE the single <h1>; `lede` (wins over the supported
  *   `subheading` alias) and the optional `actions` (SafeString) ride under
@@ -50,6 +50,7 @@
 
 const { html, raw } = require("./escape");
 const { tierBadge, degradedBanner } = require("./components");
+const { readBuildManifest, forgePublicPaths } = require("../assets/stamp");
 
 /**
  * ASSET CACHE-BUSTING (§8.7): /static/* is served immutable, max-age=1y,
@@ -62,7 +63,7 @@ const { tierBadge, degradedBanner } = require("./components");
  * an old immutable copy pick up the rebuilt styles.css/app.js WITHOUT a
  * package version bump; later issues that touch these files bump the suffix.
  */
-const ASSET_VERSION = `${require("../../../package.json").version}-shell9`;
+const ASSET_VERSION = `${require("../../../package.json").version}-shell10`;
 
 /**
  * Vendored Chart.js UMD (Phase 4 charts, operator decision 2026-09-25) —
@@ -79,6 +80,21 @@ const STYLES_SRC = `/static/styles.css?v=${ASSET_VERSION}`;
 /** Header logo lockup (256×256 source, rendered 28×28; alt="" because the
  *  "Boiler Snake" word stays visible at every width — the image is decor). */
 const LOGO_SRC = `/static/logo.png?v=${ASSET_VERSION}`;
+
+/** Hashed forge CSS/JS. Cached after the first render (the stamp is stable
+ *  for the life of the process; a rebuild restarts the server). */
+let forgeAssets = null;
+function forgeAssetTags() {
+  if (forgeAssets) return forgeAssets;
+  try {
+    forgeAssets = forgePublicPaths(readBuildManifest());
+  } catch (err) {
+    throw new Error(
+      `[web] forge assets are not built (${err?.message || err}). Run \`npm run assets:build\`.`
+    );
+  }
+  return forgeAssets;
+}
 
 /**
  * LEFT SIDEBAR NAV (#642 tree; roadmap/web-admin.md §8.15). Static definition:
@@ -232,10 +248,10 @@ function renderSideNav(guildId, tier, path) {
         }>${it.label}</a>`;
       });
     if (!items.length) return html``;
-    return html`<div class="shell-nav-group"><h2>${group.label}</h2>${items}</div>`;
+    return html`<div class="bs-nav-group"><h2>${group.label}</h2>${items}</div>`;
   });
   // id="shell-nav" is the Menu button's aria-controls target (#642).
-  return html`<aside class="shell-nav" id="shell-nav" aria-label="Console navigation">${groups}</aside>`;
+  return html`<aside class="bs-nav" id="shell-nav" aria-label="Console navigation">${groups}</aside>`;
 }
 
 /** Display name for a guild entry (never empty — fall back to the id). */
@@ -359,28 +375,36 @@ function renderLayout(opts) {
   const sideNav = renderSideNav(currentGuildId, tier, path);
   const hasNav = String(sideNav) !== "";
   const lead = lede || subheading;
+  const shellClass = hasNav ? "bs-shell" : "bs-shell is-solo";
+  // Legacy styles first, then forge, so tokens and the shell grid win.
+  // The module follows app.js: both are deferred, document order holds,
+  // and forge.js skips lookup/user-card when app.js is on the page.
+  const forge = forgeAssetTags();
+  const forgeCss = forge.css.map((href) => html`<link rel="stylesheet" href="${href}"/>\n`);
 
   return html`<!DOCTYPE html>
-<html lang="en">
+<html lang="en" class="sl-theme-dark">
 <head>
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1"/>
 <title>${title} · Boiler Snake</title>
 <link rel="stylesheet" href="${STYLES_SRC}"/>
+${forgeCss}
 <script src="${CHART_SRC}" defer${nonceAttr}></script>
 <script src="${APP_SRC}" defer${nonceAttr}></script>
+<script type="module" src="${forge.js}"${nonceAttr}></script>
 </head>
 <body data-csrf-token="${csrfToken || ""}">
 <a class="skip-link" href="#content">Skip to content</a>
-<header class="shell-bar">
-  <a class="brand" href="${homeHref}"><img class="brand-logo" src="${LOGO_SRC}" alt="" width="28" height="28"/>Boiler Snake</a>
+<header class="bs-header">
+  <a class="bs-brand" href="${homeHref}"><img class="brand-logo" src="${LOGO_SRC}" alt="" width="28" height="28"/>Boiler Snake</a>
   ${switcher}
   ${tierBadge(tier)}
   <div class="user-box">
     <span class="user-tag">${userTag}</span>
     <form method="post" action="/auth/logout" class="logout-form">
       <input type="hidden" name="_csrf" value="${csrfToken || ""}"/>
-      <button type="submit" class="btn btn-logout">Sign out</button>
+      <sl-button type="submit">Sign out</sl-button>
     </form>
   </div>
   ${hasNav
@@ -388,9 +412,9 @@ function renderLayout(opts) {
     : html``}
 </header>
 ${degraded ? degradedBanner() : html``}
-<div class="shell-body">
+<div class="${shellClass}">
 ${sideNav}
-<main class="shell-main" id="content">
+<main class="bs-main" id="content">
   ${renderBreadcrumb(guilds, currentGuildId, path)}
   ${flash || html``}
   <h1>${heading}</h1>
@@ -399,7 +423,7 @@ ${sideNav}
   ${content}
 </main>
 </div>
-<footer class="shell-footer">Boiler Snake web console · <a href="/health">/health</a></footer>
+<footer class="bs-footer">Boiler Snake web console · <a href="/health">/health</a></footer>
 </body>
 </html>`;
 }

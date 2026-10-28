@@ -186,7 +186,7 @@ describe("themed transcript view (§8.15 amendment)", () => {
     const { res, body } = await req(`/t/${token}`, cookieOf.staff);
     assert.equal(res.status, 200);
     assert.equal(res.headers.get("cache-control"), "no-store");
-    assert.match(body, /<aside class="shell-nav"/, "staff get the console sidebar");
+    assert.match(body, /<aside class="bs-nav"/, "staff get the console sidebar");
     assert.ok(body.includes(CREATOR_NAME), "requester resolved from member cache");
     assert.ok(body.includes(`/g/${CID_A}/users/${USER_CREATOR}`), "staff: people are links");
     assert.ok(body.includes("line one<br/>line two"), "multi-line content preserved");
@@ -213,7 +213,7 @@ describe("themed transcript view (§8.15 amendment)", () => {
     assert.equal(res.status, 200);
     assert.ok(body.includes("line one<br/>line two"), "content identical");
     assert.ok(body.includes(`/t/${token}/raw`), "their transcript, their raw export");
-    assert.ok(!body.includes('<aside class="shell-nav"'), "no console nav for participants");
+    assert.ok(!body.includes('<aside class="bs-nav"'), "no console nav for participants");
     assert.ok(!body.includes(`/g/${CID_A}`), "no dead-end console links (§8.6)");
     assert.ok(body.includes(CREATOR_NAME), "names still resolve for their own view");
     assert.ok(!/href="\/g\//.test(body));

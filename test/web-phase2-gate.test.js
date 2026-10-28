@@ -893,7 +893,7 @@ describe("F. getClient boot wiring (features/web start → startWebServer({getCl
       cookieId: sessionIdOf.admin,
     });
     assert.equal(res.status, 200);
-    assert.ok(res.body.includes("shell-bar"), "rendered inside the shell");
+    assert.ok(res.body.includes("bs-header"), "rendered inside the shell");
     assert.ok(
       res.body.includes(GATE_CHANNEL_NAME),
       "the FAKE client's cached channel name surfaced ⇒ options.getClient threaded through to routes/settings"

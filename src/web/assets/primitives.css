@@ -1,8 +1,13 @@
 /**
  * Custom primitives that have no Shoelace equivalent (#709 vocabulary):
- * dense table, stat card, lookup combobox, user chip/card, pager, empty state.
- * Pages compose these classes. Phase 1 fixtures are the visual baselines;
- * live routes adopt them in later phases, one shell at a time.
+ * shell chrome, dense table, stat card, lookup combobox, user chip/card,
+ * pager, empty state. The signed-in shell and the dashboard page-group
+ * (#711) use these classes. Unmigrated page bodies keep styles.css.
+ *
+ * Shell grid is the #642 contract: Menu collapse at ≤719px (never a
+ * horizontal strip), 13rem rail at 720–1099, 15.5rem from 1100, shell
+ * max-width 1400px, content column uncapped. Active nav is a teal inset
+ * bar plus weight — not color alone.
  */
 
 *,
@@ -18,6 +23,8 @@ html {
 body {
   margin: 0;
   min-height: 100vh;
+  display: flex;
+  flex-direction: column;
   background: var(--bs-base);
   color: var(--bs-fg);
   font-family: var(--bs-font-sans);
@@ -30,19 +37,26 @@ body {
   outline-offset: 2px;
 }
 
+/* Skip link (#642). The live shell uses .skip-link; .bs-skip stays for fixtures. */
+.skip-link,
 .bs-skip {
   position: absolute;
-  left: -999px;
+  left: -9999px;
   top: 0;
+  z-index: 100;
 }
 
+.skip-link:focus,
 .bs-skip:focus {
   left: 8px;
   top: 8px;
   z-index: 5;
+  padding: 8px 12px;
   background: var(--bs-raised);
   color: var(--bs-fg);
-  padding: 8px 12px;
+  border: 1px solid var(--bs-action);
+  border-radius: var(--bs-radius);
+  text-decoration: none;
 }
 
 .bs-id,
@@ -52,13 +66,15 @@ body {
   font-variant-numeric: tabular-nums;
 }
 
+/* ---- header: logo, switcher, tier, user, Menu (#642 row order) ----------- */
+
 .bs-header {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 16px;
+  flex-wrap: wrap;
+  gap: 0.85rem;
   min-height: 56px;
-  padding: 0 20px;
+  padding: 0.6rem 1rem;
   background: var(--bs-sunken);
   border-bottom: 1px solid var(--bs-line);
   box-shadow: inset 0 1px 0 var(--bs-highlight);
@@ -68,7 +84,9 @@ body {
   display: inline-flex;
   align-items: center;
   gap: 10px;
-  flex: 0 0 auto;
+  flex: 0 1 auto;
+  margin-right: auto;
+  min-width: 0;
   color: var(--bs-fg);
   font-weight: 600;
   letter-spacing: -0.01em;
@@ -78,6 +96,8 @@ body {
 
 .bs-brand img {
   display: block;
+  width: 28px;
+  height: 28px;
   border-radius: var(--bs-radius);
 }
 
@@ -88,45 +108,139 @@ body {
   color: var(--bs-muted);
 }
 
+/* Menu (#642): hidden until the phone query. Never [hidden] — an author
+   display rule would override the UA [hidden] style. */
+.nav-toggle {
+  display: none;
+  align-items: center;
+  justify-content: center;
+  min-height: 44px;
+  padding: 0.35rem 0.9rem;
+  background: var(--bs-raised);
+  color: var(--bs-fg);
+  border: 1px solid var(--bs-line);
+  border-radius: var(--bs-radius);
+  font: inherit;
+  cursor: pointer;
+}
+
+.nav-toggle:hover {
+  border-color: var(--bs-action);
+  color: var(--bs-action);
+}
+
+.guild-switcher {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  min-width: 0;
+}
+
+.guild-switcher label {
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--bs-muted);
+}
+
+.guild-switcher select {
+  max-width: 40vw;
+  min-height: 44px;
+  background: var(--bs-sunken);
+  color: var(--bs-fg);
+  border: 1px solid var(--bs-line);
+  border-radius: var(--bs-radius-control);
+  padding: 0.3rem 0.5rem;
+  font: inherit;
+}
+
+.user-box {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+}
+
+.user-tag {
+  font-size: 13px;
+  color: var(--bs-muted);
+  overflow-wrap: anywhere;
+}
+
+.logout-form {
+  margin: 0;
+}
+
+/* ---- page grid ----------------------------------------------------------- */
+
 .bs-shell {
   display: grid;
-  grid-template-columns: 220px minmax(0, 1fr);
-  min-height: calc(100vh - 56px);
+  grid-template-columns: 13rem minmax(0, 1fr);
+  gap: 1.6rem;
+  width: 100%;
+  max-width: 1400px;
+  margin: 0 auto;
+  padding: 1.1rem 1.25rem 2.5rem;
+  flex: 1 0 auto;
+}
+
+/* Lobby pages (no rail) stay a single centered column. */
+.bs-shell.is-solo {
+  grid-template-columns: 1fr;
+  max-width: 1100px;
+}
+
+.bs-shell .bs-main {
+  max-width: none;
+  margin: 0;
+  padding: 0 0 2rem;
+  min-width: 0;
+}
+
+.bs-shell.is-solo .bs-main {
+  padding: 1.25rem 1rem 2.5rem;
 }
 
 .bs-nav {
+  align-self: start;
+  position: sticky;
+  top: 0.9rem;
   display: flex;
   flex-direction: column;
-  gap: 4px;
-  padding: 16px 12px;
-  background: var(--bs-sunken);
-  border-right: 1px solid var(--bs-line);
+  gap: 1.1rem;
+}
+
+.bs-nav-group h2 {
+  margin: 0 0 0.35rem;
+  color: var(--bs-muted);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
 }
 
 .bs-nav a {
   display: flex;
   align-items: center;
-  min-height: 32px;
-  padding: 6px 10px;
+  min-height: 44px;
+  padding: 6px 10px 6px 7px;
   border-radius: var(--bs-radius);
-  color: var(--bs-muted);
+  color: var(--bs-fg);
   text-decoration: none;
-  transition: background-color 160ms ease, color 160ms ease;
+  transition: background-color 160ms ease, color 160ms ease, box-shadow 160ms ease;
 }
 
 .bs-nav a:hover {
   background: var(--bs-hover);
+  color: var(--bs-action);
+}
+
+/* Current page: inset bar + raised fill + weight — not color alone (#642). */
+.bs-nav a[aria-current="page"],
+.bs-nav a.active {
+  background: var(--bs-raised);
+  box-shadow: inset 3px 0 0 var(--bs-action), inset 0 1px 0 var(--bs-highlight);
+  font-weight: 700;
   color: var(--bs-fg);
-}
-
-.bs-nav a[aria-current="page"] {
-  background: var(--bs-info-tint);
-  color: var(--bs-info);
-}
-
-.bs-main {
-  padding: 28px 32px 48px;
-  max-width: 1080px;
 }
 
 .bs-kicker {
@@ -138,7 +252,7 @@ body {
 }
 
 .bs-main h1 {
-  margin: 0;
+  margin: 0.25rem 0;
   font-size: 28px;
   font-weight: 600;
   letter-spacing: -0.02em;
@@ -157,11 +271,82 @@ body {
   margin-top: 20px;
 }
 
+.breadcrumb {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 8px;
+  margin: 0 0 12px;
+  color: var(--bs-muted);
+  font-size: 13px;
+}
+
+.breadcrumb a {
+  color: var(--bs-action);
+  text-decoration: none;
+}
+
+.breadcrumb a:hover {
+  text-decoration: underline;
+}
+
+.breadcrumb > * + *::before {
+  content: "/";
+  margin-right: 8px;
+  color: var(--bs-line);
+}
+
+.bs-footer {
+  flex-shrink: 0;
+  padding: 16px;
+  border-top: 1px solid var(--bs-line);
+  color: var(--bs-muted);
+  font-size: 12px;
+  text-align: center;
+}
+
+/* Flash / degraded banners on the shell. The sign-in landing does not load
+   this file, so styles.css keeps its own .banner rules for that page. */
+.bs-shell .banner,
+.bs-header ~ .banner {
+  margin-left: 0;
+  margin-right: 0;
+  max-width: none;
+  border-color: var(--bs-line);
+  border-radius: var(--bs-radius);
+  box-shadow: inset 0 1px 0 var(--bs-highlight);
+}
+
+.bs-shell .banner-info,
+.bs-header ~ .banner-info {
+  background: var(--bs-info-tint);
+  color: var(--bs-info);
+}
+
+.bs-shell .banner-degraded,
+.bs-shell .banner-warn,
+.bs-header ~ .banner-degraded,
+.bs-header ~ .banner-warn {
+  background: var(--bs-warn-tint);
+  color: var(--bs-warn);
+}
+
+.bs-shell .banner-error,
+.bs-header ~ .banner-error {
+  background: var(--bs-danger-tint);
+  color: var(--bs-danger);
+}
+
+/* ---- stat cards ---------------------------------------------------------- */
+
 .bs-stat-grid {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr));
   gap: 12px;
-  margin-top: 24px;
+}
+
+.dashboard > .bs-stat-grid {
+  grid-column: 1 / -1;
 }
 
 .bs-stat {
@@ -177,12 +362,16 @@ body {
   color: var(--bs-muted);
   font-size: 12px;
   font-weight: 500;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
 }
 
 .bs-stat-value {
   margin: 6px 0 0;
+  font-family: var(--bs-font-mono);
   font-size: 26px;
   font-weight: 500;
+  font-variant-numeric: tabular-nums;
   letter-spacing: -0.03em;
   line-height: 1.1;
 }
@@ -291,11 +480,13 @@ body {
 .bs-empty {
   padding: 28px 16px;
   text-align: center;
+  color: var(--bs-muted);
 }
 
 .bs-empty-title {
   margin: 0;
   font-weight: 600;
+  color: var(--bs-fg);
 }
 
 .bs-empty-body {
@@ -451,6 +642,8 @@ body {
 }
 
 .bs-panel {
+  min-width: 0;
+  overflow-x: auto;
   background: var(--bs-raised);
   border: 1px solid var(--bs-line);
   border-radius: var(--bs-radius);
@@ -461,6 +654,12 @@ body {
 .bs-panel h2 {
   margin: 0 0 12px;
   font-size: 16px;
+}
+
+.bs-panel h3 {
+  margin: 16px 0 6px;
+  font-size: 13px;
+  font-weight: 600;
 }
 
 .bs-stack {
@@ -485,29 +684,51 @@ body {
   }
 }
 
-@media (max-width: 720px) {
+/* #642 phone shell. The nav stays a COLUMN and hides only under
+   body.nav-collapsed (app.js adds that class; the server never ships it). */
+@media (max-width: 719px) {
+  .nav-toggle {
+    display: inline-flex;
+    margin-left: auto;
+  }
   .bs-shell {
     grid-template-columns: 1fr;
   }
-  .bs-nav {
-    flex-direction: row;
-    overflow-x: auto;
-    border-right: 0;
-    border-bottom: 1px solid var(--bs-line);
+  body.nav-collapsed .bs-nav {
+    display: none;
   }
-  .bs-nav a {
-    min-height: 44px;
-    white-space: nowrap;
+  .bs-nav {
+    flex-direction: column;
+    position: static;
+  }
+  .bs-header {
+    row-gap: 0.5rem;
+    padding: 0.5rem 0.6rem;
+  }
+  .bs-brand {
+    margin-right: 0;
+  }
+  .guild-switcher {
+    order: 3;
+    flex: 1 1 100%;
+  }
+  .guild-switcher select {
+    flex: 1 1 auto;
+    min-width: 0;
+    max-width: none;
+  }
+  .user-box {
+    order: 4;
+    flex: 1 1 100%;
+    flex-wrap: wrap;
   }
   .bs-main {
-    padding: 20px 16px 36px;
+    padding: 0;
   }
   .bs-stat-grid {
     grid-template-columns: 1fr;
   }
-  .bs-header {
-    padding: 0 16px;
-  }
+  .bs-nav a,
   .bs-pager a,
   .bs-user-chip,
   .lookup-host input,
@@ -516,7 +737,28 @@ body {
   }
 }
 
+@media (min-width: 720px) and (max-width: 1099px) {
+  .bs-shell {
+    grid-template-columns: 13rem minmax(0, 1fr);
+  }
+  .bs-nav {
+    position: sticky;
+    flex-direction: column;
+  }
+}
+
+@media (min-width: 1100px) {
+  .bs-shell {
+    grid-template-columns: 15.5rem minmax(0, 1fr);
+  }
+  .bs-nav {
+    position: sticky;
+    flex-direction: column;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
+  .bs-nav,
   .bs-nav a,
   .bs-table tbody tr {
     transition: none;
