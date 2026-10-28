@@ -1,6 +1,8 @@
 /**
  * /static/* file serving for the shell assets (src/web/public/: vendored
  * Chart.js, styles.css, app.js — roadmap/web-admin.md §8.2/§8.7).
+ * /static/forge/* is the Vite build (dist/web, #710). Legacy files stay
+ * in public/ until a page migrates; the two roots never share a URL.
  *
  * Hand-rolled instead of express.static on purpose:
  *  - the whole app answers through raw `res.writeHead()/res.end()` only
@@ -23,6 +25,9 @@ const path = require("path");
 
 /** Public asset root: src/web/public. */
 const PUBLIC_ROOT = path.join(__dirname, "..", "public");
+
+/** Vite output for /static/forge/* (gitignored dist/web). */
+const FORGE_ROOT = path.join(__dirname, "..", "..", "..", "dist", "web");
 
 /** Extension → Content-Type. Text kinds get an explicit charset. */
 const CONTENT_TYPES = Object.freeze({
@@ -94,10 +99,11 @@ function resolvePublicFile(root, rel) {
  *
  * @param {object} [options]
  * @param {string} [options.root] asset root override (tests)
+ * @param {string} [options.forgeRoot] Vite output root for /static/forge/*
  * @param {(req: any, res: import("http").ServerResponse) => void} [options.notFound]
  * @returns {(req: any, res: import("http").ServerResponse) => void}
  */
-function createStaticMiddleware({ root = PUBLIC_ROOT, notFound } = {}) {
+function createStaticMiddleware({ root = PUBLIC_ROOT, forgeRoot = FORGE_ROOT, notFound } = {}) {
   const send404 =
     notFound ||
     ((req, res) => {
@@ -115,7 +121,11 @@ function createStaticMiddleware({ root = PUBLIC_ROOT, notFound } = {}) {
       return send404(req, res); // malformed % sequence: same generic 404
     }
 
-    const found = resolvePublicFile(root, rel);
+    // forge/ is the build output, not a directory inside public/. Strip the
+    // prefix once; resolvePublicFile still rejects .. and dot segments.
+    const forgeRel = rel === "forge" || rel.startsWith("forge/") ? rel.slice("forge/".length) : null;
+    const found =
+      forgeRel !== null ? resolvePublicFile(forgeRoot, forgeRel) : resolvePublicFile(root, rel);
     if (!found) return send404(req, res);
 
     const type =
@@ -140,6 +150,7 @@ module.exports = {
   resolvePublicFile,
   isSafeRelative,
   PUBLIC_ROOT,
+  FORGE_ROOT,
   IMMUTABLE_CACHE,
   CONTENT_TYPES,
 };

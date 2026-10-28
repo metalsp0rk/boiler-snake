@@ -1,0 +1,116 @@
+/**
+ * Forged-graphite tokens (#709 / #710). Loaded after Shoelace dark.css so
+ * html.sl-theme-dark (0,1,1) beats .sl-theme-dark (0,1,0).
+ *
+ * Action = teal, info = steel. Primary button ink is --sl-color-neutral-0,
+ * which Shoelace also uses as the dark input surface — both want sunken
+ * graphite, so one assignment satisfies the AA rule (white on #29a8bd is
+ * 2.83:1). No ::part override for that.
+ *
+ * The steel badge rule below is a part override: Shoelace has no info hue,
+ * and a neutral badge would read as chrome rather than information.
+ */
+
+:root {
+  color-scheme: dark;
+  --bs-sunken: #101318;
+  --bs-base: #161a20;
+  --bs-raised: #1d222a;
+  --bs-hover: #252b35;
+  --bs-line: #343b47;
+  --bs-highlight: rgba(255, 255, 255, 0.04);
+  --bs-fg: #e7eaee;
+  --bs-muted: #9aa0a8;
+  --bs-action: #29a8bd;
+  --bs-action-hover: #218a9e;
+  --bs-ink: #101318;
+  --bs-info: #86a9c6;
+  --bs-info-tint: #182631;
+  --bs-ok: #7fb069;
+  --bs-danger: #e07b6b;
+  --bs-warn: #f0c96c;
+  --bs-font-sans: "Inter", system-ui, sans-serif;
+  --bs-font-mono: "JetBrains Mono", ui-monospace, monospace;
+  --bs-radius: 3px;
+  --bs-radius-control: 2px;
+  --bs-radius-pill: 999px;
+  --bs-space: 4px;
+  --bs-row: 44px;
+  --bs-row-compact: 34px;
+  --bs-focus: 2px solid var(--bs-action);
+}
+
+html.sl-theme-dark {
+  /* Graphite ramp. Dark theme: higher index = lighter. neutral-* aliases gray-*. */
+  --sl-color-gray-50: #161a20;
+  --sl-color-gray-100: #1d222a;
+  --sl-color-gray-200: #252b35;
+  --sl-color-gray-300: #343b47;
+  --sl-color-gray-400: #4a5362;
+  --sl-color-gray-500: #6b7380;
+  --sl-color-gray-600: #9aa0a8;
+  --sl-color-gray-700: #c5cad1;
+  --sl-color-gray-800: #d8dde4;
+  --sl-color-gray-900: #e7eaee;
+  --sl-color-gray-950: #f3f5f7;
+  --sl-color-neutral-0: #101318;
+  --sl-color-neutral-1000: #ffffff;
+
+  /* Teal ramp around the spec action color (#29a8bd = 600). */
+  --sl-color-primary-50: #0e2428;
+  --sl-color-primary-100: #14343a;
+  --sl-color-primary-200: #184048;
+  --sl-color-primary-300: #1c5460;
+  --sl-color-primary-400: #1e7384;
+  --sl-color-primary-500: #218a9e;
+  --sl-color-primary-600: #29a8bd;
+  --sl-color-primary-700: #5ec0d0;
+  --sl-color-primary-800: #8fd4e0;
+  --sl-color-primary-900: #c3eaf1;
+  --sl-color-primary-950: #e7f7fa;
+
+  /* Status hues stay ≥30° from teal (189°). */
+  --sl-color-success-600: #7fb069;
+  --sl-color-warning-600: #f0c96c;
+  --sl-color-danger-600: #e07b6b;
+
+  --sl-border-radius-small: 2px;
+  --sl-border-radius-medium: 3px;
+  --sl-border-radius-large: 3px;
+  --sl-border-radius-x-large: 4px;
+  --sl-input-border-radius-small: 2px;
+  --sl-input-border-radius-medium: 2px;
+  --sl-input-border-radius-large: 2px;
+
+  --sl-font-sans: var(--bs-font-sans);
+  --sl-font-mono: var(--bs-font-mono);
+  --sl-focus-ring-color: #29a8bd;
+  --sl-focus-ring-width: 2px;
+  --sl-input-focus-ring-color: rgb(41 168 189 / 40%);
+  --sl-input-height-small: 2rem;
+  --sl-transition-fast: 160ms;
+  --sl-transition-medium: 180ms;
+}
+
+@media (max-width: 720px) {
+  html.sl-theme-dark {
+    --sl-input-height-medium: 2.75rem;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html.sl-theme-dark {
+    --sl-transition-x-slow: 0ms;
+    --sl-transition-slow: 0ms;
+    --sl-transition-medium: 0ms;
+    --sl-transition-fast: 0ms;
+    --sl-transition-x-fast: 0ms;
+  }
+}
+
+/* Info steel. Shoelace badges have no steel hue; neutral would look like chrome. */
+.bs-badge-steel::part(base) {
+  background: var(--bs-info-tint);
+  color: var(--bs-info);
+  border-color: transparent;
+}

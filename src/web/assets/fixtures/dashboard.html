@@ -1,0 +1,129 @@
+<!doctype html>
+<html lang="en" class="sl-theme-dark">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Dashboard — Boiler Snake</title>
+    {{CSS}}
+  </head>
+  <body>
+    <a class="bs-skip" href="#content">Skip to content</a>
+    <header class="bs-header">
+      <a class="bs-brand" href="#content">
+        <img src="/static/logo.png" width="28" height="28" alt="" />
+        <span>Boiler Snake</span>
+      </a>
+      <div class="bs-header-meta">
+        <sl-badge class="bs-badge-steel">senior</sl-badge>
+        <a class="bs-user-chip" href="#ada" data-user-card="/fixture/card">
+          <span class="bs-user-chip-avatar"></span>
+          <span>Ada Lovelace</span>
+          <span class="bs-user-chip-id bs-id">1480</span>
+        </a>
+      </div>
+    </header>
+    <div class="bs-shell">
+      <nav class="bs-nav" aria-label="Console">
+        <a href="#content" aria-current="page">Dashboard</a>
+        <a href="#content">Tickets</a>
+        <a href="#content">Moderation</a>
+        <a href="#content">Members</a>
+        <a href="#content">Settings</a>
+      </nav>
+      <main class="bs-main" id="content">
+        <p class="bs-kicker">Foundry · last 7 days</p>
+        <h1>Dashboard</h1>
+        <p class="bs-lede">Guild activity. The same numbers stay in the table when a chart is unavailable.</p>
+        <div class="bs-stat-grid">
+          <article class="bs-stat">
+            <p class="bs-stat-label">Members</p>
+            <p class="bs-stat-value bs-metric">1,284</p>
+            <p class="bs-stat-delta">+12 this week</p>
+          </article>
+          <article class="bs-stat">
+            <p class="bs-stat-label">Messages</p>
+            <p class="bs-stat-value bs-metric">8,431</p>
+            <p class="bs-stat-delta">+6%</p>
+          </article>
+          <article class="bs-stat">
+            <p class="bs-stat-label">Voice hours</p>
+            <p class="bs-stat-value bs-metric">212</p>
+            <p class="bs-stat-delta is-down">−3%</p>
+          </article>
+          <article class="bs-stat">
+            <p class="bs-stat-label">Open tickets</p>
+            <p class="bs-stat-value bs-metric">3</p>
+            <p class="bs-stat-delta is-flat">steady</p>
+          </article>
+        </div>
+        <section class="bs-section">
+          <h2>Active members</h2>
+          <div class="bs-table-wrap">
+            <table class="bs-table" data-density="compact">
+              <thead>
+                <tr>
+                  <th>Member</th>
+                  <th>Id</th>
+                  <th>XP</th>
+                  <th>Level</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>Ada Lovelace</td>
+                  <td class="bs-id">148012345678901234</td>
+                  <td class="bs-metric">12,480</td>
+                  <td class="bs-metric">18</td>
+                </tr>
+                <tr>
+                  <td>Grace Hopper</td>
+                  <td class="bs-id">148012345678901235</td>
+                  <td class="bs-metric">9,102</td>
+                  <td class="bs-metric">14</td>
+                </tr>
+                <tr>
+                  <td>Katherine Johnson</td>
+                  <td class="bs-id">148012345678901236</td>
+                  <td class="bs-metric">7,640</td>
+                  <td class="bs-metric">12</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <nav class="bs-pager" aria-label="Pagination">
+            <a href="#content" aria-disabled="true">Previous</a>
+            <span class="bs-pager-status">Page 1 of 4</span>
+            <a href="#content">Next</a>
+          </nav>
+        </section>
+        <section class="bs-section bs-split">
+          <div class="bs-stack">
+            <sl-alert variant="primary" open>
+              <sl-icon slot="icon" name="info-circle"></sl-icon>
+              Level-role sync finished. 4 roles updated.
+            </sl-alert>
+            <sl-progress-bar value="68" label="Weekly goal"></sl-progress-bar>
+            <div class="bs-inline">
+              <sl-tag variant="neutral">steel</sl-tag>
+              <sl-checkbox checked>Count voice</sl-checkbox>
+              <sl-select label="Range" value="7" size="small" hoist>
+                <sl-option value="7">7 days</sl-option>
+                <sl-option value="30">30 days</sl-option>
+              </sl-select>
+            </div>
+            <sl-details summary="Sync detail">
+              <p>Four members crossed a level threshold overnight.</p>
+            </sl-details>
+          </div>
+          <div class="bs-table-wrap">
+            <div class="bs-empty">
+              <p class="bs-empty-title">No warnings</p>
+              <p class="bs-empty-body">Nothing in this window.</p>
+            </div>
+          </div>
+        </section>
+      </main>
+    </div>
+    <script type="module" src="{{JS}}" nonce="{{NONCE}}"></script>
+  </body>
+</html>

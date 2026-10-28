@@ -31,6 +31,7 @@ const {
 const {
   registerBridgeRelayHealthSource,
 } = require("./data/bridgeRelayHealth");
+const { assertForgeAssets } = require("./assets/stamp");
 
 /** @type {import("http").Server|null} */
 let server = null;
@@ -51,6 +52,11 @@ function startWebServer(options = {}) {
     return null;
   }
   if (server) return server;
+
+  // #710: a missing or stale Vite build must not listen. The throw is the
+  // honest error (feature start logs it and the bot stays up). Dark boot
+  // (no port) returns above and does not need the build.
+  assertForgeAssets();
 
   // Boot checks (roadmap/web-admin.md §8.7, §8.3): loud warning on plain-HTTP
   // public URLs; loud warning when NO session signing secret is configured at

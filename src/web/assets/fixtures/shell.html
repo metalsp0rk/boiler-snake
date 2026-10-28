@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="en" class="sl-theme-dark">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Console — Boiler Snake</title>
+    {{CSS}}
+  </head>
+  <body>
+    <a class="bs-skip" href="#content">Skip to content</a>
+    <header class="bs-header">
+      <a class="bs-brand" href="#content">
+        <img src="/static/logo.png" width="28" height="28" alt="" />
+        <span>Boiler Snake</span>
+      </a>
+      <div class="bs-header-meta">
+        <sl-badge class="bs-badge-steel">staff</sl-badge>
+        <span>ada</span>
+      </div>
+    </header>
+    <div class="bs-shell">
+      <nav class="bs-nav" aria-label="Console">
+        <a href="#content" aria-current="page">Dashboard</a>
+        <a href="#content">Tickets</a>
+        <a href="#content">Moderation</a>
+        <a href="#content">Members</a>
+        <a href="#content">Settings</a>
+      </nav>
+      <main class="bs-main" id="content">
+        <p class="bs-kicker">Foundry</p>
+        <h1>Console</h1>
+        <p class="bs-lede">Staff tools for this guild. Actions are teal. Anything that only informs is steel.</p>
+        <div class="bs-actions">
+          <sl-button variant="primary">
+            <sl-icon slot="prefix" name="plus-lg"></sl-icon>
+            New ticket
+          </sl-button>
+          <sl-button variant="default">Refresh</sl-button>
+          <sl-copy-button value="148012345678901234"></sl-copy-button>
+        </div>
+        <section class="bs-section">
+          <h2>Find a member</h2>
+          <label class="lookup-host">
+            Name or id
+            <input class="bs-field" type="text" data-lookup="users" data-lookup-url="/fixture/lookups" placeholder="Start typing" />
+          </label>
+        </section>
+        <section class="bs-section bs-split">
+          <article class="bs-panel">
+            <h2>On this page</h2>
+            <sl-tab-group>
+              <sl-tab slot="nav" panel="open">Open</sl-tab>
+              <sl-tab slot="nav" panel="closed">Closed</sl-tab>
+              <sl-tab-panel name="open">Three tickets need a staff reply.</sl-tab-panel>
+              <sl-tab-panel name="closed">Nothing closed today.</sl-tab-panel>
+            </sl-tab-group>
+          </article>
+          <article class="bs-user-card">
+            <div class="bs-user-card-head">
+              <span class="bs-user-card-avatar"></span>
+              <div>
+                <div class="bs-user-card-name">Ada Lovelace</div>
+                <div class="bs-user-card-id bs-id">148012345678901234</div>
+              </div>
+            </div>
+            <div class="bs-user-card-roles">
+              <span class="bs-user-card-role">staff</span>
+              <span class="bs-user-card-role">events</span>
+            </div>
+          </article>
+        </section>
+      </main>
+    </div>
+    <script type="module" src="{{JS}}" nonce="{{NONCE}}"></script>
+  </body>
+</html>
