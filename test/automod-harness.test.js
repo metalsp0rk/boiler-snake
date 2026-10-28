@@ -14,7 +14,8 @@
  *    round cap STILL commits and finishes `complete` naming
  *    "tool-round cap (12) reached" in last_run_error;
  *  - the referrer-visible lines carry the specific cause —
- *    `Referred by <@id> — provider error: …`, never "something failed";
+ *    `**Referred by:** <@id> — provider error: …`, never "something failed"
+ *    (card header copy convention, #730);
  *  - run metadata (070): last_model / last_duration_ms / last_tool_names /
  *    decision_log / last_run_error;
  *  - isolation: the runner never throws, a failed post never kills the run,
@@ -354,19 +355,26 @@ test("accepted run: lifecycle, zero-mutation rounds, commit via the real executo
   const noteLine = res.commit.lines.findIndex((l) => l.startsWith("- staff note"));
   assert.ok(warnLine >= 0 && noteLine > warnLine, `order: ${res.commit.lines.join(" | ")}`);
 
-  // ── posts: placeholder first, then the EDITED decision (no components)
+  // ── posts: placeholder first, then the EDITED case card (#730)
   assert.equal(w.posts.length, 1, "one send — the outcome EDITS the placeholder");
   assert.match(embed(w.posts[0]).title, new RegExp(`case A-${caseRow.case_number} — reviewing`));
   const decision = w.edits[0];
   assert.ok(decision, "the outcome edited the placeholder");
   assert.match(embed(decision).title, new RegExp(`case A-${caseRow.case_number} — decision$`));
-  assert.equal(embed(decision).description, `Referred by <@${REF}> — review complete.`);
+  assert.equal(embed(decision).description, `**Referred by:** <@${REF}> — review complete.`);
   const field = decisionField(decision);
-  assert.match(field, /- `warn` → <@852000000000000012>: \*\*recorded_suggestion\*\*/);
-  assert.match(field, new RegExp(`- staff note → <@${SUB}>: recorded \\(N-\\d+\\)`));
+  // #730: the Decision field renders from the LEDGER ROWS — per-subject
+  // section header with the note ref + one line per row.
+  assert.match(field, new RegExp(`\\*\\*Subject:\\*\\* <@${SUB}> · \\*\\*Staff note:\\*\\* N-\\d+`));
+  assert.match(field, /`warn` — \*\*pending approval\*\*/);
   assert.match(embed(decision).footer.text, /Model test-model · \d+ ms · 1 round\(s\) · tools: warn, write_staff_note, read_warnings/);
   assert.deepEqual(decision.allowedMentions, { parse: [] });
-  assert.ok(!("components" in decision), "plain embed — the Approve card is #730's");
+  const buttons = (decision.components ?? []).flatMap((r) => r.components ?? []);
+  assert.deepEqual(
+    buttons.map((b) => b.custom_id),
+    [`am:card:approve:${actions[0].id}`, `am:card:dismiss:${actions[0].id}`],
+    "#730: Approve/Dismiss ride the pending row's id",
+  );
 
   // ── 070 metadata
   const row = db.getAutomodCaseById(caseRow.id);
@@ -377,7 +385,12 @@ test("accepted run: lifecycle, zero-mutation rounds, commit via the real executo
   const log = JSON.parse(row.decision_log);
   assert.equal(log[0].tool, "warn");
   assert.equal(log[0].state, "recorded");
-  assert.equal(log.at(-1).tool, "read_warnings");
+  // #730: the run persists ONE trailing `meta` entry (window participants for
+  // card rebuilds) — the tool-call log keeps its own tail.
+  const toolLog = log.filter((e) => e.state !== "meta");
+  assert.equal(toolLog.at(-1).tool, "read_warnings");
+  assert.equal(log.at(-1).tool, "_card_participants");
+  assert.equal(log.at(-1).args_summary, SUB, "the anchor author was seen; the considered side is subtracted at render");
   assert.ok(row.last_run_error == null);
 });
 
@@ -407,7 +420,7 @@ test("HTTP 500 before acceptance: failed case, zero budget, the provider's own w
 
   const decision = w.edits[0];
   assert.match(embed(decision).title, /run failed/);
-  assert.match(embed(decision).description, new RegExp(`Referred by <@${REF}> — provider error: HTTP 500 upstream exploded`));
+  assert.match(embed(decision).description, new RegExp(`\\*\\*Referred by:\\*\\* <@${REF}> — provider error: HTTP 500 upstream exploded`));
   assert.match(embed(decision).description, /provider said: \{"error"/, "the provider's body names the real cause");
   assert.match(decisionField(decision), /No action calls were recorded this run/);
 
@@ -566,7 +579,7 @@ test("round cap: the partial decision commits, the cause names the cap, the case
   const decision = w.edits[0];
   assert.match(embed(decision).title, /— decision$/);
   assert.match(embed(decision).description, /partial decision: the run hit the tool-round cap \(12\) reached/);
-  assert.match(decisionField(decision), /- `timeout` → <@852000000000000012>: \*\*recorded_suggestion\*\*/);
+  assert.match(decisionField(decision), /`timeout` — \*\*pending approval\*\*/);
 });
 
 // ── 6. the commit owns clamping, the harness passes through ──────────────────
@@ -595,7 +608,7 @@ test("auto-mode timeout: the harness passes the duration UNCLAMPED; the executor
   assert.equal(params.requestedDurationSeconds, 99999, "the row keeps what the model asked for");
   assert.equal(params.clamped, true);
   assert.match(row.result_text, /clamped from 99999s/);
-  assert.match(decisionField(w.edits[0]), /- `timeout` → <@852000000000000012>: \*\*executed\*\*/);
+  assert.match(decisionField(w.edits[0]), /`timeout` — \*\*executed\*\*/);
 });
 
 // ── 7. note enforcement + the #731 reconciler hook ──────────────────────────
@@ -718,6 +731,14 @@ test("posting failures degrade to logs — the decision still runs and records -
   assert.equal(db.getAutomodCaseById(gone.caseRow.id).status, "complete");
   assert.ok(cap2.lines.some((l) => l.includes("placeholder post (continuing without it)")));
   assert.ok(cap2.lines.some((l) => l.includes("outcome post")));
+  // #730 send-failure law: never claim the card posted — the failure is
+  // logged WITH ids and the case row carries the structured record.
+  assert.ok(cap2.lines.some((l) => l.includes("card post failed")));
+  const postLog = JSON.parse(db.getAutomodCaseById(gone.caseRow.id).decision_log);
+  assert.ok(
+    postLog.some((e) => e.tool === "_card_post_error" && e.state === "failed"),
+    "the case row says the card did not post",
+  );
 });
 
 // ── 9. boot sweep + the refer→harness trigger (index.js wiring) ──────────────

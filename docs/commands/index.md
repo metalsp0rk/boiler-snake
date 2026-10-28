@@ -1472,7 +1472,10 @@ specific cause and records nothing (full copy table in
 [Staff referral intake and refusals](../automod.md#staff-referral-intake-and-refusals)).
 Success replies `Case: **A-n** — recorded.` plus the promise that
 recommendations will post in the case-card channel — no recommendation is
-produced at intake. Staff-gated (Manage Server or any staff role); ephemeral.
+produced at intake. Recommendations land as the interactive **case card**
+(#730): one post per case whose Approve/Dismiss buttons execute pending
+actions through the shared executor — see [Case card](../automod.md#case-card).
+Staff-gated (Manage Server or any staff role); ephemeral.
 
 ### `/automodconfig` - Auto-moderation configuration (admin)
 

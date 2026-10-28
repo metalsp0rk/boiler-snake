@@ -10,6 +10,41 @@ const MODAL_RULES = "am:rules";
 /** Text input customId inside the rules modal */
 const MODAL_FIELD_RULES = "rules";
 
+/* ── Case card (#730, epic #723) ────────────────────────────────────────────
+ * The case card is the ONE staff-channel post per case (the harness
+ * placeholder → edit flow guarantees the one-post invariant). Its buttons
+ * carry ONLY the integer action-row id — every fact the handler needs is
+ * re-read from the ledger rows (never from the embed), so an old card after
+ * a restart still executes the CURRENT state. customId grammar examples:
+ *   am:card:approve:41 · am:card:dismiss:41   (22 chars max — the 100-char
+ *   router budget is nowhere near reached, row ids are small integers). */
+
+/** Approve button prefix: `am:card:approve:<actionRowId>`. */
+const CARD_APPROVE_PREFIX = "am:card:approve:";
+/** Dismiss button prefix: `am:card:dismiss:<actionRowId>`. */
+const CARD_DISMISS_PREFIX = "am:card:dismiss:";
+
+/**
+ * Button-bearing rows per card. Discord caps a message at 5 ActionRows ×
+ * 5 components (25 total); the card packs two Approve+Dismiss PAIRS per row
+ * (4 buttons), so 5 rows × 2 pairs = 10 pending rows = 20 buttons is the
+ * honest clamp. Overflow gets the visible "**More pending rows:**" line —
+ * the buttons REGENERATE on every card update, so the tail is one decision
+ * away, and the one-per-(action, user) cap makes >10 pending rows rare.
+ */
+const AUTOMOD_CARD_MAX_BUTTON_ROWS = 10;
+
+/** Display cap on the "**Seen, not considered:**" mention list (`… +N more`). */
+const AUTOMOD_CARD_NOT_CONSIDERED_MAX = 25;
+
+/**
+ * Actions the breaker pause keeps dark on the APPROVE path (#730 contract:
+ * "the breaker for kick/ban/timeout"). Sibling of #739's auto-path choke
+ * point (executor.js marks the insertion spot in `runClaimedAction`) — that
+ * issue owns the TRIP; the card pre-gate and the case docs already cite it.
+ */
+const AUTOMOD_BREAKER_ACTIONS = Object.freeze(["kick", "ban", "timeout"]);
+
 // Vocabulary and caps are owned by the db repositories (single source of
 // truth shared by #726/#728 consumers); this module only re-exports what the
 // command layer renders, so readers of the FEATURE module find them here.
@@ -103,6 +138,12 @@ const ACTION_CHOICES = AUTOMOD_ACTIONS.map((a) => ({ name: a, value: a }));
 module.exports = {
   MODAL_RULES,
   MODAL_FIELD_RULES,
+  // Case card (#730): button customId prefixes + the button clamp.
+  CARD_APPROVE_PREFIX,
+  CARD_DISMISS_PREFIX,
+  AUTOMOD_CARD_MAX_BUTTON_ROWS,
+  AUTOMOD_CARD_NOT_CONSIDERED_MAX,
+  AUTOMOD_BREAKER_ACTIONS,
   NOT_ON_FLUXER,
   AUTOMOD_ACTIONS,
   AUTOMOD_MODES,
