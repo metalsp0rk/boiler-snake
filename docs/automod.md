@@ -1,8 +1,8 @@
 # Auto-moderation (epic #723)
 
 !!! abstract "Ship state — this page tracks the epic"
-    **Shipped now:** the guild settings and their Manage-Guild commands — `/automod status` and `/automodconfig` (channel, rules, master switch, per-action modes, timeout cap, daily case budget, breaker state + `safety resume`) (#725) — plus **staff referral intake**: `/automod refer` and the **Refer to automod** message context menu, which record a case (**A-n**) and ack where recommendations will post (#726), the **case-context collector** + lookup tools the judge reads (#727 — no user-facing surface of its own; see [Case context](#case-context)), the **LLM harness**: the case runner that judges a recorded case, records intent through mode-gated tools, and commits every action through the executor (#728 — see [Harness](#harness)), the **case card**: the interactive one-post-per-case outcome post whose Approve/Dismiss buttons execute suggested actions straight from the ledger (#730 — see [Case card](#case-card)), the **staff-note reconciler**: one note per considered subject (narrative or harness-filled), dropped notes for non-subjects, outcomes merged into the same note (#731 — see [Staff notes](#staff-notes)), and the **warning tool**: `warn` records a real formal warning through the shipped warnings system — member-facing reason, the guild's own warn-DM and expiry settings, the case note linked, evidence defaulted (#733 — see [Warning tool](#warning-tool-733)).
-    **Landing in sibling issues:** the remaining action tools' surfaces (#734–#738), plus the circuit breaker trip logic (#739). The intake ack never claims a recommendation was produced — the **harness posts its outcome separately**, after the ack. The mode gate itself (off/suggest/auto, guards, atomic claims) is already shipped in the executor (#729) — a suggest-mode decision is recorded as a pending ledger row and surfaces on the case card for staff approval.
+    **Shipped now:** the guild settings and their Manage-Guild commands — `/automod status` and `/automodconfig` (channel, rules, master switch, per-action modes, timeout cap, daily case budget, breaker state + `safety resume`) (#725) — plus **staff referral intake**: `/automod refer` and the **Refer to automod** message context menu, which record a case (**A-n**) and ack where recommendations will post (#726), the **case-context collector** + lookup tools the judge reads (#727 — no user-facing surface of its own; see [Case context](#case-context)), the **LLM harness**: the case runner that judges a recorded case, records intent through mode-gated tools, and commits every action through the executor (#728 — see [Harness](#harness)), the **case card**: the interactive one-post-per-case outcome post whose Approve/Dismiss buttons execute suggested actions straight from the ledger (#730 — see [Case card](#case-card)), the **staff-note reconciler**: one note per considered subject (narrative or harness-filled), dropped notes for non-subjects, outcomes merged into the same note (#731 — see [Staff notes](#staff-notes)), and the **warning tool**: `warn` records a real formal warning through the shipped warnings system — member-facing reason, the guild's own warn-DM and expiry settings, the case note linked, evidence defaulted (#733 — see [Warning tool](#warning-tool-733)), and the **delete-message tool**: `delete_message` removes specific messages of this case — case allow-list, one user per call, Manage Messages pre-flight, honest per-id results (#734 — see [Delete-message tool](#delete-message-tool-734)).
+    **Landing in sibling issues:** the remaining action tools' surfaces (#735–#738), plus the circuit breaker trip logic (#739). The intake ack never claims a recommendation was produced — the **harness posts its outcome separately**, after the ack. The mode gate itself (off/suggest/auto, guards, atomic claims) is already shipped in the executor (#729) — a suggest-mode decision is recorded as a pending ledger row and surfaces on the case card for staff approval.
 
 Auto-moderation is a staff-referred judgment pipeline: a staff member refers a message or a user, a separate LLM harness recommends staff actions against the guild's written rules, and each action type is gated `off` / `suggest` / `auto` by the guild. **Recommendations are the default** — enabling the master switch never starts kicking or banning by itself.
 
@@ -711,6 +711,112 @@ bot's highest role; the refusal is recorded and still counts as
 consideration (#723 decision 6).
 
 **Fluxer: explicit no-parity** (epic decision 8). The warn tool is part of
+the Discord-only pipeline; it adds no Fluxer surface of its own.
+
+## Delete-message tool (#734)
+
+The `delete_message` action tool is shipped — it removes **specific
+messages** of the case. It is **not a channel purge** and it is **not ban's
+"delete N days of history"** (locked decisions 2/9: banning never bulk-
+deletes; this tool never sweeps a channel). Mode-gated like every action
+(`/automodconfig mode action:delete_message`), default **suggest**. There
+are no new commands, settings, or env vars — the mode is the whole knob.
+
+**The model names ids; the system resolves everything else.** The tool
+takes `message_ids` (an array of message id strings, 1–10 after dedupe) and
+optional `reason`. Channels are never model-supplied — each id resolves to
+its `(channel, message)` pair from the case's own context, and the recorded
+row carries the canonical `params.messages = [{channelId, messageId}, …]`.
+Omitting `message_ids` on a case that HAS a referred message defaults to
+that anchor (recorded as a one-item list). The schema tells the model:
+
+```text
+Delete specific messages from THIS case — ONE user's messages per call. `message_ids` may only name messages from this case's referred message or fetched context window (any other id is refused with that cause); omit `message_ids` to delete the referred message. This removes specific messages only — there is no bulk purge, and ban is not a delete tool.
+```
+
+**Allow-list (contract law).** A call may only name message ids that are in
+**this case's referred message or fetched context window**. The list is
+built when the run starts — the case row's anchor pair plus the bundle's
+window entries (exactly what the collector fetched, asker-scoped; no
+further reads). An id outside it is refused naming that id:
+
+```text
+delete_message refused: message 999999 is not part of this case's referred message or fetched context window — only those messages may be deleted.
+```
+
+More than 10 ids (after dedupe) refuses naming the cap; a malformed or
+empty `message_ids` refuses with the shape contract. All of this runs
+**before** the one-per-(action, user) slot check, so a refused call never
+burns the pair's slot.
+
+**One call covers one user's messages (author law).** Every id in a call
+must share one author per the allow-list. Mixed authors refuse naming both:
+
+```text
+delete_message refused: one delete call covers one user's messages — these ids were written by <@idA>, <@idB>. Record one delete call per user.
+```
+
+The row's subject is the **messages' author**: a `user_id` naming anyone
+else refuses with the discrepancy rather than silently rewriting the subject
+(`…the targeted messages were written by <@author>, not <@user_id>…`). This
+also closes the door on pointing a delete at a stranger's ids.
+
+**Suggest: the card lists the messages (links).** A suggested delete row
+renders every targeted message as a jump link plus the author, so staff can
+open each one before deciding — Approve deletes exactly those messages,
+Dismiss leaves them untouched:
+
+```text
+`delete_message` — **pending approval** — Approve deletes 2 message(s) from this case — Dismiss leaves them untouched. Targeted: <https://discord.com/channels/<guild>/<channel1>/<message1>> <https://discord.com/channels/<guild>/<channel2>/<message2>>. Author: <@user>. Reason: "…".
+```
+
+**Auto: honest per-id results.** The executor deletes the list and reports
+what actually happened — the row's result line is the report:
+
+```text
+Deleted 2 message(s) in this case.
+```
+
+```text
+Deleted 2 of 3 — failed: 402 (Missing Permissions).
+```
+
+A partial failure is still an executed row (the successes are real — the
+honest line names every failed id with its Discord cause), **never** a clean
+success claim. When every id fails, the row is `failed` carrying the same
+per-id list (`Deleted 0 of 2 — failed: …`). A message that vanished
+mid-loop is that id's `Discord 10003` failure — no crash, no lie.
+
+**Manage Messages pre-flight.** Before deleting ANYTHING, the bot's
+**Manage Messages** permission is checked on every distinct channel of the
+call (fail closed). A channel the bot cannot manage refuses the whole row
+naming it, with zero deletions — the cause lands on the card and the note:
+
+```text
+Bot is missing **Manage Messages** in channel(s) <#channel> — nothing was deleted.
+```
+
+A vanished channel or the bot missing from the guild refuses with THAT
+cause — `Could not verify the bot's Manage Messages permission in channel <id>: … — nothing was deleted.`
+
+**Staff are never deleted by the machine.** A staff-role author's delete can
+still be **recorded** as a suggestion (recording is dark-free), but Approve
+and auto refuse through the shipped decision-6 subject guard — the same
+staff-role + hierarchy gate every mutating action runs.
+
+**Deleting does not skip the staff note.** The author of a recorded delete
+row IS a considered subject: the one-note pre-pass writes their note, the
+`**Actions:**` list carries the delete, and the outcome merge lands the
+per-id result line on the SAME note (#731/#733 machinery — nothing
+delete-specific). Nothing about a delete is ever DM'd to anyone.
+
+**Legacy rows stay alive.** Action rows recorded before #734 carry the
+single `params.channelId` + `params.messageId` pair; the executor and the
+card read them through the same resolver as the canonical list (fallback
+law) — an old suggested delete still renders its link and still executes on
+Approve.
+
+**Fluxer: explicit no-parity** (epic decision 8). The delete tool is part of
 the Discord-only pipeline; it adds no Fluxer surface of its own.
 
 ## Daily case budget

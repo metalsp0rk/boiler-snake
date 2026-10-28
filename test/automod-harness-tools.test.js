@@ -91,6 +91,9 @@ function dispatcherFor(over = {}) {
     caseRow: over.caseRow ?? caseRow,
     modes: over.modes ?? modes(),
     subjectUserId: SUB,
+    // #734: the delete allow-list window map (harness-threaded in
+    // production); tests pass the window entries the collector fetched.
+    allowedMessages: over.allowedMessages ?? null,
     deps: {
       lookupDeps: {
         getMember: async (_gid, uid) => (MEMBERS.has(String(uid)) ? { id: String(uid) } : null),
@@ -202,27 +205,121 @@ test("one call per (action, user) per run mirrors the executor slot uniqueness -
   assert.match(other, /^Recorded: warn for <@851000000000000013>/);
 });
 
-test("delete_message defaults to the referred message; user-only cases must pass ids - issue #728", async () => {
+test("delete_message defaults to the referred message; user-only cases must name ids - issue #734", async () => {
   const anchored = dispatcherFor();
-  await anchored.executeTool("delete_message", { user_id: SUB, reason: "the insult" });
+  const res = await anchored.executeTool("delete_message", { user_id: SUB, reason: "the insult" });
+  assert.match(res, /^Recorded: delete_message for <@851000000000000012>/);
+  assert.match(res, new RegExp(`\\*\\*Targeted:\\*\\* 1 message\\(s\\) of this case \\(${MSG}\\)`));
+  // Canonical params (#734): a one-item list recording the anchor pair.
   assert.deepEqual(anchored.actionIntents[0].params, {
     reason: "the insult",
-    channelId: SRC_CH,
-    messageId: MSG,
+    messages: [{ channelId: SRC_CH, messageId: MSG }],
   });
 
   const orphan = dispatcherFor({ caseRow: userOnlyRow });
   const refused = await orphan.executeTool("delete_message", { user_id: SUB, reason: "x" });
-  assert.match(refused, /needs `channel_id` and `message_id`/);
-  // …and accepts explicit ids when the case carries none:
-  const ok = await orphan.executeTool("delete_message", {
+  assert.match(refused, /needs `message_ids` — this case has no referred message to default to/);
+  assert.match(refused, /referred message or fetched context window/);
+});
+
+test("the delete schema exposes message_ids and drops the legacy scalar pair - issue #734", () => {
+  const del = buildToolset(modes()).find((t) => t.function.name === "delete_message");
+  const props = del.function.parameters.properties;
+  assert.equal(props.message_ids.type, "array");
+  assert.equal(props.message_ids.items.type, "string");
+  assert.ok(
+    !("channel_id" in props) && !("message_id" in props),
+    "the legacy scalar pair is GONE from the schema — channels resolve from the bundle",
+  );
+  assert.match(props.message_ids.description, /referred message or the fetched context window/);
+  assert.match(del.function.description, /ONE user's messages per call/);
+  assert.match(del.function.description, /no bulk purge/);
+});
+
+test("delete_message may only name case ids — foreign ids refuse naming the cause - issue #734 (allow-list)", async () => {
+  const window = new Map([
+    ["7001", { channelId: SRC_CH, authorId: SUB }],
+    ["7002", { channelId: "951000000000000099", authorId: SUB }],
+  ]);
+  const d = dispatcherFor({ allowedMessages: window });
+  const ok = await d.executeTool("delete_message", {
     user_id: SUB,
-    reason: "x",
-    channel_id: SRC_CH,
-    message_id: MSG,
+    message_ids: [MSG, "7001", "7002", "7001"], // MSG = the anchor, allowed on top of the window
   });
   assert.match(ok, /^Recorded: delete_message/);
-  assert.deepEqual(orphan.actionIntents[0].params.channelId, SRC_CH);
+  assert.deepEqual(
+    d.actionIntents[0].params.messages,
+    [
+      { channelId: SRC_CH, messageId: MSG },
+      { channelId: SRC_CH, messageId: "7001" },
+      { channelId: "951000000000000099", messageId: "7002" },
+    ],
+    "ids DEDUPE and each id's CHANNEL comes from the bundle — the model never passes channels",
+  );
+
+  const foreign = await d.executeTool("delete_message", { user_id: SUB, message_ids: ["999999"] });
+  assert.match(
+    foreign,
+    /message 999999 is not part of this case's referred message or fetched context window — only those messages may be deleted/,
+  );
+
+  const junk = await d.executeTool("delete_message", { user_id: SUB, message_ids: "7001" });
+  assert.match(junk, /needs `message_ids` as an array of message id strings/);
+
+  const empty = await d.executeTool("delete_message", { user_id: SUB, message_ids: ["  ", ""] });
+  assert.match(empty, /received no usable `message_ids`/);
+  assert.equal(d.actionIntents.length, 1, "refused calls record nothing and never burn the slot");
+});
+
+test("delete_message caps ids per call AFTER dedupe and names the cap - issue #734", async () => {
+  const ten = Array.from({ length: 10 }, (_, i) => `710${i}`);
+  const window = new Map(ten.map((id) => [id, { channelId: SRC_CH, authorId: SUB }]));
+  const d = dispatcherFor({ allowedMessages: window });
+
+  const over = await d.executeTool("delete_message", {
+    user_id: SUB,
+    message_ids: [...ten, ten[0], "999999"], // 12 named, 11 unique
+  });
+  assert.match(over, /accepts at most 10 message ids per call — this call names 11 after dedupe/);
+
+  const exact = await d.executeTool("delete_message", { user_id: SUB, message_ids: [...ten, ten[0]] });
+  assert.match(exact, /^Recorded: delete_message/);
+  assert.equal(d.actionIntents[0].params.messages.length, 10,
+    "dedupe runs BEFORE the cap: 11 named → 10 unique → records");
+});
+
+test("one delete call covers one user's messages — the author law - issue #734", async () => {
+  const window = new Map([
+    ["7001", { channelId: SRC_CH, authorId: SUB }],
+    ["7002", { channelId: SRC_CH, authorId: BYS }],
+  ]);
+  const d = dispatcherFor({ allowedMessages: window });
+
+  const mixed = await d.executeTool("delete_message", { user_id: SUB, message_ids: ["7001", "7002"] });
+  assert.match(mixed, /one delete call covers one user's messages/);
+  assert.match(mixed, new RegExp(`<@${SUB}>, <@${BYS}>`), "the refusal NAMES both authors");
+
+  const mismatch = await d.executeTool("delete_message", { user_id: BYS, message_ids: ["7001"] });
+  assert.match(
+    mismatch,
+    new RegExp(`the targeted messages were written by <@${SUB}>, not <@${BYS}>`),
+    "user_id ≠ author refuses with the discrepancy — the subject is never silently rewritten",
+  );
+  assert.deepEqual(d.actionIntents, [], "refused calls record nothing");
+
+  const ok = await d.executeTool("delete_message", { user_id: SUB, message_ids: ["7001", MSG] });
+  assert.match(ok, /^Recorded: delete_message/, "a refused pair never burned the slot (params-then-slot order, #728 law)");
+  assert.equal(d.actionIntents[0].subjectUserId, SUB, "the row's subject is the messages' AUTHOR");
+});
+
+test("a staff-role author's delete SUGGESTION still records — the guard lives at execution - issue #734", async () => {
+  // Decision 6 runs in the EXECUTOR (approve/auto), never at record time:
+  // suggest mode makes zero Discord calls, so the dispatcher cannot and does
+  // not consult staff roles. (The executor test pins both execution arms.)
+  const d = dispatcherFor();
+  const res = await d.executeTool("delete_message", { user_id: SUB, reason: "staff-authored spam" });
+  assert.match(res, /^Recorded: delete_message/);
+  assert.match(res, /\*\*Status:\*\* awaiting staff approval/);
 });
 
 test("warn evidence defaults to the referred message's jump link; an explicit link wins; no anchor, no evidence - issue #733", async () => {

@@ -70,8 +70,30 @@
  *    warning — the note itself is the record, the link is the convenience.
  *  - Expiry honours the guild's `warn_expiry_days` (guildDefaultDays —
  *    `params.expiresDays` overrides per row, same law as `/warn add`).
+ *
+ * THE DELETE-MESSAGE TOOL (#734, epic #723) — specific messages only: never
+ * a channel purge, never ban's "delete N days of history" (decisions 2/9).
+ *  - Canonical params (recorded by the dispatcher): `params.messages =
+ *    [{ channelId, messageId }, …]`. LEGACY FALLBACK LAW: a row without
+ *    `params.messages` still executes its single `params.channelId` +
+ *    `params.messageId` pair (rows recorded before #734 stay alive — the
+ *    card reads the same resolved list).
+ *  - Manage Messages is verified on EVERY distinct channel of the call
+ *    BEFORE a single delete runs (`deps.channelCanManageMessages`, fail
+ *    closed like refer.js channelAllows): a missing permission refuses the
+ *    whole row naming the channel(s) with ZERO deletions; a vanished channel
+ *    or bot-not-in-guild refuses with THAT cause. The MUTATING_ACTIONS
+ *    staff-role + hierarchy guard still runs first (decision 6 — a staff
+ *    author's suggestion records but Approve/auto refuse there, not here).
+ *  - Per-message honesty (contract): every id's outcome is its own — all ok
+ *    `Deleted N message(s) in this case.`; a partial failure is executed
+ *    with the honest line `Deleted 2 of 3 — failed: <id> (<cause>)…` (the
+ *    line IS the report, #733 partial idiom); ALL failed is the failed row
+ *    with the same list. A vanished message is that id's 10003 failure,
+ *    never a crash.
  */
 
+const { PermissionFlagsBits } = require("discord.js");
 const {
   getGuildSettings,
   listStaffRoles,
@@ -192,6 +214,38 @@ function readTimeoutCap(communityId) {
 }
 
 /**
+ * THE DELETE TARGET RESOLVER (#734) — ONE reading law for the executor
+ * handler and the case card. Canonical `params.messages` wins when present
+ * (entries deduped on channel+message, unusable entries dropped); a row
+ * WITHOUT it falls back to the LEGACY single `params.channelId` +
+ * `params.messageId` pair — rows recorded before #734 keep executing and
+ * rendering unchanged (fallback law, pinned by test/automod-executor and
+ * test/automod-card). Both missing → [] (the delete pre-flight refuses).
+ *
+ * @param {object|null} [params] the row's parsed params
+ * @returns {Array<{channelId: string, messageId: string}>}
+ */
+function resolveDeleteTargets(params = null) {
+  if (Array.isArray(params?.messages)) {
+    const out = [];
+    const seen = new Set();
+    for (const entry of params.messages) {
+      const channelId = String(entry?.channelId ?? "").trim();
+      const messageId = String(entry?.messageId ?? "").trim();
+      if (!channelId || !messageId) continue;
+      const key = `${channelId}|${messageId}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push({ channelId, messageId });
+    }
+    return out;
+  }
+  const channelId = String(params?.channelId ?? "").trim();
+  const messageId = String(params?.messageId ?? "").trim();
+  return channelId && messageId ? [{ channelId, messageId }] : [];
+}
+
+/**
  * Re-project an existing (claimed/terminal) row into an outcome — the
  * single-winner loser's answer ("a second click returns the existing
  * result"). `inFlight:true` means another claimer owns a still-running row.
@@ -283,6 +337,47 @@ function buildDefaultDeps(deps = {}) {
       const client = requireClient(deps);
       const channel = await client.channels.fetch(String(channelId));
       return (await channel?.messages?.fetch(String(messageId))) ?? null;
+    },
+    // ── #734 delete pre-flight: does the bot hold Manage Messages HERE?
+    // Fail CLOSED like refer.js channelAllows — an unreadable permission
+    // surface means FALSE (the refusal names the channel, zero deletions).
+    // STRUCTURAL deaths throw with the specific cause instead: no client,
+    // a vanished channel, or the bot not being a guild member (the delete
+    // handler reports those verbatim — "channel gone", "bot not in guild").
+    channelCanManageMessages: async (guildId, channelId) => {
+      const client = requireClient(deps);
+      const channel = await client.channels.fetch(String(channelId));
+      if (!channel) throw new Error(`channel ${channelId} no longer exists`);
+      const guild =
+        client.guilds?.cache?.get?.(String(guildId)) ?? channel?.guild ?? null;
+      const me = guild?.members?.me ?? null;
+      if (!me) {
+        throw new Error(
+          `the bot is not a member of guild ${guildId} — Manage Messages cannot be verified`,
+        );
+      }
+      if (typeof channel.permissionsFor !== "function") {
+        console.error(
+          `[automod] executor channel permission read failed (channel ${channelId}): no permissionsFor surface`,
+        );
+        return false;
+      }
+      const bits = channel.permissionsFor(me);
+      if (!bits || typeof bits.has !== "function") {
+        console.error(
+          `[automod] executor channel permission read failed (channel ${channelId}): unreadable permission bits`,
+        );
+        return false;
+      }
+      try {
+        return bits.has(PermissionFlagsBits.ManageMessages) === true;
+      } catch (err) {
+        console.error(
+          `[automod] executor channel permission read failed (channel ${channelId}):`,
+          err?.message || err,
+        );
+        return false;
+      }
     },
     fetchMember: async (guildId, userId) =>
       guildOf(guildId).members.fetch(String(userId)),
@@ -683,11 +778,14 @@ async function runClaimedAction(row, { deps, referrerUserId = null, nowMs = now(
     };
   }
   if (act === "delete_message") {
-    if (!params.channelId || !params.messageId) {
+    // #734 canonical list OR the legacy single pair (fallback law — shared
+    // resolver with the card). Nothing resolvable = nothing to delete.
+    if (resolveDeleteTargets(params).length === 0) {
       return finalize(row, {
         state: "refused",
         error:
-          "The `delete_message` action needs params.channelId and params.messageId — " +
+          "The `delete_message` action needs params.messages ([{channelId, messageId}, …]) " +
+          "or the legacy params.channelId and params.messageId — " +
           "the delete tool removes specific messages only (no bulk purge).",
         ids,
         nowMs,
@@ -713,7 +811,16 @@ async function runClaimedAction(row, { deps, referrerUserId = null, nowMs = now(
   }
   if (!outcome?.ok) {
     const error = outcome?.error || `The \`${act}\` action refused to run (handler returned no reason).`;
-    return finalize(row, { state: "refused", error, ids, nowMs, params });
+    return finalize(row, {
+      // A handler may escalate the terminal state to `failed` (e.g. #734:
+      // every message's Discord call died — that is a FAILED row, not a
+      // guard refusal). Plain {ok:false} stays the shipped `refused`.
+      state: outcome?.state === "failed" ? "failed" : "refused",
+      error,
+      ids,
+      nowMs,
+      params,
+    });
   }
   return finalize(row, {
     state: "executed",
@@ -861,15 +968,71 @@ function buildActionHandler(act, { resolved, row, params, referrerUserId = null 
 
     case "delete_message":
       return async () => {
-        const message = await resolved.fetchMessage(params.channelId, params.messageId);
-        if (!message) {
+        // #734 — specific messages only (never a purge, never ban's history
+        // window: #723 decisions 2/9). MANAGE MESSAGES PRE-FLIGHT first:
+        // every distinct channel of the call is verified BEFORE a single
+        // delete; a channel the bot cannot manage (or cannot verify) refuses
+        // the whole row naming the cause with ZERO deletions.
+        const targets = resolveDeleteTargets(params);
+        const channelIds = [...new Set(targets.map((t) => t.channelId))];
+        const missing = [];
+        for (const channelId of channelIds) {
+          let allowed = false;
+          try {
+            allowed = (await resolved.channelCanManageMessages(guildId, channelId)) === true;
+          } catch (err) {
+            return {
+              ok: false,
+              error:
+                `Could not verify the bot's Manage Messages permission in channel ${channelId}: ` +
+                `${err?.message || err} — nothing was deleted.`,
+            };
+          }
+          if (!allowed) missing.push(channelId);
+        }
+        if (missing.length > 0) {
           return {
             ok: false,
-            error: `Message ${params.messageId} was not found in channel ${params.channelId} — nothing was deleted.`,
+            error:
+              `Bot is missing **Manage Messages** in channel(s) ${missing.map((c) => `<#${c}>`).join(", ")} — ` +
+              "nothing was deleted.",
           };
         }
-        await message.delete(auditReason);
-        return { ok: true, result: `Deleted message ${params.messageId}.` };
+        // PER-MESSAGE RESULTS (contract): each id's outcome is its own —
+        // successes counted, failures keep THEIR id + the raw Discord cause.
+        // Partial executes honestly (the line IS the report, #733 idiom);
+        // ALL failed is the failed row with the same list. Never a clean
+        // success claim when anything failed, never a crash on a vanished
+        // message (10003 is that id's failure).
+        const failed = [];
+        let deleted = 0;
+        for (const target of targets) {
+          try {
+            const message = await resolved.fetchMessage(target.channelId, target.messageId);
+            if (!message) {
+              failed.push(`${target.messageId} (Discord 10003 — message not found, already gone)`);
+              continue;
+            }
+            await message.delete(auditReason);
+            deleted += 1;
+          } catch (err) {
+            failed.push(`${target.messageId} (${err?.message || err})`);
+          }
+        }
+        if (deleted === 0) {
+          return {
+            ok: false,
+            state: "failed",
+            error: `Deleted 0 of ${targets.length} — failed: ${failed.join(", ")}.`,
+          };
+        }
+        if (failed.length > 0) {
+          return {
+            ok: true,
+            result: `Deleted ${deleted} of ${targets.length} — failed: ${failed.join(", ")}.`,
+          };
+        }
+        return { ok: true, result: `Deleted ${deleted} message(s) in this case.` };
       };
 
     case "timeout":
@@ -995,4 +1158,7 @@ module.exports = {
   resolveActionMode,
   outcomeFromRow,
   MUTATING_ACTIONS,
+  // Delete tool (#734): the ONE target-reading law (canonical messages +
+  // legacy single pair) shared by the handler and the case card.
+  resolveDeleteTargets,
 };

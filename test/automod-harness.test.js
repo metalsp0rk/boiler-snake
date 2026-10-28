@@ -1071,3 +1071,137 @@ test("a throwing injected seam still returns the service shape with the cause - 
   assert.match(res.error, /daily case budget \(database error\)/);
   assert.ok(cap.lines.some((l) => l.includes("budget read") && l.includes("budget table missing")));
 });
+
+// ── 13. the delete tool (#734): threading, honest results, note for the author ─
+
+test("buildAllowedMessages: anchor pair + fetched window entries — the bundle is the sole source - issue #734", () => {
+  const map = harness.buildAllowedMessages({
+    caseRow: { message_id: MSG, channel_id: SRC_CH, target_user_id: SUB },
+    context: {
+      window: {
+        kind: "message_anchor",
+        channel_id: SRC_CH,
+        anchor_message_id: MSG,
+        messages: [
+          { id: MSG, channel_id: SRC_CH, author_id: BYS }, // the REAL author beats the intake's target guess
+          { id: "952000000000000077", channel_id: SRC_CH, author_id: BYS },
+          { id: "", channel_id: SRC_CH, author_id: BYS }, // junk dropped
+        ],
+      },
+    },
+  });
+  assert.equal(map.size, 2);
+  assert.deepEqual(map.get(MSG), { channelId: SRC_CH, authorId: BYS });
+  assert.deepEqual(map.get("952000000000000077"), { channelId: SRC_CH, authorId: BYS });
+
+  const anchorOnly = harness.buildAllowedMessages({
+    caseRow: { message_id: MSG, channel_id: SRC_CH, target_user_id: SUB },
+    context: null,
+  });
+  assert.equal(anchorOnly.size, 1, "no context → the anchor pair alone (author = the named target)");
+  assert.deepEqual(anchorOnly.get(MSG), { channelId: SRC_CH, authorId: SUB });
+
+  assert.equal(harness.buildAllowedMessages({}).size, 0, "nothing named, nothing fetched → nothing deletable");
+});
+
+test("delete_message auto: foreign ids refused at dispatch, the allowed id executes honestly, the author's note carries it, zero DMs - issue #734", async () => {
+  const { cid, caseRow, w } = await seededCommunity("delete-auto", {
+    settings: { modes: { delete_message: "auto" } },
+  });
+  const deleted = [];
+  const dmAttempts = [];
+  // Belt: a DM-capable client surface — a delete run must NEVER reach it.
+  const client = { ...w.client, users: { fetch: async (id) => { dmAttempts.push(String(id)); throw new Error("the delete world does not DM"); } } };
+
+  const chat = scripted([
+    {
+      tools: [
+        // A foreign id FIRST — refused by the threaded allow-list, no row:
+        { name: "delete_message", args: { user_id: SUB, message_ids: ["999000000000000999"], reason: "spam" } },
+        // The case's own anchor id — recorded, then executed at commit:
+        { name: "delete_message", args: { user_id: SUB, message_ids: [MSG], reason: "the insult" } },
+      ],
+    },
+  ]);
+
+  const res = await harness.runAutomodCase({
+    communityId: cid,
+    guildId: GUILD,
+    caseId: caseRow.id,
+    deps: w.deps({
+      chat,
+      client,
+      actionDeps: {
+        ...w.actionDeps,
+        channelCanManageMessages: async () => true,
+        fetchMessage: async (chId, mId) => ({
+          id: mId,
+          delete: async (reason) => { deleted.push({ chId, mId, reason }); },
+        }),
+      },
+    }),
+  });
+
+  assert.equal(res.ok, true, res.error);
+  assert.deepEqual(deleted.map((d) => `${d.chId}/${d.mId}`), [`${SRC_CH}/${MSG}`],
+    "exactly the allowed id was deleted, with the channel resolved from the bundle");
+  assert.match(deleted[0].reason, /^Auto-mod delete_message \(case #\d+\)$/, "the audit reason rides");
+
+  const rows = actionRows(cid, caseRow.id);
+  assert.equal(rows.length, 1, "the refused foreign id recorded NO row (dispatcher-level refusal)");
+  assert.equal(rows[0].action, "delete_message");
+  assert.equal(rows[0].state, "executed");
+  assert.equal(rows[0].result_text, "Deleted 1 message(s) in this case.");
+
+  // The foreign-id refusal is persisted in the case's decision log, naming it:
+  const logged = JSON.parse(db.getAutomodCaseById(caseRow.id).decision_log);
+  assert.ok(
+    logged.some((e) => e.state === "refused"
+      && /999000000000000999 is not part of this case's referred message or fetched context window/.test(e.result_or_error)),
+    `the allow-list refusal names the id in the log: ${JSON.stringify(logged.map((e) => e.result_or_error))}`,
+  );
+
+  // #734 law: the author of a delete IS a considered subject — ONE note,
+  // planned line in **Actions:**, the executed per-id line merged under
+  // **Outcome:** (the shipped #733 machinery — nothing delete-specific).
+  const notes = db.listStaffNotes(cid, SUB);
+  assert.equal(notes.length, 1, "deleting does not skip the author's staff note");
+  assert.match(notes[0].content, /- `delete_message` — planned — reason: "the insult"/);
+  assert.match(
+    notes[0].content,
+    /\*\*Outcome:\*\*[\s\S]*`delete_message` — executed — Deleted 1 message\(s\) in this case\./,
+  );
+
+  // Zero user-facing sends: the placeholder + the edited card ONLY.
+  assert.deepEqual(dmAttempts, [], "nothing is DM'd for a delete — ever");
+  assert.equal(w.posts.length, 1);
+  assert.equal(w.edits.length, 1);
+});
+
+test("delete_message suggest: the posted card lists the messages as jump links — Approve deletes, Dismiss leaves - issue #734", async () => {
+  const { cid, caseRow, w } = await seededCommunity("delete-suggest", {
+    settings: { modes: { delete_message: "suggest" } },
+  });
+  const chat = scripted([
+    { tools: [{ name: "delete_message", args: { user_id: SUB, message_ids: [MSG], reason: "the insult" } }] },
+  ]);
+  const res = await harness.runAutomodCase({
+    communityId: cid,
+    guildId: GUILD,
+    caseId: caseRow.id,
+    deps: w.deps({ chat }),
+  });
+  assert.equal(res.ok, true, res.error);
+
+  const rows = actionRows(cid, caseRow.id);
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].state, "suggested", "suggest records the row — zero Discord calls");
+
+  const field = decisionField(w.edits[0]);
+  assert.ok(
+    field.includes(`<https://discord.com/channels/${GUILD}/${SRC_CH}/${MSG}>`),
+    "the suggested row carries the message jump link the collector resolved",
+  );
+  assert.match(field, /Approve deletes 1 message\(s\) from this case — Dismiss leaves them untouched\./);
+  assert.match(field, new RegExp(`Author: <@${SUB}>`));
+});

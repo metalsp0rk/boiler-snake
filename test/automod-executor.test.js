@@ -17,6 +17,7 @@ const { api: db, cleanup } = loadDb();
 
 const executor = require("../src/features/automod/executor");
 const repo = require("../src/db/repositories/automodCaseActions");
+const { PermissionFlagsBits } = require("discord.js");
 
 after(() => cleanup());
 
@@ -54,6 +55,18 @@ function makeRecorder(overrides = {}) {
         },
       };
     },
+    // #734 Manage Messages seam — ALLOW by default (the recorder COUNTS the
+    // check). canManageChannels lists the channels the bot CAN manage;
+    // canManage=false refuses all; canManageError throws (channel gone /
+    // bot not in guild — the handler reports that cause verbatim).
+    channelCanManageMessages: async (_gid, chId) => {
+      calls.push(`perm:${chId}`);
+      if (overrides.canManageError) throw new Error(overrides.canManageError);
+      if (Array.isArray(overrides.canManageChannels)) {
+        return overrides.canManageChannels.map(String).includes(String(chId));
+      }
+      return overrides.canManage !== false;
+    },
     fetchMember: async () => ({
       timeout: async (ms, reason) => {
         calls.push(`timeout:${ms}`);
@@ -70,7 +83,10 @@ function makeRecorder(overrides = {}) {
   return { calls, deps };
 }
 
-/** The params each mutating action needs to reach its handler. */
+/** The params each mutating action needs to reach its handler.
+ *  delete_message deliberately keeps the LEGACY single-pair shape: the
+ *  #734 fallback law says rows recorded before params.messages still
+ *  execute — every recorder-driven delete below pins that arm. */
 const paramsFor = {
   warn: { reason: "posted targeted harassment" },
   delete_message: { channelId: "301", messageId: "401" },
@@ -313,6 +329,10 @@ describe("subject guards — staff roles + role hierarchy (decision 6)", () => {
       guilds: { cache: { get: (id) => (id === GUILD ? guild : undefined) } },
       channels: {
         fetch: async () => ({
+          // #734: the production Manage Messages pre-flight reads this —
+          // the fake grants the permission (the seam-specific refusals are
+          // pinned directly through the injectable seam below).
+          permissionsFor: () => ({ has: (flag) => flag === PermissionFlagsBits.ManageMessages }),
           messages: {
             fetch: async (id) => (id === "401"
               ? { id, delete: async () => { deleted.n += 1; } }
@@ -337,16 +357,20 @@ describe("subject guards — staff roles + role hierarchy (decision 6)", () => {
       communityId: cid, guildId: GUILD, subjectUserId: SUBJECT, action: "delete_message",
       caseId: 161, params: { channelId: "301", messageId: "401" }, deps: { client },
     });
-    assert.equal(del.ok, true);
+    assert.equal(del.ok, true, del.error ?? "ok");
+    assert.equal(del.result, "Deleted 1 message(s) in this case.",
+      "the LEGACY single-pair row still executes (fallback law) with the new honest line");
     assert.equal(deleted.n, 1);
 
-    // GONE message: the default fetchMessage resolves null → specific refusal.
+    // GONE message: the default fetchMessage resolves null → that id's
+    // 10003 failure; the ONLY id failed → the failed row names it.
     const gone = await executor.executeAutomodAction({
       communityId: cid, guildId: GUILD, subjectUserId: SUBJECT, action: "delete_message",
       caseId: 162, params: { channelId: "301", messageId: "999" }, deps: { client },
     });
     assert.equal(gone.ok, false);
-    assert.match(gone.error, /was not found in channel 301/);
+    assert.equal(gone.state, "failed");
+    assert.match(gone.error, /^Deleted 0 of 1 — failed: 999 \(Discord 10003 — message not found, already gone\)\.$/);
 
     // Uncached guild: the adapter names the guild — guard fails closed.
     const lost = await executor.executeAutomodAction({
@@ -552,7 +576,7 @@ describe("action handlers — ticket seam, delete pre-flight, real warn", () => 
     assert.equal(row.error_text, res.error);
   });
 
-  it("delete_message: missing ids refuse; a gone message reports specifically", async () => {
+  it("delete_message: unresolvable params refuse naming both shapes; the legacy pair still deletes (#734)", async () => {
     const missing = freshCommunity();
     setMode(missing, "delete_message", "auto");
     const noIds = await executor.executeAutomodAction({
@@ -560,7 +584,8 @@ describe("action handlers — ticket seam, delete pre-flight, real warn", () => 
       caseId: 41, params: { messageId: "only-message" }, deps: makeRecorder().deps,
     });
     assert.equal(noIds.ok, false);
-    assert.match(noIds.error, /needs params\.channelId and params\.messageId/);
+    assert.match(noIds.error, /needs params\.messages \(\[\{channelId, messageId\}, …\]\)/);
+    assert.match(noIds.error, /legacy params\.channelId and params\.messageId/);
 
     const goneCid = freshCommunity();
     setMode(goneCid, "delete_message", "auto");
@@ -570,7 +595,10 @@ describe("action handlers — ticket seam, delete pre-flight, real warn", () => 
       deps: makeRecorder({ message: null }).deps,
     });
     assert.equal(gone.ok, false);
-    assert.match(gone.error, /was not found in channel 301 — nothing was deleted/);
+    // Vanished message = that id's 10003 failure, not a crash; the only id
+    // failed → the failed row carries the per-id list (#734 honesty).
+    assert.equal(gone.state, "failed");
+    assert.match(gone.error, /^Deleted 0 of 1 — failed: 999 \(Discord 10003 — message not found, already gone\)\.$/);
 
     const okCid = freshCommunity();
     setMode(okCid, "delete_message", "auto");
@@ -580,7 +608,212 @@ describe("action handlers — ticket seam, delete pre-flight, real warn", () => 
       caseId: 43, params: { channelId: "301", messageId: "401" }, deps,
     });
     assert.equal(ok.ok, true);
+    assert.equal(ok.result, "Deleted 1 message(s) in this case.");
     assert.ok(calls.some((c) => c.startsWith("delete:Auto-mod delete_message")), `delete ran with audit reason: ${calls}`);
+    assert.ok(calls.includes("perm:301"), "the Manage Messages pre-flight ran on the target channel");
+  });
+
+  // ── #734: the delete tool's own law (perm pre-flight, per-id honesty) ─────
+
+  it("delete_message: Manage Messages missing on ANY channel refuses naming it — ZERO deletes (#734)", async () => {
+    const cid = freshCommunity();
+    setMode(cid, "delete_message", "auto");
+    const { calls, deps } = makeRecorder({ canManageChannels: ["301"] }); // 302 lacks it
+    const res = await executor.executeAutomodAction({
+      communityId: cid, guildId: GUILD, subjectUserId: SUBJECT, action: "delete_message",
+      caseId: 411,
+      params: { messages: [
+        { channelId: "301", messageId: "401" },
+        { channelId: "302", messageId: "402" },
+        { channelId: "301", messageId: "403" }, // second id in the MANAGED channel too
+      ] },
+      deps,
+    });
+    assert.equal(res.ok, false);
+    assert.equal(res.state, "refused");
+    assert.match(res.error, /missing \*\*Manage Messages\*\* in channel\(s\) <#302>/);
+    assert.match(res.error, /nothing was deleted/);
+    assert.ok(calls.includes("perm:301") && calls.includes("perm:302"), `each DISTINCT channel checked once: ${calls}`);
+    assert.equal(calls.filter((c) => c.startsWith("fetch:")).length, 0,
+      "the check runs BEFORE any message fetch — zero deletions guaranteed");
+    assert.equal(rowsFor(cid, 411)[0].state, "refused");
+    assert.equal(rowsFor(cid, 411)[0].error_text, res.error, "the card shows this cause verbatim");
+  });
+
+  it("delete_message: a vanished channel / bot-not-in-guild refuses with THAT cause (#734)", async () => {
+    const cid = freshCommunity();
+    setMode(cid, "delete_message", "auto");
+    const { calls, deps } = makeRecorder({ canManageError: "channel 301 no longer exists" });
+    const res = await executor.executeAutomodAction({
+      communityId: cid, guildId: GUILD, subjectUserId: SUBJECT, action: "delete_message",
+      caseId: 412, params: { messages: [{ channelId: "301", messageId: "401" }] }, deps,
+    });
+    assert.equal(res.ok, false);
+    assert.equal(res.state, "refused");
+    assert.match(
+      res.error,
+      /Could not verify the bot's Manage Messages permission in channel 301: channel 301 no longer exists — nothing was deleted\./,
+    );
+    assert.equal(calls.filter((c) => c.startsWith("delete:")).length, 0);
+  });
+
+  it("delete_message: all-success multi-channel line names the count (#734)", async () => {
+    const cid = freshCommunity();
+    setMode(cid, "delete_message", "auto");
+    const { calls, deps } = makeRecorder();
+    const res = await executor.executeAutomodAction({
+      communityId: cid, guildId: GUILD, subjectUserId: SUBJECT, action: "delete_message",
+      caseId: 413,
+      params: { messages: [
+        { channelId: "301", messageId: "401" },
+        { channelId: "302", messageId: "402" },
+      ] },
+      deps,
+    });
+    assert.equal(res.ok, true, res.error);
+    assert.equal(res.state, "executed");
+    assert.equal(res.result, "Deleted 2 message(s) in this case.");
+    assert.ok(calls.includes("fetch:301:401") && calls.includes("fetch:302:402"));
+    assert.equal(calls.filter((c) => c.startsWith("delete:")).length, 2);
+  });
+
+  it("delete_message: a partial failure lists the failed id + Discord cause — never a clean success (#734)", async () => {
+    const cid = freshCommunity();
+    setMode(cid, "delete_message", "auto");
+    const recorder = makeRecorder({
+      deps: {
+        fetchMessage: async (_ch, msg) => {
+          if (msg === "402") throw new Error("Missing Permissions");
+          return { delete: async () => {} };
+        },
+      },
+    });
+    const res = await executor.executeAutomodAction({
+      communityId: cid, guildId: GUILD, subjectUserId: SUBJECT, action: "delete_message",
+      caseId: 414,
+      params: { messages: [
+        { channelId: "301", messageId: "401" },
+        { channelId: "301", messageId: "402" },
+        { channelId: "301", messageId: "403" },
+      ] },
+      deps: recorder.deps,
+    });
+    // EXECUTED with the honest line as the report (#733 partial idiom):
+    assert.equal(res.ok, true, res.error);
+    assert.equal(res.state, "executed");
+    assert.equal(res.result, "Deleted 2 of 3 — failed: 402 (Missing Permissions).");
+    assert.doesNotMatch(res.result, /all succeeded|success/i, "never a clean-success claim on a partial");
+    assert.equal(
+      repo.getAutomodActionBySlot({ communityId: cid, caseId: 414, subjectUserId: SUBJECT, action: "delete_message" }).result_text,
+      "Deleted 2 of 3 — failed: 402 (Missing Permissions).",
+    );
+  });
+
+  it("delete_message: ALL failed is the failed row carrying the same per-id list (#734)", async () => {
+    const cid = freshCommunity();
+    setMode(cid, "delete_message", "auto");
+    const recorder = makeRecorder({
+      deps: {
+        fetchMessage: async () => { throw new Error("REST 403: Missing Permissions"); },
+      },
+    });
+    const res = await executor.executeAutomodAction({
+      communityId: cid, guildId: GUILD, subjectUserId: SUBJECT, action: "delete_message",
+      caseId: 415,
+      params: { messages: [
+        { channelId: "301", messageId: "401" },
+        { channelId: "301", messageId: "402" },
+      ] },
+      deps: recorder.deps,
+    });
+    assert.equal(res.ok, false);
+    assert.equal(res.state, "failed");
+    assert.equal(
+      res.error,
+      "Deleted 0 of 2 — failed: 401 (REST 403: Missing Permissions), 402 (REST 403: Missing Permissions).",
+    );
+    assert.equal(repo.getAutomodActionBySlot({ communityId: cid, caseId: 415, subjectUserId: SUBJECT, action: "delete_message" }).state, "failed");
+  });
+
+  it("delete_message: a message vanished MID-LOOP is that id's 10003 failure, not a crash (#734)", async () => {
+    const cid = freshCommunity();
+    setMode(cid, "delete_message", "auto");
+    const recorder = makeRecorder({
+      deps: {
+        fetchMessage: async (_ch, msg) => (msg === "402" ? null : { delete: async () => {} }),
+      },
+    });
+    const res = await executor.executeAutomodAction({
+      communityId: cid, guildId: GUILD, subjectUserId: SUBJECT, action: "delete_message",
+      caseId: 416,
+      params: { messages: [
+        { channelId: "301", messageId: "401" },
+        { channelId: "301", messageId: "402" },
+      ] },
+      deps: recorder.deps,
+    });
+    assert.equal(res.ok, true, res.error);
+    assert.match(res.result, /^Deleted 1 of 2 — failed: 402 \(Discord 10003 — message not found, already gone\)\.$/);
+  });
+
+  it("delete_message: a staff author's SUGGESTION records; Approve refuses (#734 + decision 6)", async () => {
+    const cid = freshCommunity();
+    db.addStaffRole(cid, "role-mod", "senior", "tester");
+    const { calls: suggestCalls, deps: suggestDeps } = makeRecorder({ roleIds: ["role-mod"] });
+    const sug = await executor.executeAutomodAction({
+      communityId: cid, guildId: GUILD, subjectUserId: SUBJECT, action: "delete_message",
+      caseId: 417,
+      params: { messages: [{ channelId: "301", messageId: "401" }] },
+      deps: suggestDeps,
+    });
+    assert.equal(sug.ok, true, sug.error);
+    assert.equal(sug.state, "recorded_suggestion",
+      "recording a SUGGESTION still succeeds for a staff author (contract: the recommendation may still appear)");
+    assert.deepEqual(suggestCalls, [], "suggest makes zero Discord calls — no guard to consult yet");
+
+    const { calls, deps } = makeRecorder({ roleIds: ["role-mod"] });
+    const approved = await executor.approveSuggestion({ actionRowId: sug.actionRowId, claimant: "staff-1", deps });
+    assert.equal(approved.ok, false);
+    assert.equal(approved.state, "refused");
+    assert.match(approved.error, /staff role <@&role-mod>/);
+    assert.match(approved.error, /#723 decision 6/);
+    assert.equal(calls.filter((c) => c !== "roles").length, 0, "Approve never reaches the perm check or the deletes");
+    // (The AUTO arm of the same guard is pinned by the MUTATORS matrix above.)
+  });
+
+  it("delete_message: double Approve runs exactly ONE deletion pass (#734 claim-before-commit)", async () => {
+    const cid = freshCommunity();
+    const deletions = [];
+    const shared = makeRecorder({
+      deps: {
+        fetchMessage: async (_ch, msg) => ({
+          delete: async (reason) => { deletions.push({ msg, reason }); },
+        }),
+      },
+    });
+    const sug = await executor.executeAutomodAction({
+      communityId: cid, guildId: GUILD, subjectUserId: SUBJECT, action: "delete_message",
+      caseId: 418,
+      params: { messages: [
+        { channelId: "301", messageId: "401" },
+        { channelId: "301", messageId: "402" },
+      ] },
+      deps: makeRecorder().deps,
+    });
+    assert.equal(sug.state, "recorded_suggestion");
+    const p1 = executor.approveSuggestion({ actionRowId: sug.actionRowId, claimant: "staff-A", deps: shared.deps });
+    const p2 = await executor.approveSuggestion({ actionRowId: sug.actionRowId, claimant: "staff-B", deps: makeRecorder().deps });
+    assert.equal(p2.deduped, true, "the second click loses the claim and reports the existing outcome");
+    const res = await p1;
+    assert.equal(res.ok, true, res.error);
+    assert.equal(res.result, "Deleted 2 message(s) in this case.");
+    assert.equal(deletions.length, 2, "ONE pass deleted its two ids");
+    assert.equal(new Set(deletions.map((d) => d.msg)).size, 2);
+
+    const late = await executor.approveSuggestion({ actionRowId: sug.actionRowId, claimant: "staff-C", deps: makeRecorder().deps });
+    assert.equal(late.deduped, true);
+    assert.equal(late.state, "executed");
+    assert.equal(deletions.length, 2, "a late third click never re-deletes");
   });
 
   it("warn auto REALLY writes a formal warning via createWarning, issuer = referrer", async () => {
