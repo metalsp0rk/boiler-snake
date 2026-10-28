@@ -74,7 +74,12 @@ Staff notes, Ticket actions — senior, Ticket archive), **Community** (Events),
 items you don't have tier for are hidden. The Events children (Archive, Presets, Series,
 Scheduled posts) show only while the path is under `/events`. Settings and integrations
 options are **in-page anchors** within those two pages, not separate routes. On a phone
-the sidebar collapses behind the Menu button. The path id is the bot's internal
+the sidebar collapses behind the Menu button (719px and below). From 720px the rail is
+13rem wide, and from 1100px it is 15.5rem. The signed-in chrome is graphite with teal
+for the current page and for actions, and steel for secondary information. Dashboard
+counts are stat cards. The messages chart is teal and the XP chart is steel. Other
+pages share this chrome; their page contents keep the previous styles until those
+surfaces move over. The path id is the bot's internal
 **community id** (a small integer — Discord servers and Fluxer communities share the namespace),
 not a Discord snowflake; bookmarks from before the communities migration (`/g/<snowflake>`)
 return 404. Pages:
@@ -98,7 +103,7 @@ return 404. Pages:
 - **`/g/{guildId}/system`**, **`/g/{guildId}/audit`** — process/DB/queue health and the `admin_audit` trail, filtered by guild (both **admin-only**)
 - **`/g/{guildId}/system/sessions`** — **admin + global allow-list**: every live web session in the console (sessions are account-level, not per-guild — the page says so plainly), with revoke for any of them — kill a stale or stolen sign-in without restarting the bot. Because the surface has no guild axis, a **second, global key** guards it: your user id must be listed in **`WEB_GLOBAL_ADMIN_IDS`**. Unset (or missing you) ⇒ fail-closed — you hold admin yet get an actionable refusal naming the knob; your own sessions stay on the self-service Sessions page. Revokes are audited (`sessions.revoke`); session ids are never shown.
 
-**Dashboard charts** render client-side (vendored Chart.js — pinned file, no CDN) from small JSON endpoints at `/g/{guildId}/api/dashboard/…` (staff tier, unauthenticated callers get the same generic 404 as the pages). **The signed-in console requires JavaScript**: the charts, name/channel typeahead, the archive find box, and the phone sidebar collapse are how the console behaves — they are not optional extras with a no-JS equivalent. The signed-out **sign-in landing stays a static page** (no scripts at all). A single chart failure still says so in its corner instead of breaking the page, and the same numbers always live in the page's tables. These endpoints are the first slice of the console's long-term API surface.
+**Dashboard charts** render client-side (vendored Chart.js — pinned file, no CDN) in teal (messages) and steel (XP) from small JSON endpoints at `/g/{guildId}/api/dashboard/…` (staff tier, unauthenticated callers get the same generic 404 as the pages). **The signed-in console requires JavaScript**: the charts, name/channel typeahead, the archive find box, and the phone sidebar collapse are how the console behaves — they are not optional extras with a no-JS equivalent. The signed-out **sign-in landing stays a static page** (no scripts at all). A single chart failure still says so in its corner instead of breaking the page, and the same numbers always live in the page's tables. These endpoints are the first slice of the console's long-term API surface.
 
 **Background jobs** (dashboard) reflects real ticker state: every scheduler job reports honest `ok` / `stale` / `unknown` from its last completed tick — a stalled loop goes `stale`, cron-scheduled jobs never fake a status. The rows follow the scheduler **live**: loops owned by subsystems that start after the console (bridge, linking) get their own rows without a restart, and a stopped loop shows as `unknown` ("not wired") instead of vanishing. The bridge contributes one extra aggregate row, **`bridge-relay-backlog`** (relay queue/park depth — see [bridge.md](bridge.md#troubleshooting)).
 

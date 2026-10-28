@@ -29,6 +29,12 @@
   --bs-ok: #7fb069;
   --bs-danger: #e07b6b;
   --bs-warn: #f0c96c;
+  --bs-ok-tint: #1a261c;
+  --bs-danger-tint: #2c1c1a;
+  --bs-warn-tint: #2a2416;
+  /* Chart.js reads these through getComputedStyle. var() keeps one source. */
+  --chart-line: var(--bs-action);
+  --chart-bar: var(--bs-info);
   --bs-font-sans: "Inter", system-ui, sans-serif;
   --bs-font-mono: "JetBrains Mono", ui-monospace, monospace;
   --bs-radius: 3px;

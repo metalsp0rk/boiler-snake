@@ -270,7 +270,7 @@ describe("layout (shell chrome)", () => {
 
   it("renderShellError returns a shell page (opt-in Phase 1 helper)", () => {
     const doc = String(renderShellError(fakeReq(), { status: 404, guilds: SHELL_GUILDS }));
-    assert.ok(doc.includes("shell-bar"), "shell chrome present");
+    assert.ok(doc.includes("bs-header"), "shell chrome present");
     assert.ok(doc.includes("Not found"));
     assert.ok(doc.includes("error-body"));
   });
@@ -300,7 +300,7 @@ describe("layout (shell chrome)", () => {
       "skip link is the first focusable"
     );
     assert.ok(doc.indexOf('class="skip-link"') < doc.indexOf("<header"), "skip link precedes the header");
-    assert.ok(doc.includes('<main class="shell-main" id="content">'), "main is the skip target");
+    assert.ok(doc.includes('<main class="bs-main" id="content">'), "main is the skip target");
     assert.ok(
       doc.includes('class="nav-toggle" data-nav-toggle aria-controls="shell-nav"'),
       "Menu button per #642 contract"
@@ -872,8 +872,11 @@ describe("vendored assets + app.js wiring (#459 purge guard)", () => {
     const doc = String(renderShellPage(fakeReq(), { title: "Console" }));
     const c = doc.indexOf("chart.4.5.1.min.js");
     const a = doc.indexOf("app.js?v=");
+    const forge = doc.indexOf('type="module"');
     assert.ok(c !== -1 && a !== -1, "both scripts present");
     assert.ok(c < a, "defer order: Chart.js → app.js (Chart exists before use)");
+    assert.ok(forge > a, "forge module follows app.js so the shell does not double-bind");
+    assert.ok(doc.includes('class="sl-theme-dark"'), "Shoelace dark theme on the document");
     const tag = /<script[^>]*chart\.4\.5\.1\.min\.js[^>]*>/.exec(doc)[0];
     assert.ok(tag.includes(`nonce="TESTNONCE123"`), "nonce attribute rides every script tag");
     assert.ok(tag.includes("defer"), "deferred classic script from self");
@@ -948,15 +951,19 @@ describe("vendored assets + app.js wiring (#459 purge guard)", () => {
       /<meta name="viewport" content="width=device-width, initial-scale=1"\/>/
     );
     assert.match(css, /flex-wrap:\s*wrap/, "header wraps at narrow breakpoints");
-    // #642 width contract: the shell grid owns max-width 1400px and the
-    // content column inside it is uncapped. (A bare max-width:1100px rule
-    // MAY remain on .shell-main for the non-shell lobby pages — it is not
-    // the shell contract and must not be pinned as one.)
-    assert.match(css, /\.shell-body\s*\{[^}]*max-width:\s*1400px/, "shell grid capped at 1400px");
+    // #642 width contract moved to primitives.css with the shell (#711).
+    // Lobby pages use .bs-shell.is-solo (max-width 1100px). That cap is not
+    // the shell contract and is not pinned here.
+    const primitives = fs.readFileSync(
+      path.join(__dirname, "../src/web/assets/primitives.css"),
+      "utf8"
+    );
+    assert.match(primitives, /\.bs-shell\s*\{[^}]*max-width:\s*1400px/, "shell grid capped at 1400px");
     assert.match(
-      css,
-      /\.shell-body \.shell-main\s*\{[^}]*max-width:\s*none/,
+      primitives,
+      /\.bs-shell \.bs-main\s*\{[^}]*max-width:\s*none/,
       "content column uncapped inside the shell"
     );
+    assert.doesNotMatch(css, /\.shell-body\b/, "legacy shell grid is not painted twice");
   });
 });

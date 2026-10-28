@@ -2,14 +2,15 @@
 "use strict";
 
 /**
- * Visual regression for the Forged Instrument foundation (#710).
+ * Visual regression for the Forged Instrument shell and dashboard (#711).
  *
- * Screenshots the shell and dashboard fixtures (the pages Phase 2 will
- * replace with live routes) at 3 desktop and 2 phone widths. A diff fails
- * the process. VISUAL_UPDATE=1 rewrites test/visual/baselines.
+ * Screenshots real renderLayout / renderDashboardContent HTML (staff nav,
+ * one sample guild) at 3 desktop and 2 phone widths. A diff fails the
+ * process. VISUAL_UPDATE=1 rewrites test/visual/baselines.
  *
- * The fixture server is the console's real CSP middleware plus the real
- * static middleware, so a passing run is the CSP evidence: Shoelace renders
+ * The server is the console's real CSP middleware plus the real static
+ * middleware, and it stubs the two same-origin chart JSON routes so
+ * Chart.js paints. A passing run is the CSP evidence: Shoelace renders
  * in shadow DOM via adoptedStyleSheets under that exact policy.
  */
 
@@ -21,13 +22,12 @@ const pixelmatch = require("pixelmatch");
 const puppeteer = require("puppeteer");
 const { createCspMiddleware } = require("../../src/web/middleware/csp");
 const { createStaticMiddleware } = require("../../src/web/middleware/static");
-const {
-  readBuildManifest,
-  forgePublicPaths,
-} = require("../../src/web/assets/stamp");
+const { readBuildManifest, forgePublicPaths } = require("../../src/web/assets/stamp");
+const { renderLayout } = require("../../src/web/views/layout");
+const { renderDashboardContent } = require("../../src/web/views/dashboard/dashboardPage");
+const { html } = require("../../src/web/views/escape");
 
 const REPO_ROOT = path.join(__dirname, "..", "..");
-const FIXTURE_DIR = path.join(REPO_ROOT, "src/web/assets/fixtures");
 const BASELINE_DIR = path.join(REPO_ROOT, "test/visual/baselines");
 const ACTUAL_DIR = path.join(REPO_ROOT, "test/visual/actual");
 const DIFF_DIR = path.join(REPO_ROOT, "test/visual/diff");
@@ -42,29 +42,153 @@ const WIDTHS = [
   { name: "phone-430", width: 430, height: 932 },
 ];
 
-function startServer(assetPaths) {
+const VISUAL_GUILDS = [
+  { id: "900", communityId: "100", name: "Forge Guild" },
+  { id: "901", communityId: "101", name: "Second Guild" },
+];
+
+const DASHBOARD_SAMPLE = {
+  tickets: {
+    available: true,
+    openCount: 3,
+    openCountSaturated: false,
+    newest: [
+      {
+        ticketNumber: 12,
+        reason: "Refund question",
+        creatorUserId: "1001",
+        createdAt: "2026-10-20T15:04:00.000Z",
+      },
+      {
+        ticketNumber: 11,
+        reason: "Role request",
+        creatorUserId: "1002",
+        createdAt: "2026-10-19T11:00:00.000Z",
+      },
+    ],
+  },
+  activity: {
+    messageTracking: {
+      trackedMessages: 12840,
+      dayRows: 30,
+      ignoreCount: 2,
+      backfillStatus: "idle",
+      backfillActive: false,
+    },
+    xpLeaders: [
+      { userId: "1001", xp: 4200 },
+      { userId: "1002", xp: 3100 },
+    ],
+  },
+  tickers: [
+    {
+      name: "voice",
+      status: "ok",
+      lastTickAt: "2026-10-27T12:00:00.000Z",
+      ageMs: 5000,
+      detail: "",
+    },
+    {
+      name: "decay",
+      status: "stale",
+      lastTickAt: "2026-10-26T12:00:00.000Z",
+      ageMs: 86400000,
+      detail: "overdue",
+    },
+  ],
+  nowPlaying: {
+    status: "playing",
+    paused: false,
+    title: "Night Drive",
+    author: "Ada",
+    positionMs: 83000,
+    upcoming: 2,
+  },
+  freshness: {
+    generatedAt: "2026-10-27T12:00:30.000Z",
+    fromCache: true,
+    ageMs: 12000,
+  },
+};
+
+const ACTIVITY_JSON = {
+  points: [
+    { day: "2026-10-01", messages: 12 },
+    { day: "2026-10-08", messages: 40 },
+    { day: "2026-10-15", messages: 18 },
+    { day: "2026-10-22", messages: 27 },
+  ],
+};
+
+const LEADERS_JSON = {
+  leaders: [
+    { userId: "1001", name: "Ada", xp: 4200 },
+    { userId: "1002", name: "Bea", xp: 3100 },
+    { userId: "1003", name: "Cam", xp: 900 },
+  ],
+};
+
+function pageDocument(name, nonce) {
+  const shared = {
+    guilds: VISUAL_GUILDS,
+    currentGuildId: "100",
+    tier: "staff",
+    user: { userId: "42", discordTag: "ada" },
+    csrfToken: "csrf-visual",
+    nonce,
+  };
+  if (name === "dashboard") {
+    return renderLayout({
+      ...shared,
+      title: "Dashboard",
+      heading: "Dashboard",
+      lede: "Guild health at a glance.",
+      path: "/g/100",
+      content: renderDashboardContent(DASHBOARD_SAMPLE, { guildId: "100" }),
+    });
+  }
+  return renderLayout({
+    ...shared,
+    title: "Settings",
+    heading: "Settings",
+    lede: "Guild settings for this community.",
+    path: "/g/100/settings",
+    content: html`<p class="subheading">Command channels, XP, and decay live on this page.</p>`,
+  });
+}
+
+function startServer() {
   const csp = createCspMiddleware();
   const staticMw = createStaticMiddleware();
-  const css = assetPaths.css
-    .map((href) => `<link rel="stylesheet" href="${href}" />`)
-    .join("\n    ");
 
   const server = http.createServer((req, res) => {
     const url = new URL(req.url || "/", "http://127.0.0.1");
     const fixture = url.pathname.match(/^\/fixture\/(shell|dashboard)$/);
     if (fixture) {
       csp(req, res, () => {
-        const template = fs.readFileSync(path.join(FIXTURE_DIR, `${fixture[1]}.html`), "utf8");
-        const html = template
-          .replaceAll("{{CSS}}", css)
-          .replaceAll("{{JS}}", assetPaths.js)
-          .replaceAll("{{NONCE}}", res.locals.cspNonce);
+        const document = pageDocument(fixture[1], res.locals.cspNonce || "");
         res.writeHead(200, {
           "Content-Type": "text/html; charset=utf-8",
           "Cache-Control": "no-store",
         });
-        res.end(html);
+        res.end(String(document));
       });
+      return;
+    }
+    if (url.pathname === "/g/100/api/dashboard/activity.json") {
+      res.writeHead(200, {
+        "Content-Type": "application/json; charset=utf-8",
+        "Cache-Control": "no-store",
+      });
+      res.end(JSON.stringify(ACTIVITY_JSON));
+      return;
+    }
+    if (url.pathname === "/g/100/api/dashboard/xp-leaders.json") {
+      res.writeHead(200, {
+        "Content-Type": "application/json; charset=utf-8",
+        "Cache-Control": "no-store",
+      });
+      res.end(JSON.stringify(LEADERS_JSON));
       return;
     }
     if (url.pathname.startsWith("/static/")) {
@@ -112,6 +236,16 @@ async function shoot(page, origin, name) {
     if (document.fonts && document.fonts.ready) await document.fonts.ready;
   });
   await page.waitForFunction(() => customElements.get("sl-button"));
+  if (name === "dashboard") {
+    await page.waitForFunction(() => {
+      const boxes = [...document.querySelectorAll("[data-chart-src]")];
+      if (boxes.length < 2) return false;
+      return boxes.every((box) => {
+        const canvas = box.querySelector("canvas");
+        return Boolean(canvas && window.Chart && window.Chart.getChart(canvas));
+      });
+    });
+  }
   const proof = await page.evaluate(() => {
     const button = document.querySelector("sl-button");
     const root = button && button.shadowRoot;
@@ -122,6 +256,8 @@ async function shoot(page, origin, name) {
       styleTags: root ? root.querySelectorAll("style").length : -1,
       buttonText: root ? (root.textContent || "").trim().slice(0, 40) : "",
       lookupRole: lookup ? lookup.getAttribute("role") : null,
+      hasLookup: Boolean(lookup),
+      hasIcon: Boolean(icon),
       iconReady: Boolean(icon && icon.shadowRoot && icon.shadowRoot.querySelector("svg")),
     };
   });
@@ -136,7 +272,7 @@ async function main() {
   fs.mkdirSync(ACTUAL_DIR, { recursive: true });
   fs.mkdirSync(DIFF_DIR, { recursive: true });
 
-  const { server, port } = await startServer(paths);
+  const { server, port } = await startServer();
   const origin = `http://127.0.0.1:${port}`;
   const browser = await puppeteer.launch({
     headless: true,
@@ -211,10 +347,10 @@ async function main() {
               `${file}: expected adoptedStyleSheets and no shadow <style>, got ${JSON.stringify(shot.proof)}`
             );
           }
-          if (shot.proof.lookupRole !== "combobox") {
+          if (shot.proof.hasLookup && shot.proof.lookupRole !== "combobox") {
             failures.push(`${file}: lookup input role is ${shot.proof.lookupRole}`);
           }
-          if (!shot.proof.iconReady) {
+          if (shot.proof.hasIcon && !shot.proof.iconReady) {
             failures.push(`${file}: sl-icon did not render an SVG from the self-hosted set`);
           }
         }

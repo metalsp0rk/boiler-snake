@@ -341,7 +341,7 @@ describe("web archive first-class (§8.15)", () => {
   it("in-shell archive: staff gets 200 WITH sidebar + active nav + rows", async () => {
     const { res, body } = await req(`/g/${CID_A}/t`, cookieOf.staff);
     assert.equal(res.status, 200);
-    assert.match(body, /<aside class="shell-nav"/, "sidebar renders (the regression)");
+    assert.match(body, /<aside class="bs-nav"/, "sidebar renders (the regression)");
     assert.match(body, /aria-current="page"[^>]*>Ticket archive</, "nav marks archive active");
     assert.ok(body.includes("This guild's archive"));
     assert.match(body, /Page 1 \/ 2/, "the guild's rows paginate");

@@ -221,7 +221,7 @@ describe("web UX v1.1 (root guild list, sidebar nav, member names)", () => {
 
   it("staff shell nav: common pages only — no system/audit/grant/ticket-actions", async () => {
     const { body } = await req(`/g/${CID_A}`, cookieOf.staff);
-    assert.ok(body.includes('class="shell-nav"'), "sidebar rendered");
+    assert.ok(body.includes('class="bs-nav"'), "sidebar rendered");
     assert.ok(body.includes(`/g/${CID_A}/settings`), "settings link");
     assert.ok(body.includes(`/g/${CID_A}/users`), "users link");
     assert.ok(!body.includes(`/g/${CID_A}/system"`), "system hidden for staff");
@@ -253,7 +253,7 @@ describe("web UX v1.1 (root guild list, sidebar nav, member names)", () => {
 
   it("root page renders NO sidebar (no guild context)", async () => {
     const { body } = await req("/", cookieOf.staff);
-    assert.ok(!body.includes('class="shell-nav"'), "no nav on the lobby page");
+    assert.ok(!body.includes('class="bs-nav"'), "no nav on the lobby page");
     assert.ok(!body.includes('data-guild-switcher'), "no switcher on the lobby page");
   });
 
@@ -328,6 +328,10 @@ describe("web UX v1.1 (root guild list, sidebar nav, member names)", () => {
     __dirname,
     "../src/web/public/styles.css"
   );
+  const PRIMITIVES_PATH = require("node:path").join(
+    __dirname,
+    "../src/web/assets/primitives.css"
+  );
   const APP_PATH = require("node:path").join(__dirname, "../src/web/public/app.js");
 
   /** Full text of every @media block whose prelude matches `re`. */
@@ -400,35 +404,48 @@ describe("web UX v1.1 (root guild list, sidebar nav, member names)", () => {
 
   it("mobile: styles.css carries the phone-pass rules (#642 contract)", () => {
     const css = fsx.readFileSync(STYLES_PATH, "utf8");
+    const primitives = fsx.readFileSync(PRIMITIVES_PATH, "utf8");
 
     // #642 INVERTS the old ≤880px nav strip: the phone sidebar COLLAPSES
     // behind the Menu button instead of turning into a horizontal strip.
-    // Nothing with flex-direction: row on .shell-nav may live inside any
-    // max-width: 880px query (and the query itself must be gone).
-    assert.doesNotMatch(
-      css,
-      /@media \(max-width: 880px\)[\s\S]*?\.shell-nav\s*\{[^}]*flex-direction:\s*row/,
-      "nav is not a horizontal strip ≤880px (block deleted, #642)"
-    );
-    assert.equal(
-      mediaBlocks(css, /max-width:\s*880px/).filter((b) =>
-        /\.shell-nav[^{]*flex-direction:\s*row/.test(b)
-      ).length,
-      0,
-      "no .shell-nav flex-direction:row inside any max-width:880px query"
-    );
+    // #711 moved the shell grid into primitives.css. Neither sheet may
+    // put the nav in a row under a max-width query.
+    for (const sheet of [css, primitives]) {
+      assert.doesNotMatch(
+        sheet,
+        /@media \(max-width: 880px\)[\s\S]*?\.bs-nav\s*\{[^}]*flex-direction:\s*row/,
+        "nav is not a horizontal strip ≤880px (block deleted, #642)"
+      );
+      assert.equal(
+        mediaBlocks(sheet, /max-width:\s*880px/).filter((b) =>
+          /\.(shell-nav|bs-nav)[^{]*flex-direction:\s*row/.test(b)
+        ).length,
+        0,
+        "no nav flex-direction:row inside any max-width:880px query"
+      );
+      assert.equal(
+        mediaBlocks(sheet, /max-width:\s*720px/).filter((b) =>
+          /\.(shell-nav|bs-nav)[^{]*flex-direction:\s*row/.test(b)
+        ).length,
+        0,
+        "no nav flex-direction:row inside any max-width:720px query"
+      );
+    }
+    assert.doesNotMatch(css, /\.shell-(body|nav|bar|main|footer)\b/, "legacy shell chrome removed from styles.css");
 
-    // Phone contract (max-width: 719px): Menu shows, one-column grid, the
-    // nav hides ONLY under body.nav-collapsed, and stays a column.
-    const phone = mediaBlocks(css, /max-width:\s*719px/).join("\n");
-    assert.match(phone, /\.nav-toggle\s*\{[^}]*display:\s*inline-flex/, "Menu button shown on phones");
-    assert.match(phone, /\.shell-body\s*\{[^}]*grid-template-columns:\s*1fr/, "one-column shell on phones");
+    // Phone contract (max-width: 719px) now lives on the forge shell:
+    // Menu shows, one-column grid, the nav hides ONLY under
+    // body.nav-collapsed, and stays a column.
+    const phoneShell = mediaBlocks(primitives, /max-width:\s*719px/).join("\n");
+    assert.match(phoneShell, /\.nav-toggle\s*\{[^}]*display:\s*inline-flex/, "Menu button shown on phones");
+    assert.match(phoneShell, /\.bs-shell\s*\{[^}]*grid-template-columns:\s*1fr/, "one-column shell on phones");
     assert.match(
-      phone,
-      /body\.nav-collapsed\s+\.shell-nav\s*\{[^}]*display:\s*none/,
-      "CSS hides .shell-nav only under body.nav-collapsed"
+      phoneShell,
+      /body\.nav-collapsed\s+\.bs-nav\s*\{[^}]*display:\s*none/,
+      "CSS hides .bs-nav only under body.nav-collapsed"
     );
-    assert.match(phone, /\.shell-nav\s*\{[^}]*flex-direction:\s*column/, "phone nav is a column");
+    assert.match(phoneShell, /\.bs-nav\s*\{[^}]*flex-direction:\s*column/, "phone nav is a column");
+    const phone = mediaBlocks(css, /max-width:\s*719px/).join("\n");
     // .table-stack phone block: thead is CLIPPED (never display:none) and
     // cells carry fixed-column titles via td::before content:attr(data-label).
     assert.match(
@@ -444,21 +461,21 @@ describe("web UX v1.1 (root guild list, sidebar nav, member names)", () => {
     );
 
     // The nav is never unconditionally hidden: every display:none rule
-    // targeting .shell-nav (at line start) must be body.nav-collapsed-gated.
+    // targeting .bs-nav (at line start) must be body.nav-collapsed-gated.
     assert.doesNotMatch(
-      css,
-      /(^|[,{}])\s*\.shell-nav\b[^{}\n]*\{[^}]*display:\s*none/,
-      ".shell-nav visible unless body.nav-collapsed"
+      primitives,
+      /(^|[,{}])\s*\.bs-nav\b[^{}\n]*\{[^}]*display:\s*none/,
+      ".bs-nav visible unless body.nav-collapsed"
     );
 
     // Tablet (720–1099): 13rem rail + sticky COLUMN.
-    const tablet = mediaBlocks(css, /max-width:\s*1099px/).join("\n");
-    assert.match(tablet, /\.shell-body\s*\{[^}]*grid-template-columns:\s*13rem/, "tablet rail is 13rem");
-    assert.match(tablet, /\.shell-nav\s*\{[^}]*flex-direction:\s*column/, "tablet nav is a sticky column");
+    const tablet = mediaBlocks(primitives, /max-width:\s*1099px/).join("\n");
+    assert.match(tablet, /\.bs-shell\s*\{[^}]*grid-template-columns:\s*13rem/, "tablet rail is 13rem");
+    assert.match(tablet, /\.bs-nav\s*\{[^}]*flex-direction:\s*column/, "tablet nav is a sticky column");
 
     // Desktop (1100+): 15.5rem rail.
-    const desktop = mediaBlocks(css, /min-width:\s*1100px/).join("\n");
-    assert.match(desktop, /\.shell-body\s*\{[^}]*grid-template-columns:\s*15\.5rem/, "desktop rail is 15.5rem");
+    const desktop = mediaBlocks(primitives, /min-width:\s*1100px/).join("\n");
+    assert.match(desktop, /\.bs-shell\s*\{[^}]*grid-template-columns:\s*15\.5rem/, "desktop rail is 15.5rem");
 
     // .table-scroll scrolls at ALL widths (outside every media query). The
     // old ≤480 ".panel, .moderation, .table-scroll" scroller list is GONE:

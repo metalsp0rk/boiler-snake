@@ -32,6 +32,11 @@ import { installLookupCombobox } from "./lookup-install.js";
 import { installUserCard } from "./user-card-install.js";
 
 function boot() {
+  // The signed-in shell also loads /static/app.js, which installs lookup,
+  // user cards, the Menu toggle, and charts. A second install would
+  // double-bind those listeners. Fixtures that load only this module
+  // still get the installers.
+  if (document.querySelector('script[src*="/static/app.js"]')) return;
   installLookupCombobox(document);
   installUserCard(document);
 }

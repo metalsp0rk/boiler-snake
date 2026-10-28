@@ -565,20 +565,51 @@
     return new ChartLib(canvas, config);
   }
 
-  // #651: the line follows the --chart-line CSS token, read ONCE at mount
-  // (no light palette; getComputedStyle is the only bridge from CSS to JS).
-  // The literal stays as the fallback so a missing token never paints "undefined".
-  var LINE_COLOR = "#5b9dff";
-  try {
-    var token = getComputedStyle(document.documentElement)
-      .getPropertyValue("--chart-line")
-      .trim();
-    if (token) LINE_COLOR = token;
-  } catch (err) {
-    /* keep the fallback */
+  // #711: line = teal (--chart-line), bars = steel (--chart-bar).
+  // getPropertyValue returns the specified value, so var(--bs-action)
+  // is resolved on a probe element. Literals match the forge tokens
+  // when the custom property is missing.
+  function readCssColor(name, fallback) {
+    var specified = "";
+    try {
+      specified = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+    } catch (err) {
+      return fallback;
+    }
+    if (!specified) return fallback;
+    if (/^(#|rgb|hsl)/i.test(specified)) return specified;
+    try {
+      var probe = document.createElement("span");
+      probe.style.position = "absolute";
+      probe.style.color = specified;
+      document.documentElement.appendChild(probe);
+      var resolved = getComputedStyle(probe).color;
+      probe.remove();
+      if (resolved && resolved !== "rgba(0, 0, 0, 0)") return resolved;
+    } catch (err2) {
+      /* fall through */
+    }
+    return fallback;
   }
-  var BAR_FILL = "rgba(91, 157, 255, 0.45)";
-  var BAR_EDGE = "rgb(91, 157, 255)";
+
+  function colorWithAlpha(color, alpha) {
+    var hex = /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(String(color || ""));
+    var h = hex ? hex[1] : "";
+    if (h.length === 3) h = h[0] + h[0] + h[1] + h[1] + h[2] + h[2];
+    if (h.length === 6) {
+      var n = parseInt(h, 16);
+      return "rgba(" + ((n >> 16) & 255) + ", " + ((n >> 8) & 255) + ", " + (n & 255) + ", " + alpha + ")";
+    }
+    var rgb = /^rgba?\(\s*([\d.]+)[,\s]+([\d.]+)[,\s]+([\d.]+)/i.exec(String(color || ""));
+    if (rgb) return "rgba(" + rgb[1] + ", " + rgb[2] + ", " + rgb[3] + ", " + alpha + ")";
+    return color;
+  }
+
+  var LINE_COLOR = readCssColor("--chart-line", "#29a8bd");
+  var BAR_COLOR = readCssColor("--chart-bar", "#86a9c6");
+  var LINE_FILL = colorWithAlpha(LINE_COLOR, 0.15);
+  var BAR_FILL = colorWithAlpha(BAR_COLOR, 0.45);
+  var BAR_EDGE = BAR_COLOR;
 
   function lineConfig(data) {
     return {
@@ -589,7 +620,7 @@
           label: "Messages",
           data: data.points.map(function (p) { return p.messages; }),
           borderColor: LINE_COLOR,
-          backgroundColor: "rgba(91, 157, 255, 0.15)",
+          backgroundColor: LINE_FILL,
           fill: true,
           pointRadius: 0, // 30-day window: clean line, tooltips stay usable
           tension: 0.1, // honest near-straight daily counts

@@ -92,7 +92,7 @@ let savedEnv;
 const suite = { server: null, base: "", cookies: {} };
 
 /**
- * The stable CONTENT region of the shell: <main class="shell-main"> — every
+ * The stable CONTENT region of the shell: <main class="bs-main"> — every
  * volatile per-response blob (CSP nonce on script tags, the random CSRF
  * token attribute on <body>) lives OUTSIDE it, so negative leak assertions
  * scoped here need no strip-list (#470 G2-9). The old whole-document
@@ -103,7 +103,7 @@ const suite = { server: null, base: "", cookies: {} };
  */
 function mainRegion(body) {
   const m = body.match(/<main\b[\s\S]*?<\/main>/);
-  assert.ok(m, "the shell renders a <main class=\"shell-main\"> region");
+  assert.ok(m, "the shell renders a <main class=\"bs-main\"> region");
   return m[0];
 }
 
