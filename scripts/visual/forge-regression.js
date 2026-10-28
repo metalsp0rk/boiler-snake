@@ -12,6 +12,11 @@
  * middleware, and it stubs the two same-origin chart JSON routes so
  * Chart.js paints. A passing run is the CSP evidence: Shoelace renders
  * in shadow DOM via adoptedStyleSheets under that exact policy.
+ *
+ * Dashboard baselines are the Bookworm visual image (scripts/visual/Dockerfile).
+ * Host Chrome matches the shell byte for byte and disagrees with that image
+ * by a few pixels of dashboard row height. Do not refresh dashboard baselines
+ * with VISUAL_UPDATE=1 on the host — copy them out of a green image run.
  */
 
 const fs = require("fs");
