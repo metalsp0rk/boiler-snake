@@ -37,7 +37,7 @@ function makeRecorder(overrides = {}) {
   const calls = [];
   // Last Discord timeout reason — #736 pins that the STATED reason rides
   // the audit entry (calls stay id-only so existing pins never churn).
-  const record = { lastTimeoutReason: null, lastKickReason: null };
+  const record = { lastTimeoutReason: null, lastKickReason: null, lastBanReason: null };
   const deps = {
     fetchMemberRoleIds: async () => {
       calls.push("roles");
@@ -91,8 +91,16 @@ function makeRecorder(overrides = {}) {
       }
       return { ok: true };
     },
-    createBan: async (guildId, userId, { reason } = {}) => {
+    createBan: async (_cid, userId, { reason } = {}) => {
+      // #738: ban rides the outbound banMember through this seam — the
+      // shape matches createKick ({ok:false,error,code} scripts a failure;
+      // the seam NEVER throws).
       calls.push(`ban:${userId}`);
+      record.lastBanReason = reason ?? null;
+      if (overrides.banError) {
+        return { ok: false, error: overrides.banError, code: overrides.banCode };
+      }
+      return { ok: true };
     },
     ...(overrides.deps ?? {}),
   };
@@ -324,23 +332,30 @@ describe("subject guards — staff roles + role hierarchy (decision 6)", () => {
   });
 
   it("production default deps drive a (fake) discord.js v14 client surface", async () => {
-    const cid = freshCommunity();
+    // #738: ban AND kick now ride the REAL platform-outbound helpers
+    // (lookupGuild → guild.members.ban/kick), so this test's community is
+    // keyed to the fake guild's own id — the production wiring itself is
+    // what's under test here.
+    const cid = communityKey(GUILD);
     const deleted = { n: 0 };
     const banned = [];
+    const kicked = [];
     const member = {
       roles: {
         cache: { keys: () => ["r-everyone"] },
         highest: { position: 2 },
       },
       timeout: async () => { throw new Error("unused"); },
-      kick: async () => { banned.push("kick"); },
     };
     const guild = {
+      id: GUILD,
       members: Object.assign(async () => member, {
         fetch: async () => member,
         me: { roles: { highest: { position: 9 } } },
+        // What createDiscordOutbound().banMember/kickMember actually call:
+        ban: async (id, opts) => { banned.push({ id, reason: opts?.reason }); },
+        kick: async (id, opts) => { kicked.push({ id, reason: opts?.reason }); },
       }),
-      bans: { create: async (id, opts) => { banned.push({ id, reason: opts.reason }); } },
     };
     const client = {
       guilds: { cache: { get: (id) => (id === GUILD ? guild : undefined) } },
@@ -358,6 +373,15 @@ describe("subject guards — staff roles + role hierarchy (decision 6)", () => {
         }),
       },
     };
+
+    setMode(cid, "kick", "auto");
+    const kick = await executor.executeAutomodAction({
+      communityId: cid, guildId: GUILD, subjectUserId: SUBJECT, action: "kick",
+      caseId: 159, deps: { client },
+    });
+    assert.equal(kick.ok, true, `client-driven kick ran through the outbound: ${kick.error ?? "ok"}`);
+    assert.deepEqual(kicked[0].id, SUBJECT);
+    assert.match(kicked[0].reason, /^Auto-mod kick \(case #159\)/, "the belt audit line reaches the API (#737)");
 
     setMode(cid, "ban", "auto");
     const ban = await executor.executeAutomodAction({
@@ -637,6 +661,116 @@ describe("kick tool — required reason rides the audit log through the outbound
     assert.equal(rec.calls.filter((c) => c === "kick").length, 1, "ONE outbound kick across two clicks");
     assert.equal(a2.ok, true);
     assert.match(String(a2.result ?? ""), /Kicked <@200000000000000002>\./, "the second click reports the existing result");
+    assert.equal(a2.deduped, true);
+  });
+});
+
+// ── #738: the ban tool — outbound banMember, audit reason, honest failures ─
+
+describe("ban tool — required reason rides the audit log through the outbound ban helper", () => {
+  it("the stated reason becomes the audit reason (case-tagged) on the outbound call - issue #738", async () => {
+    const cid = freshCommunity();
+    setMode(cid, "ban", "auto");
+    const { record, promise } = run(cid, "ban", {
+      exec: { caseId: 250, params: { reason: "doxxing coordinator" } },
+    });
+    const res = await promise;
+    assert.equal(res.ok, true);
+    assert.equal(res.result, "Banned <@200000000000000002>.");
+    assert.equal(
+      record.lastBanReason,
+      "doxxing coordinator (automod case #250)",
+      "the audit-log sentence is the STATED reason, case-tagged",
+    );
+  });
+
+  it("a legacy row without a reason rides the generic audit line (belt) - issue #738", async () => {
+    const cid = freshCommunity();
+    setMode(cid, "ban", "auto");
+    const { record, promise } = run(cid, "ban", { exec: { caseId: 251 } });
+    const res = await promise;
+    assert.equal(res.ok, true, "the reason law lives at dispatch — the executor belt must not dead-end");
+    assert.equal(record.lastBanReason, "Auto-mod ban (case #251)");
+  });
+
+  it("the outbound never receives a delete-message window (decision 9) - issue #738", async () => {
+    const cid = freshCommunity();
+    setMode(cid, "ban", "auto");
+    const seen = [];
+    const { promise } = run(cid, "ban", {
+      exec: { caseId: 252, params: { reason: "raid" } },
+      recorderOverrides: {
+        deps: {
+          createBan: async (_cid, userId, opts = {}) => {
+            seen.push(opts);
+            return { ok: true };
+          },
+        },
+      },
+    });
+    const res = await promise;
+    assert.equal(res.ok, true);
+    assert.deepEqual(Object.keys(seen[0]), ["reason"],
+      "only a reason rides the ban — no delete_message_days anywhere (decision 9)");
+  });
+
+  it("an outbound refusal comes back {ok:false} and the row quotes the cause verbatim - issue #738", async () => {
+    const cid = freshCommunity();
+    setMode(cid, "ban", "auto");
+    const cause = "banMember: user 200000000000000002 in community 1 failed: Missing Permissions";
+    const { calls, promise } = run(cid, "ban", {
+      recorderOverrides: { banError: cause, banCode: "50013" },
+      exec: { caseId: 253, params: { reason: "hierarchy problem case" } },
+    });
+    const res = await promise;
+    assert.equal(res.ok, false);
+    assert.equal(
+      res.error,
+      `${cause} — nobody was banned.`,
+      "the typed outbound cause rides VERBATIM + the outcome sentence (rules 3+6)",
+    );
+    assert.equal(calls.filter((c) => c.startsWith("ban:")).length, 1, "exactly one ban ATTEMPT (the breaker counts it)");
+    assert.equal(
+      repo.getAutomodActionBySlot({ communityId: cid, caseId: 253, subjectUserId: SUBJECT, action: "ban" }).state,
+      "refused",
+    );
+  });
+
+  it("breaker pause refuses the auto ban and the outbound is never called - issue #738", async () => {
+    const cid = freshCommunity();
+    setMode(cid, "ban", "auto");
+    db.setAutomodPause(cid, { reason: "ban storm" });
+    try {
+      const { calls, promise } = run(cid, "ban", {
+        exec: { caseId: 254, params: { reason: "raid" } },
+      });
+      const res = await promise;
+      assert.equal(res.ok, false);
+      assert.match(res.error, /circuit breaker is tripped/);
+      assert.match(res.error, /`ban` runs stay dark/);
+      assert.ok(!calls.some((c) => c.startsWith("ban:")), "a paused ban never reaches banMember (#738 pin)");
+    } finally {
+      db.clearAutomodPause(cid);
+    }
+  });
+
+  it("idempotent Approve: a second click reports the first ban, never a second attempt - issue #738", async () => {
+    const cid = freshCommunity();
+    setMode(cid, "ban", "suggest");
+    const first = run(cid, "ban", {
+      exec: { caseId: 255, params: { reason: "raid" } },
+    });
+    const recorded = await first.promise;
+    assert.equal(recorded.ok, true, "suggest mode records the pending row");
+    const row = rowsFor(cid, 255)[0];
+
+    const rec = makeRecorder();
+    const a1 = await executor.approveSuggestion({ actionRowId: row.id, claimant: "staff-1", deps: rec.deps });
+    assert.equal(a1.ok, true);
+    const a2 = await executor.approveSuggestion({ actionRowId: row.id, claimant: "staff-1", deps: rec.deps });
+    assert.equal(rec.calls.filter((c) => c.startsWith("ban:")).length, 1, "ONE outbound ban across two clicks");
+    assert.equal(a2.ok, true);
+    assert.match(String(a2.result ?? ""), /Banned <@200000000000000002>\./, "the second click reports the existing result");
     assert.equal(a2.deduped, true);
   });
 });

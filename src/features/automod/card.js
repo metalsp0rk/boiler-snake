@@ -337,6 +337,22 @@ function renderRowLine(row, ctx = {}) {
             (reason ? `Reason: "${reason}".` : "Reason: none recorded.")
           );
         }
+        if (act === "ban") {
+          // #738: a suggested ban quotes the reason that will ride the
+          // Discord audit log — the most serious sanction gets the same
+          // quote-before-approve law as the kick. Message history is NOT
+          // part of the ban (decision 9 — the delete tool removes
+          // specifics); Approve bans, Dismiss leaves the member.
+          const params = parseAutomodActionParams(row)?.params ?? {};
+          const reason = snippet(params.reason ?? "", 160);
+          return (
+            "a staff decision is due — Approve bans the member from this " +
+            "server with the reason below on the audit log (message " +
+            "history is untouched — deleting is the delete tool); Dismiss " +
+            "leaves them. " +
+            (reason ? `Reason: "${reason}".` : "Reason: none recorded.")
+          );
+        }
         return "a staff decision is due — Approve runs the shared executor, Dismiss declines.";
       }
       case "approved":

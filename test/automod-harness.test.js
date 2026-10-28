@@ -1603,3 +1603,68 @@ test("kick auto: the note is written even when the kick succeeds and the member 
     KNOWN.add(SUB); // module-level world — leave no residue for later tests
   }
 });
+
+test("ban auto: the outbound banMember carries the case-tagged reason and the note survives the removal - issue #738", async () => {
+  const { cid, caseRow, w } = await seededCommunity("ban-auto", {
+    settings: { modes: { ban: "auto" } },
+  });
+  const calls = [];
+  const chat = scripted([
+    {
+      tools: [
+        {
+          name: "write_staff_note",
+          args: { user_id: SUB, content: "doxxing coordinator confirmed; cross-community pattern in the referral." },
+        },
+        { name: "ban", args: { user_id: SUB, reason: "doxxing coordinator" } },
+      ],
+    },
+  ]);
+  try {
+    const res = await harness.runAutomodCase({
+      communityId: cid,
+      guildId: GUILD,
+      caseId: caseRow.id,
+      deps: w.deps({
+        chat,
+        actionDeps: {
+          ...w.actionDeps,
+          createBan: async (cidArg, uid, { reason } = {}) => {
+            calls.push({ communityId: cidArg, userId: String(uid), reason });
+            // The ban WORKED — from this instant the member is gone.
+            KNOWN.delete(SUB);
+            return { ok: true }; // the outbound RETURNS failures, never throws
+          },
+        },
+      }),
+    });
+    assert.equal(res.ok, true, res.error);
+
+    assert.deepEqual(calls, [
+      {
+        communityId: cid,
+        userId: SUB,
+        reason: `doxxing coordinator (automod case #${caseRow.id})`,
+      },
+    ]);
+
+    const rows = actionRows(cid, caseRow.id);
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].state, "executed");
+    assert.equal(rows[0].result_text, `Banned <@${SUB}>.`);
+
+    // Same contract law as the kick: the removal never costs the record.
+    const notes = db.listStaffNotes(cid, SUB);
+    assert.equal(notes.length, 1, "the staff note survives the ban it documented");
+    assert.match(notes[0].content, /doxxing coordinator confirmed/);
+    assert.match(
+      notes[0].content,
+      new RegExp(`\\*\\*Outcome:\\*\\*[\\s\\S]*Banned <@${SUB}>\\.`),
+    );
+
+    assert.match(decisionField(w.edits[0]), new RegExp(`Banned <@${SUB}>\\.`));
+    assert.equal(w.posts.length, 1);
+  } finally {
+    KNOWN.add(SUB);
+  }
+});

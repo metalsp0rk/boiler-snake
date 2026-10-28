@@ -292,6 +292,23 @@ test("suggested kick quotes the reason that will ride the Discord audit log - is
   assert.match(bareField, /Reason: none recorded\./);
 });
 
+test("suggested ban quotes the audit reason and states the no-bulk-delete law - issue #738", () => {
+  const { cid, caseRow } = seededCase("ban-suggested");
+  const row = db.getAutomodAction(
+    suggest(cid, caseRow, "ban", SUB2, { reason: "doxxing coordinator" }).id,
+  );
+  const field = decisionField(card.buildCardPayload({ caseRow, rows: [row], summaryText: "s" }));
+  assert.match(
+    field,
+    /`ban` — \*\*pending approval\*\* — a staff decision is due — Approve bans the member from this server with the reason below on the audit log \(message history is untouched — deleting is the delete tool\); Dismiss leaves them\./,
+  );
+  assert.match(field, /Reason: "doxxing coordinator"\./);
+
+  const bare = db.getAutomodAction(suggest(cid, caseRow, "ban", SUB, {}).id);
+  const bareField = decisionField(card.buildCardPayload({ caseRow, rows: [bare], summaryText: "s" }));
+  assert.match(bareField, /Reason: none recorded\./);
+});
+
 test("card buttons clamp honestly: 10 pending rows max, the overflow line names the rest - issue #730", () => {
   const { cid, caseRow } = seededCase("clamp");
   const acts = ["warn", "timeout", "kick", "ban", "delete_message", "ticket"];

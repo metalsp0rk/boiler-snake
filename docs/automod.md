@@ -1,8 +1,8 @@
 # Auto-moderation (epic #723)
 
 !!! abstract "Ship state — this page tracks the epic"
-    **Shipped now:** the guild settings and their Manage-Guild commands — `/automod status` and `/automodconfig` (channel, rules, master switch, per-action modes, timeout cap, daily case budget, breaker state + `safety resume`) (#725) — plus **staff referral intake**: `/automod refer` and the **Refer to automod** message context menu, which record a case (**A-n**) and ack where recommendations will post (#726), the **case-context collector** + lookup tools the judge reads (#727 — no user-facing surface of its own; see [Case context](#case-context)), the **LLM harness**: the case runner that judges a recorded case, records intent through mode-gated tools, and commits every action through the executor (#728 — see [Harness](#harness)), the **case card**: the interactive one-post-per-case outcome post whose Approve/Dismiss buttons execute suggested actions straight from the ledger (#730 — see [Case card](#case-card)), the **staff-note reconciler**: one note per considered subject (narrative or harness-filled), dropped notes for non-subjects, outcomes merged into the same note (#731 — see [Staff notes](#staff-notes)), and the **warning tool**: `warn` records a real formal warning through the shipped warnings system — member-facing reason, the guild's own warn-DM and expiry settings, the case note linked, evidence defaulted (#733 — see [Warning tool](#warning-tool-733)), and the **delete-message tool**: `delete_message` removes specific messages of this case — case allow-list, one user per call, Manage Messages pre-flight, honest per-id results (#734 — see [Delete-message tool](#delete-message-tool-734)) — and the **ticket tool**: `ticket` opens the case's help ticket **with the subject in it** through the shipped ticket system — member-visible opening enforced in code, the subject's own ticket rate limit, honest causes on every refusal (#735 — see [Ticket tool](#ticket-tool-735)), and the **timeout tool**: `timeout` with the executor-owned [60 s, cap] clamp proven on the row, a required reason that becomes the Discord timeout reason, the card showing the applied duration, and the circuit-breaker refusal wired for both paths (#736 — see [Timeout tool](#timeout-tool-736)), and the **kick tool**: `kick` with a required reason that rides the Discord audit log through the platform outbound helper, the removal quoted on the card before staff approve, and the staff note surviving the removal it documents (#737 — see [Kick tool](#kick-tool-737)).
-    **Landing in sibling issues:** the remaining action tool's surface (#738), plus the circuit breaker trip logic (#739). The intake ack never claims a recommendation was produced — the **harness posts its outcome separately**, after the ack. The mode gate itself (off/suggest/auto, guards, atomic claims) is already shipped in the executor (#729) — a suggest-mode decision is recorded as a pending ledger row and surfaces on the case card for staff approval.
+    **Shipped now:** the guild settings and their Manage-Guild commands — `/automod status` and `/automodconfig` (channel, rules, master switch, per-action modes, timeout cap, daily case budget, breaker state + `safety resume`) (#725) — plus **staff referral intake**: `/automod refer` and the **Refer to automod** message context menu, which record a case (**A-n**) and ack where recommendations will post (#726), the **case-context collector** + lookup tools the judge reads (#727 — no user-facing surface of its own; see [Case context](#case-context)), the **LLM harness**: the case runner that judges a recorded case, records intent through mode-gated tools, and commits every action through the executor (#728 — see [Harness](#harness)), the **case card**: the interactive one-post-per-case outcome post whose Approve/Dismiss buttons execute suggested actions straight from the ledger (#730 — see [Case card](#case-card)), the **staff-note reconciler**: one note per considered subject (narrative or harness-filled), dropped notes for non-subjects, outcomes merged into the same note (#731 — see [Staff notes](#staff-notes)), and the **warning tool**: `warn` records a real formal warning through the shipped warnings system — member-facing reason, the guild's own warn-DM and expiry settings, the case note linked, evidence defaulted (#733 — see [Warning tool](#warning-tool-733)), and the **delete-message tool**: `delete_message` removes specific messages of this case — case allow-list, one user per call, Manage Messages pre-flight, honest per-id results (#734 — see [Delete-message tool](#delete-message-tool-734)) — and the **ticket tool**: `ticket` opens the case's help ticket **with the subject in it** through the shipped ticket system — member-visible opening enforced in code, the subject's own ticket rate limit, honest causes on every refusal (#735 — see [Ticket tool](#ticket-tool-735)), and the **timeout tool**: `timeout` with the executor-owned [60 s, cap] clamp proven on the row, a required reason that becomes the Discord timeout reason, the card showing the applied duration, and the circuit-breaker refusal wired for both paths (#736 — see [Timeout tool](#timeout-tool-736)), and the **kick tool**: `kick` with a required reason that rides the Discord audit log through the platform outbound helper, the removal quoted on the card before staff approve, and the staff note surviving the removal it documents (#737 — see [Kick tool](#kick-tool-737)), and the **ban tool**: `ban` with the same required audit reason through the shipped `banMember` outbound, no message-history deletion, and the attempt row honest about every Discord cause (#738 — see [Ban tool](#ban-tool-738)).
+    **Landing in sibling issues:** the circuit breaker trip logic (#739). The intake ack never claims a recommendation was produced — the **harness posts its outcome separately**, after the ack. The mode gate itself (off/suggest/auto, guards, atomic claims) is already shipped in the executor (#729) — a suggest-mode decision is recorded as a pending ledger row and surfaces on the case card for staff approval.
 
 Auto-moderation is a staff-referred judgment pipeline: a staff member refers a message or a user, a separate LLM harness recommends staff actions against the guild's written rules, and each action type is gated `off` / `suggest` / `auto` by the guild. **Recommendations are the default** — enabling the master switch never starts kicking or banning by itself.
 
@@ -1055,6 +1055,73 @@ impossible to stack: the second click returns the existing result and
 the outbound kick runs exactly once. A failed attempt is still ONE
 attempt — the row records it refused, which is what the #739 breaker
 will count.
+
+## Ban tool (#738)
+
+Ban a member from the server — the most serious sanction — mode-gated
+(`/automodconfig mode action:ban`), default **suggest**. The removal
+rides the **existing** `banMember` platform-outbound helper (the one
+the honeypot mass-ban path uses) — the executor's raw `bans.create`
+path is gone; the model tool loop never calls discord.js. Discord only:
+no Fluxer ban surface is added for automod (the outbound's Fluxer twin
+serves other features; automod's pipeline stays Discord-side, epic
+decision 8).
+
+**Banning is not deleting.** No delete-message window is ever passed
+(epic decision 9): the outbound call carries only a reason. Removing
+message history stays the [delete tool](#delete-message-tool-734)'s
+job, pinned by a test that inspects the outbound args.
+
+**The call.** `ban` requires a one-line `reason` — stored on the action
+row AND sent as the **Discord audit-log reason**, case-tagged
+`doxxing coordinator (automod case #12)`. A bare call refuses above the
+`(action, user)` slot check:
+
+```text
+`ban` needs `reason` — it rides the Discord audit log as the ban reason and is stored on the action row. A ban without a stated, defensible reason is not recordable — write the rule broken, or call nothing.
+```
+
+Legacy/direct rows without one ride the generic belt line
+(`Auto-mod ban (case #12)`) — the requirement lives at dispatch.
+
+**The card quotes the ban.** Staff see the audit sentence — and the
+no-bulk-delete law — before approving:
+
+```text
+`ban` — **pending approval** — a staff decision is due — Approve bans the member from this server with the reason below on the audit log (message history is untouched — deleting is the delete tool); Dismiss leaves them. Reason: "doxxing coordinator".
+```
+
+Approve bans; Dismiss does not. Auto bans immediately:
+
+```text
+Banned <@user>.
+```
+
+**Specific Discord causes, never a throw.** The outbound **returns**
+`{ ok: false, error, code }` — the handler maps every failure (unknown
+member, hierarchy, permissions) to a refused row quoting the cause
+verbatim:
+
+```text
+banMember: user 123 in community 4 failed: Missing Permissions — nobody was banned.
+```
+
+Staff-role subjects refuse through the shipped decision-6 guards even
+when hierarchy would allow it. While the [circuit
+breaker](#circuit-breaker-gate-shipped-trip-in-739) is paused the
+executor refuses ban runs for BOTH auto and Approve — and a paused ban
+**never calls `banMember`** (pinned).
+
+**Idempotent Approve, countable attempts.** The claim-before-run law
+makes a double click return the existing `Banned <@id>.` result; the
+outbound fires exactly once. A failed ban is still exactly ONE attempt
+row — the shape #739's breaker counts, matching honeypot's
+"count attempts" rule.
+
+**The note outlives the member.** Same law as the kick: the pre-pass
+writes the staff note BEFORE actions run and the outcome merges into
+that SAME row afterwards — a successful ban never costs the audit
+trail (pinned end-to-end with the member gone mid-run).
 
 ## Daily case budget
 
