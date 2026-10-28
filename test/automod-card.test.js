@@ -119,7 +119,7 @@ test("card payload: sections, note refs, pending approval word, footer, meta fam
   const { cid, caseRow } = seededCase("shape");
   const warn = db.getAutomodAction(suggest(cid, caseRow, "warn", SUB, { reason: "harassment" }).id);
   const judged = db.getAutomodAction(
-    suggest(cid, caseRow, "no_action", SUB2, { rationale: "already handled" }).id,
+    suggest(cid, caseRow, "no_action", SUB2, { reason: "already handled" }).id,
   );
 
   const payload = card.buildCardPayload({

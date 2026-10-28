@@ -212,7 +212,7 @@ describe("subject guards — staff roles + role hierarchy (decision 6)", () => {
     setMode(cid, "no_action", "auto");
     const { calls, promise } = run(cid, "no_action", {
       recorderOverrides: { roleIds: ["role-mod"] },
-      exec: { caseId: 10, params: { rationale: "close call, context explains it" } },
+      exec: { caseId: 10, params: { reason: "close call, context explains it" } },
     });
     const res = await promise;
     assert.equal(res.ok, true);

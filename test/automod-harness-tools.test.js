@@ -322,6 +322,75 @@ test("malformed calls feed the model a cause instead of throwing - issue #728", 
   assert.match(nullCall, /Unknown tool/);
 });
 
+// ── #732: no_action — required reason, canonical key, prompt laws ──────────
+
+test("no_action requires `reason` in the schema — the decision text is part of the record - issue #732", () => {
+  const noAction = buildActionSchemas(modes()).find((t) => t.function.name === "no_action");
+  assert.deepEqual(noAction.function.parameters.required, ["user_id", "reason"]);
+  assert.ok("reason" in noAction.function.parameters.properties, "the canonical key is offered");
+  assert.ok(
+    !("rationale" in noAction.function.parameters.properties),
+    "the renamed key is gone — the model sees one key only",
+  );
+  assert.match(noAction.function.description, /`reason` is required/);
+});
+
+test("no_action without `reason` is refused with the bystander-law cause and keeps the slot - issue #732", async () => {
+  const d = dispatcherFor();
+  const refused = await d.executeTool("no_action", { user_id: SUB });
+  assert.match(refused, /^`no_action` needs `reason` — why no sanction is warranted/);
+  assert.match(refused, /not a bystander bin/);
+  assert.deepEqual(d.actionIntents, [], "a refused call records nothing");
+
+  const ok = await d.executeTool("no_action", { user_id: SUB, reason: "close call, de-escalated" });
+  assert.match(ok, /^Recorded: no_action/, "the refusal must not burn the (action,user) slot");
+  assert.deepEqual(d.actionIntents.at(-1).params, { reason: "close call, de-escalated" },
+    "the intent carries the canonical key");
+});
+
+test("the prompt states the #732 laws — required reason, /note delete escape, off-mode consequence - issue #732", () => {
+  const on = buildSystemPrompt({
+    rules: "R",
+    modes: modes("suggest"),
+    offeredActions: ["no_action"],
+  });
+  assert.match(on, /its `reason` \(required\) is the record/);
+  assert.match(on, /\/note delete/, "staff can undo a bad note — the escape hatch is stated");
+  assert.match(on, /dropped \(zero rows\)/, "the note law describes commit reconciliation, not call-time refusal (#731)");
+  assert.ok(!on.includes("`no_action` is OFF for this server"), "no off-clause when the mode runs");
+
+  const off = buildSystemPrompt({
+    rules: "R",
+    modes: modes("suggest", { no_action: "off" }),
+    offeredActions: ["warn"],
+  });
+  assert.match(off, /\*\*`no_action` is OFF for this server\*\*/);
+  assert.match(off, /writing them a note does nothing \(it is dropped at commit\)/,
+    "off means a pass without action = NOT considered, no note (contract)");
+});
+
+test("rows recorded with the legacy `rationale` key still render (#732 rename readability)", () => {
+  const card = require("../src/features/automod/card");
+  const legacy = db.insertAutomodActionSuggestion({
+    communityId: CID,
+    caseId: caseRow.id,
+    guildId: GUILD,
+    subjectUserId: BYS,
+    action: "no_action",
+    mode: "suggest",
+    params: { rationale: "pre-rename row stays readable" },
+  });
+  assert.equal(legacy.ok, true, legacy.error);
+  const payload = card.buildCardPayload({
+    caseRow,
+    rows: [db.getAutomodAction(legacy.row.id)],
+    summaryText: "x",
+    withButtons: false,
+  });
+  const field = payload.embeds[0].fields.find((f) => f.name === "Decision").value;
+  assert.match(field, /pre-rename row stays readable/, "the card renders the legacy body");
+});
+
 test("oversized tool results are capped for the provider - issue #728", async () => {
   for (let i = 0; i < 30; i += 1) {
     db.createStaffNote({

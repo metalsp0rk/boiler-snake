@@ -2,7 +2,7 @@
 
 !!! abstract "Ship state — this page tracks the epic"
     **Shipped now:** the guild settings and their Manage-Guild commands — `/automod status` and `/automodconfig` (channel, rules, master switch, per-action modes, timeout cap, daily case budget, breaker state + `safety resume`) (#725) — plus **staff referral intake**: `/automod refer` and the **Refer to automod** message context menu, which record a case (**A-n**) and ack where recommendations will post (#726), the **case-context collector** + lookup tools the judge reads (#727 — no user-facing surface of its own; see [Case context](#case-context)), the **LLM harness**: the case runner that judges a recorded case, records intent through mode-gated tools, and commits every action through the executor (#728 — see [Harness](#harness)), and the **case card**: the interactive one-post-per-case outcome post whose Approve/Dismiss buttons execute suggested actions straight from the ledger (#730 — see [Case card](#case-card)), and the **staff-note reconciler**: one note per considered subject (narrative or harness-filled), dropped notes for non-subjects, outcomes merged into the same note (#731 — see [Staff notes](#staff-notes)).
-    **Landing in sibling issues:** the individual action tools' surfaces (#732–#738), plus the circuit breaker trip logic (#739). The intake ack never claims a recommendation was produced — the **harness posts its outcome separately**, after the ack. The mode gate itself (off/suggest/auto, guards, atomic claims) is already shipped in the executor (#729) — a suggest-mode decision is recorded as a pending ledger row and surfaces on the case card for staff approval.
+    **Landing in sibling issues:** the individual action tools' surfaces (#733–#738), plus the circuit breaker trip logic (#739). The intake ack never claims a recommendation was produced — the **harness posts its outcome separately**, after the ack. The mode gate itself (off/suggest/auto, guards, atomic claims) is already shipped in the executor (#729) — a suggest-mode decision is recorded as a pending ledger row and surfaces on the case card for staff approval.
 
 Auto-moderation is a staff-referred judgment pipeline: a staff member refers a message or a user, a separate LLM harness recommends staff actions against the guild's written rules, and each action type is gated `off` / `suggest` / `auto` by the guild. **Recommendations are the default** — enabling the master switch never starts kicking or banning by itself.
 
@@ -593,6 +593,29 @@ scope.
 | `off` | The tool is not offered to the model and cannot run. The case card must not recommend it. |
 | `suggest` | The model may select it; the case card in the automod channel shows it. Staff **Approve** runs the same executor auto mode uses; **Dismiss** records the decline. |
 | `auto` | The executor runs it and the card reports the result. No approve button. |
+
+### `no_action` — the recorded decision (#732)
+
+`no_action` is how the judge says *this user was considered and will not be
+sanctioned* — they came close to a rule, or the rules do not reach them, and
+the record should exist without a warning.
+
+- **Mode-gated** like every action (`/automodconfig mode action:no_action`),
+  default **suggest**.
+- The **`reason` is required** and is stored on the action row AND carried
+  into the staff note — it is the decision text the human record keeps.
+- `suggest` / `auto`: the decision is recorded, the staff note is written
+  ([Staff notes](#staff-notes)), and the card shows it as *already a recorded
+  decision*. There is **no Discord mutation and no Approve button** —
+  dismissing a nothing-decision is meaningless.
+- `off`: the model cannot call it. A pass with no other action then means the
+  user was **not considered** and gets **no staff note** — the system prompt
+  states this so the judge cannot treat silence as a decision.
+- **Not a warning.** No `createWarning`, no DM. The card shows the decision
+  so staff can `/note delete` a note the judge got wrong.
+- The call itself is what marks a user considered — the judge must not use it
+  as a bystander bin (the prompt says so, and the reconciler enforces what
+  actually gets written).
 
 ## Daily case budget
 

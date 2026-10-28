@@ -13,7 +13,10 @@
  *  - and that a staff note is required for every user considered (locked
  *    decision 4 — with the mechanical enforcement spelled out: a
  *    consideration must be recorded as an action first, `no_action`
- *    included, or the note tool refuses the write).
+ *    included; the note tool accepts any call but COMMIT RECONCILIATION
+ *    writes a note only for users who have a recorded action (a note for a
+ *    non-subject is dropped, zero rows) and harness-fills a narrative the
+ *    model omitted (#731)).
  *
  * This module is pure text: no db, no Discord, no imports from `../gork/**`
  * (locked decision 7 — the harness owns its prompt).
@@ -53,6 +56,7 @@ function buildSystemPrompt({ rules = "", modes = {}, offeredActions = null, case
     ? offeredActions.map((a) => `\`${a}\``).join(", ")
     : "`no_action` only (every other action is off)";
   const modeLines = AUTOMOD_ACTIONS.map((a) => `- \`${a}\`: **${modes?.[a] ?? "suggest"}**`).join("\n");
+  const noActionOff = String(modes?.no_action ?? "suggest").trim().toLowerCase() === "off";
 
   return [
     `You are the auto-moderation judge for this Discord server. Staff referred ${caseRef} to you. You review it against the guild's written rules and record actions against the users the evidence actually implicates. You decide; the executor independently applies modes, guards, and claims on commit — an \`off\` action cannot run, a \`suggest\` action lands as a staff approval request, an \`auto\` action executes.`,
@@ -72,12 +76,15 @@ function buildSystemPrompt({ rules = "", modes = {}, offeredActions = null, case
     "",
     "## Hard rules",
     "1. **Bystanders.** The message window contains authors who are context only (`participant_user_ids` lists them). Do NOT act on or write a note about anyone you did not explicitly consider. A user who merely appears in the window and does not come close to a rule violation gets no action call and no note.",
-    "2. **Consideration + notes.** A staff note is required for every user you consider. Consideration is mechanical: record it with an action call for that user — `no_action` when no sanction is warranted (they came close, or the rules do not reach them). Then write their note (what you weighed, the decision). The harness enforces both: a note for a user you did not first consider is refused, and one note per user per case.",
+    "2. **Consideration + notes.** A staff note is required for every user you consider. Consideration is mechanical: record it with an action call for that user — `no_action` when no sanction is warranted (they came close, or the rules do not reach them). Then write their note (what you weighed, the decision). The harness reconciles at commit: one note per user per case, written only for users who have a recorded action — a note for anyone else is dropped (zero rows) and named on the case card, and a subject with no narrative gets one harness-filled from your structured decision.",
     "3. **The referrer is not a subject** merely because they filed the referral.",
     "4. **Escalate on evidence.** Read a user's history (`read_warnings` / `read_staff_notes`) before warn/timeout/kick/ban, and match the sanction to the rule broken. Kick and ban are last resorts.",
-    "5. **`no_action` is not a bystander bin** — it is a decision about someone you weighed. Users you did not weigh get nothing.",
+    "5. **`no_action` is not a bystander bin** — it is a decision about someone you weighed, and its `reason` (required) is the record kept on the decision row and in the staff note. It is what marks a user considered; users you did not weigh get nothing. The case card shows the decision so staff can delete a bad note with `/note delete`.",
+    noActionOff
+      ? "5b. **`no_action` is OFF for this server** — you cannot call it. That means a user you decide to leave alone was NOT considered: they get no action, and writing them a note does nothing (it is dropped at commit). Only act on users the evidence actually implicates."
+      : null,
     "6. **Finish.** When you are done, reply with a short final decision message and NO tool calls.",
-  ].join("\n");
+  ].filter((line) => line !== null).join("\n");
 }
 
 /**

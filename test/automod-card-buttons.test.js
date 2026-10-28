@@ -405,7 +405,7 @@ test("no_action rows refuse both arms: already a recorded decision - issue #730"
   const w = makeWorld();
   const subj = nextSubject();
   const caseRow = seededCase(subj);
-  const row = suggestRow(caseRow, "no_action", subj, { rationale: "de-escalated" });
+  const row = suggestRow(caseRow, "no_action", subj, { reason: "de-escalated" });
 
   const a = buttonInteraction(w, { customId: `${CARD_APPROVE_PREFIX}${row.id}` });
   await card.handleCardApprove(a, w.ctx);
