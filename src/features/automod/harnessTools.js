@@ -229,15 +229,17 @@ const ACTION_TOOL_SPECS = Object.freeze({
     description:
       "Time the user out. duration_seconds is the requested length; the " +
       "guild's timeout cap and the 60-second floor are applied by the " +
-      "executor and the row records the duration ACTUALLY used.",
+      "executor and the row records the duration ACTUALLY used. `reason` " +
+      "is required: it is the Discord moderation reason attached to the " +
+      "timeout itself.",
     extra: Object.freeze({
       duration_seconds: Object.freeze({
         type: "number",
         description: "Requested timeout length in whole seconds (e.g. 300 for five minutes)",
       }),
-      reason: reasonProp("The rule broken, in one line"),
+      reason: reasonProp("The rule broken, in one line (attached to the timeout as its Discord reason)"),
     }),
-    required: Object.freeze(["user_id", "duration_seconds"]),
+    required: Object.freeze(["user_id", "duration_seconds", "reason"]),
   }),
   kick: Object.freeze({
     description:
@@ -607,6 +609,18 @@ function createToolDispatcher({
             name,
             args,
             "`timeout` needs `duration_seconds` — a positive number of seconds. The 60-second floor and the guild cap are applied by the executor; pass what you intend.",
+          );
+        }
+        // #736: the reason is REQUIRED — it is not decoration, it is the
+        // Discord moderation reason attached to the timeout itself (the
+        // subject sees it in their moderation record). Checked after the
+        // duration check so a malformed call learns the shape first;
+        // BOTH refusals sit above the slot check (#728/#732 law).
+        if (!reason) {
+          return refuse(
+            name,
+            args,
+            "`timeout` needs `reason` — it becomes the Discord timeout reason the subject sees in their moderation record. Write the rule broken in one line; a sanction without a stated reason is not recordable.",
           );
         }
         params.durationSeconds = Math.floor(seconds);

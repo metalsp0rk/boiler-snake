@@ -240,6 +240,40 @@ test("a suggested delete row lists the targeted messages as jump links — Appro
   assert.match(doneField, /`delete_message` — \*\*executed\*\* — Deleted 2 message\(s\) in this case\./);
 });
 
+test("suggested timeout shows the APPLIED duration and the clamp proof - issue #736", () => {
+  const { cid, caseRow } = seededCase("timeout-clamp");
+  db.updateGuildSettings(cid, { automod_timeout_cap: 120 });
+
+  // Over the cap: the card projects the executor's clamp against the
+  // CURRENT guild settings — the real value binds at Approve.
+  const over = db.getAutomodAction(
+    suggest(cid, caseRow, "timeout", SUB2, { durationSeconds: 99999, reason: "raid burst" }).id,
+  );
+  const field = decisionField(card.buildCardPayload({ caseRow, rows: [over], summaryText: "s" }));
+  assert.match(
+    field,
+    /`timeout` — \*\*pending approval\*\* — a staff decision is due — Approve applies the clamped duration below; the real cap binds at Approve \(current guild settings\)\./,
+  );
+  assert.match(field, /Duration: 120s \(clamped from 99999s — floor 60s, cap 120s\)\./);
+  assert.match(field, /Reason: "raid burst"\./);
+
+  // Within the window: honest "unchanged", never a phantom clamp.
+  const clean = db.getAutomodAction(
+    suggest(cid, caseRow, "timeout", SUB, { durationSeconds: 60, reason: "slur" }).id,
+  );
+  const cleanField = decisionField(card.buildCardPayload({ caseRow, rows: [clean], summaryText: "s" }));
+  assert.match(cleanField, /Duration: 60s \(unchanged — within the floor and cap\)\./);
+
+  // A row with no duration falls back to the generic suggested line.
+  const nobody = "862000000000000017";
+  const bare = db.getAutomodAction(suggest(cid, caseRow, "timeout", nobody, {}).id);
+  const bareField = decisionField(card.buildCardPayload({ caseRow, rows: [bare], summaryText: "s" }));
+  assert.match(
+    bareField,
+    /`timeout` — \*\*pending approval\*\* — a staff decision is due — Approve runs the shared executor, Dismiss declines\./,
+  );
+});
+
 test("card buttons clamp honestly: 10 pending rows max, the overflow line names the rest - issue #730", () => {
   const { cid, caseRow } = seededCase("clamp");
   const acts = ["warn", "timeout", "kick", "ban", "delete_message", "ticket"];

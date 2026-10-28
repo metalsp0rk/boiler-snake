@@ -145,6 +145,7 @@ const {
   recordAutomodActionResult,
   getAutomodAction,
   parseAutomodActionParams,
+  isAutomodPaused,
 } = require("../../db");
 // READ-ONLY imports of the shipped warnings feature (#733): the same member
 // DM gate and the same standard DM framing `/warn add` uses — no parallel
@@ -180,6 +181,14 @@ const MUTATING_ACTIONS = Object.freeze([
   "kick",
   "ban",
 ]);
+
+/** The breaker's scope (#736 gate / #739 trip, epic #723): the escalating
+ *  three stay DARK while the safety pause is set — warn, delete_message,
+ *  ticket, no_action, and staff notes keep running. Auto commit AND
+ *  Approve clicks flow through the one gated choke point
+ *  (`runClaimedAction`); suggestions still RECORD (#739: the card keeps
+ *  showing them, Approve answers with the pause refusal). */
+const BREAKER_GATED_ACTIONS = Object.freeze(["timeout", "kick", "ban"]);
 
 // ── Logging (AGENTS.md rule 2: ids enough to reproduce from logs alone) ────
 
@@ -528,6 +537,12 @@ function buildDefaultDeps(deps = {}) {
         openedByStaffId: openedByStaffId ? String(openedByStaffId) : null,
       });
     },
+    // ── #736 breaker gate seam ─────────────────────────────────────────────
+    // The persisted safety pause over the real repo read (#725 columns; the
+    // TRIP that writes them is #739, the `safety resume` CLEAR is shipped).
+    // The gate calls it for kick/ban/timeout only; tests script the state
+    // here without touching the database.
+    isAutomodPaused: (communityId) => isAutomodPaused(communityId),
   };
 
   // Shallow merge: explicit seams win over the defaults.
@@ -881,6 +896,29 @@ async function runClaimedAction(row, {
     });
   }
 
+  // #736/#739 CIRCUIT-BREAKER GATE (locked decision 2's safety half): while
+  // the persisted pause is set, kick/ban/timeout are DARK for BOTH paths —
+  // auto commit and Approve clicks share this choke point (the card's
+  // pre-gate answers the clicker early; this is the source of truth).
+  // Warn / delete / ticket / no_action / staff notes keep running — the
+  // pause covers the escalating three only (epic #723; #739 owns the TRIP,
+  // the `safety resume` clear ships with #725).
+  if (BREAKER_GATED_ACTIONS.includes(act)) {
+    const pause = resolved.isAutomodPaused(row.community_id);
+    if (pause?.paused) {
+      return finalize(row, {
+        state: "refused",
+        error:
+          `**Safety paused:** the auto-moderation circuit breaker is tripped — ` +
+          `\`${act}\` runs stay dark until an admin runs ` +
+          "`/automodconfig safety resume` (confirm:true). " +
+          `**Pause reason:** ${pause.reason ?? "not recorded"}`,
+        ids,
+        nowMs,
+      });
+    }
+  }
+
   if (MUTATING_ACTIONS.includes(act)) {
     const guard = await guardSubject({
       action: act,
@@ -1187,8 +1225,16 @@ function buildActionHandler(act, {
             error: `Member ${subject} was not found in guild ${guildId} — nobody was timed out.`,
           };
         }
+        // #736: the stated reason IS the Discord timeout reason — it rides
+        // the audit entry the subject's client can surface. The dispatcher
+        // requires it; a legacy/direct row without one falls back to the
+        // generic case-tag audit line (belt, never a dead end).
+        const stated = String(params.reason ?? "").trim();
+        const discordReason = stated
+          ? `${stated} (automod ${caseTag})`
+          : auditReason;
         // discord.js v14: member.timeout(ms, reason)
-        await member.timeout(params.durationSeconds * 1000, auditReason);
+        await member.timeout(params.durationSeconds * 1000, discordReason);
         const clampNote =
           params.clamped && params.requestedDurationSeconds != null
             ? ` (clamped from ${params.requestedDurationSeconds}s)`
@@ -1411,9 +1457,11 @@ module.exports = {
   // Pure/testable pieces (also useful to #730's card + #739's breaker):
   buildDefaultDeps,
   clampTimeoutDuration,
+  readTimeoutCap,
   resolveActionMode,
   outcomeFromRow,
   MUTATING_ACTIONS,
+  BREAKER_GATED_ACTIONS,
   // Delete tool (#734): the ONE target-reading law (canonical messages +
   // legacy single pair) shared by the handler and the case card.
   resolveDeleteTargets,

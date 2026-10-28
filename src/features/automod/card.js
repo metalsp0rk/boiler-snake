@@ -103,7 +103,13 @@ const { guildWarnExpiryDays } = require("../warnings/helpers");
 // The executor's ONE delete-target law (#734): the suggested-delete row
 // renders EXACTLY the pairs the Approve click will delete (canonical
 // params.messages, or the legacy single pair on older rows).
-const { approveSuggestion, dismissSuggestion, resolveDeleteTargets } = require("./executor");
+const {
+  approveSuggestion,
+  dismissSuggestion,
+  resolveDeleteTargets,
+  clampTimeoutDuration,
+  readTimeoutCap,
+} = require("./executor");
 
 /** Embed palette — byte-identical to the harness family (placeholder colors
  *  the card EDITS carry over: review yellow / decision green / failure red). */
@@ -290,6 +296,32 @@ function renderRowLine(row, ctx = {}) {
           return (
             AUTOMOD_CARD_TICKET_SUGGESTED_HEAD +
             `${AUTOMOD_CARD_TICKET_PROPOSED_LABEL} ${reason ? `"${reason}".` : "none recorded."}`
+          );
+        }
+        if (act === "timeout") {
+          // #736: the card shows the duration THAT WOULD BE APPLIED — the
+          // projection of the executor's [60 s, current guild cap] clamp at
+          // build time, labelled as the current setting so a stale card
+          // stays honest (the real value binds at Approve). When clamping
+          // would change the proposal the line says so — contract verbatim.
+          const params = parseAutomodActionParams(row)?.params ?? {};
+          const projection = clampTimeoutDuration({
+            requestedSeconds: params.durationSeconds,
+            guildCapSeconds: readTimeoutCap(row.community_id),
+          });
+          if (!projection.ok) {
+            return "a staff decision is due — Approve runs the shared executor, Dismiss declines.";
+          }
+          const reason = snippet(params.reason ?? "", 160);
+          return (
+            "a staff decision is due — Approve applies the clamped duration " +
+            "below; the real cap binds at Approve (current guild settings). " +
+            `Duration: ${projection.durationSeconds}s` +
+            (projection.clampedFrom != null
+              ? ` (clamped from ${projection.clampedFrom}s — floor ${projection.floorSeconds}s, cap ${projection.ceilingSeconds}s)`
+              : " (unchanged — within the floor and cap)") +
+            ". " +
+            (reason ? `Reason: "${reason}".` : "Reason: none recorded.")
           );
         }
         return "a staff decision is due — Approve runs the shared executor, Dismiss declines.";
