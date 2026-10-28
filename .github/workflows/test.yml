@@ -80,6 +80,67 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
+      # The runner image is a slim container. Puppeteer's Chrome is the same
+      # build as local, and it needs the host libraries (the first miss is
+      # libglib-2.0.so.0). Ubuntu 24.04 renames some of these to *t64.
+      - name: Install Chrome libraries
+        run: |
+          set -euo pipefail
+          export DEBIAN_FRONTEND=noninteractive
+          if [ "$(id -u)" -eq 0 ]; then
+            apt_get=(apt-get)
+          elif sudo -n true 2>/dev/null; then
+            apt_get=(sudo -n apt-get)
+          else
+            echo "Chrome needs shared libraries and this runner cannot apt-get." >&2
+            exit 1
+          fi
+          "${apt_get[@]}" update
+          names=(
+            ca-certificates
+            fonts-liberation
+            libasound2
+            libatk-bridge2.0-0
+            libatk1.0-0
+            libcairo2
+            libcups2
+            libdbus-1-3
+            libdrm2
+            libexpat1
+            libfontconfig1
+            libgbm1
+            libglib2.0-0
+            libnspr4
+            libnss3
+            libpango-1.0-0
+            libpangocairo-1.0-0
+            libx11-6
+            libx11-xcb1
+            libxcb1
+            libxcomposite1
+            libxdamage1
+            libxext6
+            libxfixes3
+            libxkbcommon0
+            libxrandr2
+            libxrender1
+            libxshmfence1
+            libxi6
+            libxss1
+            libxtst6
+          )
+          resolved=()
+          for name in "${names[@]}"; do
+            if apt-cache show "$name" >/dev/null 2>&1; then
+              resolved+=("$name")
+            elif apt-cache show "${name}t64" >/dev/null 2>&1; then
+              resolved+=("${name}t64")
+            else
+              echo "no apt package for ${name}" >&2
+              exit 1
+            fi
+          done
+          "${apt_get[@]}" install -y --no-install-recommends "${resolved[@]}"
       - name: Forge visual regression
         run: npm run test:visual
       - name: Upload visual diffs

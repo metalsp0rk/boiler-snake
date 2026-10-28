@@ -146,6 +146,9 @@ async function main() {
       "--force-color-profile=srgb",
       "--hide-scrollbars",
       "--disable-dev-shm-usage",
+      // The self-hosted runner is a container; Chrome's user-namespace
+      // sandbox is blocked there. Local runs keep the sandbox.
+      ...(process.env.CI ? ["--no-sandbox", "--disable-setuid-sandbox"] : []),
     ],
   });
 
