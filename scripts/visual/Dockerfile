@@ -45,15 +45,16 @@ RUN apt-get update \
 WORKDIR /app
 
 # CI=true makes the harness drop Chrome's user-namespace sandbox, which
-# this container cannot use. PUPPETEER_SKIP_DOWNLOAD=0 is explicit: the
-# workflow default skips the download, and the postinstall swallows a
-# failed browser install.
+# this container cannot use. Skip the postinstall download: it swallows
+# errors and leaves a cache directory that the next install will not replace.
 ENV CI=true \
-    PUPPETEER_SKIP_DOWNLOAD=0
+    PUPPETEER_SKIP_DOWNLOAD=1
 
 COPY package.json package-lock.json ./
-RUN npm ci \
-  && npx puppeteer browsers install chrome
+RUN npm ci
+RUN rm -rf /root/.cache/puppeteer \
+  && PUPPETEER_SKIP_DOWNLOAD=0 npx puppeteer browsers install chrome \
+  && test -x /root/.cache/puppeteer/chrome/linux-156.0.8078.47/chrome-linux64/chrome
 
 COPY vite.web.config.mjs ./
 COPY src ./src
