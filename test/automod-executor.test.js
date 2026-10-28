@@ -35,6 +35,9 @@ const setMode = (cid, action, mode) =>
 /** Deps recorder — every Discord seam counted; overrides replace seams. */
 function makeRecorder(overrides = {}) {
   const calls = [];
+  // Last Discord timeout reason — #736 pins that the STATED reason rides
+  // the audit entry (calls stay id-only so existing pins never churn).
+  const record = { lastTimeoutReason: null };
   const deps = {
     fetchMemberRoleIds: async () => {
       calls.push("roles");
@@ -72,6 +75,7 @@ function makeRecorder(overrides = {}) {
     fetchMember: async () => ({
       timeout: async (ms, reason) => {
         calls.push(`timeout:${ms}`);
+        record.lastTimeoutReason = reason ?? null;
       },
       kick: async (reason) => {
         calls.push("kick");
@@ -82,7 +86,7 @@ function makeRecorder(overrides = {}) {
     },
     ...(overrides.deps ?? {}),
   };
-  return { calls, deps };
+  return { calls, deps, record };
 }
 
 /** The params each mutating action needs to reach its handler.
@@ -100,9 +104,10 @@ const paramsFor = {
 
 /** Execute with every seam answered; opts merge last. */
 function run(cid, action, opts = {}) {
-  const { calls, deps } = makeRecorder(opts.recorderOverrides ?? {});
+  const { calls, deps, record } = makeRecorder(opts.recorderOverrides ?? {});
   return {
     calls,
+    record,
     promise: executor.executeAutomodAction({
       communityId: cid,
       guildId: GUILD,
@@ -446,6 +451,96 @@ describe("timeout clamp — [60 s, min(guild cap, 28 days)]", () => {
     assert.match(res.error, /needs params\.durationSeconds/);
     assert.ok(calls.includes("roles"), "guards ran first, then the param pre-flight refused");
     assert.equal(repo.getAutomodActionBySlot({ communityId: cid, caseId: 22, subjectUserId: SUBJECT, action: "timeout" }).state, "refused");
+  });
+
+  // ── #736: reason rides Discord; breaker pause gates BOTH paths ──────────
+
+  it("the stated reason becomes the Discord timeout reason (case-tagged) - issue #736", async () => {
+    const cid = freshCommunity();
+    setMode(cid, "timeout", "auto");
+    const { record, promise } = run(cid, "timeout", {
+      exec: { caseId: 230, params: { durationSeconds: 300, reason: "slur burst in #general" } },
+    });
+    const res = await promise;
+    assert.equal(res.ok, true);
+    assert.equal(
+      record.lastTimeoutReason,
+      "slur burst in #general (automod case #230)",
+      "the reason the subject's client surfaces is the STATED one",
+    );
+  });
+
+  it("a legacy row without a reason still times out on the generic audit line - issue #736 belt", async () => {
+    const cid = freshCommunity();
+    setMode(cid, "timeout", "auto");
+    const { record, promise } = run(cid, "timeout", {
+      exec: { caseId: 231, params: { durationSeconds: 120 } },
+    });
+    const res = await promise;
+    assert.equal(res.ok, true, "the dispatcher requires reason — the executor belt must not dead-end legacy rows");
+    assert.equal(record.lastTimeoutReason, "Auto-mod timeout (case #231)");
+  });
+
+  it("breaker pause refuses the AUTO run naming the reason + resume command, timing out nobody - issue #736", async () => {
+    const cid = freshCommunity();
+    setMode(cid, "timeout", "auto");
+    db.setAutomodPause(cid, { reason: "five timeouts inside five minutes" });
+    try {
+      const { calls, promise } = run(cid, "timeout", {
+        exec: { caseId: 232, params: { durationSeconds: 300, reason: "raid" } },
+      });
+      const res = await promise;
+      assert.equal(res.ok, false);
+      assert.match(res.error, /^\*\*Safety paused:\*\* the auto-moderation circuit breaker is tripped/);
+      assert.match(res.error, /`timeout` runs stay dark/);
+      assert.match(res.error, /\/automodconfig safety resume` \(confirm:true\)/);
+      assert.match(res.error, /\*\*Pause reason:\*\* five timeouts inside five minutes/);
+      assert.ok(!calls.some((c) => c.startsWith("timeout:")), "the mutation is never reached while paused");
+      assert.equal(
+        repo.getAutomodActionBySlot({ communityId: cid, caseId: 232, subjectUserId: SUBJECT, action: "timeout" }).state,
+        "refused",
+      );
+    } finally {
+      db.clearAutomodPause(cid);
+    }
+  });
+
+  it("breaker pause refuses an APPROVE click through the same choke point - issue #736", async () => {
+    const cid = freshCommunity();
+    setMode(cid, "timeout", "suggest");
+    const sug = run(cid, "timeout", {
+      exec: { caseId: 233, params: { durationSeconds: 600, reason: "raid" } },
+    });
+    await sug.promise; // records the suggestion (suggest mode is dark-free)
+    const row = rowsFor(cid, 233)[0];
+    db.setAutomodPause(cid, { reason: "kick storm" });
+    try {
+      const res = await executor.approveSuggestion({
+        actionRowId: row.id,
+        claimant: "staff-9",
+        deps: makeRecorder().deps,
+      });
+      assert.equal(res.ok, false);
+      assert.match(res.error, /circuit breaker is tripped/);
+      assert.match(res.error, /\*\*Pause reason:\*\* kick storm/);
+      const fresh = repo.getAutomodAction(row.id);
+      assert.notEqual(fresh.state, "executed", "Approve never applies a timeout while paused");
+    } finally {
+      db.clearAutomodPause(cid);
+    }
+  });
+
+  it("the pause leaves the ungated actions running (warn is outside the breaker scope) - issue #736", async () => {
+    const cid = freshCommunity();
+    setMode(cid, "warn", "auto");
+    db.setAutomodPause(cid, { reason: "raid" });
+    try {
+      const { promise } = run(cid, "warn", { exec: { caseId: 234 } });
+      const res = await promise;
+      assert.equal(res.ok, true, "warn is NOT a breaker-gated action — it runs while paused");
+    } finally {
+      db.clearAutomodPause(cid);
+    }
   });
 });
 

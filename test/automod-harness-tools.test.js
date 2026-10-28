@@ -127,7 +127,8 @@ test("off actions are omitted entirely; the trio is always offered - issue #728"
     "providers reject empty tool descriptions",
   );
   const timeout = buildActionSchemas(modes()).find((t) => t.function.name === "timeout");
-  assert.deepEqual(timeout.function.parameters.required, ["user_id", "duration_seconds"]);
+  // #736 re-pin: `reason` became REQUIRED — it is the Discord timeout reason.
+  assert.deepEqual(timeout.function.parameters.required, ["user_id", "duration_seconds", "reason"]);
 });
 
 // ── intent recording (zero mutation during rounds) ─────────────────────────
@@ -278,6 +279,54 @@ test("ticket reasons carrying staff-note machine strings are refused by label - 
     reason: "We're opening this ticket to talk about last night's exchange and the rules around it.",
   });
 });
+
+// ── #736: the timeout tool's required reason at dispatch ───────────────────
+
+test("the timeout schema makes `reason` REQUIRED — it becomes the Discord timeout reason - issue #736", () => {
+  const timeout = buildActionSchemas(modes()).find((t) => t.function.name === "timeout");
+  assert.deepEqual(timeout.function.parameters.required, ["user_id", "duration_seconds", "reason"]);
+  assert.match(timeout.function.description, /`reason` is required/);
+  assert.match(
+    timeout.function.parameters.properties.reason.description,
+    /Discord reason/,
+    "the model learns WHERE the reason lands",
+  );
+});
+
+test("timeout without `reason` refuses with the moderation-record law and keeps the slot - issue #736", async () => {
+  const d = dispatcherFor();
+  const refused = await d.executeTool("timeout", { user_id: SUB, duration_seconds: 300 });
+  assert.match(refused, /^`timeout` needs `reason` — it becomes the Discord timeout reason/);
+  assert.deepEqual(d.actionIntents, [], "a refused call records nothing");
+
+  const ok = await d.executeTool("timeout", {
+    user_id: SUB,
+    duration_seconds: 300,
+    reason: "slur burst in #general",
+  });
+  assert.match(ok, /^Recorded: timeout/, "the refusal must not burn the (action,user) slot");
+  assert.deepEqual(d.actionIntents.at(-1).params, {
+    reason: "slur burst in #general",
+    durationSeconds: 300,
+  });
+
+  // Shape first: a malformed duration still refuses as the shipped copy does.
+  const d2 = dispatcherFor();
+  const bad = await d2.executeTool("timeout", { user_id: SUB, duration_seconds: "abc" });
+  assert.match(bad, /needs `duration_seconds` — a positive number/);
+});
+
+test("the prompt states the timeout law — duration + required reason + executor clamp - issue #736", () => {
+  const sys = buildSystemPrompt({
+    rules: "R",
+    modes: modes("suggest"),
+    offeredActions: ["timeout"],
+  });
+  assert.match(sys, /`timeout` needs `duration_seconds` AND a one-line `reason`/);
+  assert.match(sys, /the reason becomes the Discord timeout reason/);
+});
+
+// ── #734: delete tool dispatch law ─────────────────────────────────────────
 
 test("delete_message defaults to the referred message; user-only cases must name ids - issue #734", async () => {
   const anchored = dispatcherFor();
