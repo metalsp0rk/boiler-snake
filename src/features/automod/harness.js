@@ -843,7 +843,11 @@ function formatActionLine(intent, out) {
  *     both pass it to `createWarning` (#733).
  *  b. ACTIONS through the executor (its own claims/dedupe own those rows);
  *     the mode gate, guards, and the clamp live there — the harness passes
- *     through.
+ *     through. A ticket intent additionally carries the subject's QUEUED
+ *     note narrative (`queuedNoteNarrative`, read from
+ *     `dispatcher.noteIntents`) — the #735 commit-time member-visible
+ *     scrub: a ticket reason that reproduces the private note refuses the
+ *     row. The narrative is a transient input — never persisted.
  *  c. `deps.reconcileNotes` (default `reconcileCaseNotes`) drops queued
  *     notes without intent and merges each real commit outcome into the
  *     subject's SAME note (card `updateNoteOutcome` law; planned-equal lines
@@ -907,19 +911,36 @@ async function commitRunIntents({ d, cid, gid, caseRow, referrerUserId, dispatch
         intent.params = params; // the recorded intent carries it too (report honesty)
       }
     }
+    // #735 ticket → queuedNoteNarrative: the commit-time member-visible
+    // scrub. The ticket opening is what the SUBJECT reads, and the note may
+    // have been queued AFTER the ticket call — so commit (not dispatch) is
+    // the authoritative seam. The subject's queued narrative is read from
+    // `dispatcher.noteIntents` (the call-order-independent queue, first
+    // entry per user wins — the same source both note passes use) and
+    // passed as a TRANSIENT executor input: never persisted into
+    // params_json, never member-visible. The executor refuses a reason that
+    // reproduces it (ticketReasonDuplicatesNote law).
+    const executeInput = {
+      communityId: cid,
+      guildId: gid,
+      caseId: caseRow.id,
+      action: intent.action,
+      subjectUserId: intent.subjectUserId,
+      params,
+      referrerUserId,
+      claimant: "harness",
+      deps: d.actionDeps ?? {},
+    };
+    if (intent.action === "ticket") {
+      const subject = String(intent.subjectUserId ?? "").trim();
+      const queued = (Array.isArray(dispatcher.noteIntents) ? dispatcher.noteIntents : [])
+        .find((n) => String(n?.userId ?? "").trim() === subject);
+      const narrative = optionalText(queued?.content);
+      if (narrative) executeInput.queuedNoteNarrative = narrative;
+    }
     let out;
     try {
-      out = await d.executeAction({
-        communityId: cid,
-        guildId: gid,
-        caseId: caseRow.id,
-        action: intent.action,
-        subjectUserId: intent.subjectUserId,
-        params,
-        referrerUserId,
-        claimant: "harness",
-        deps: d.actionDeps ?? {},
-      });
+      out = await d.executeAction(executeInput);
     } catch (err) {
       // Belt: executeAutomodAction never throws (rule 6) — an injected seam
       // that does still gets a specific line instead of killing the loop.

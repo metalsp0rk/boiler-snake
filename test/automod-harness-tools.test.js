@@ -47,6 +47,7 @@ const {
   AUTOMOD_ACTIONS,
   AUTOMOD_DECISION_LOG_MAX_ENTRIES,
   AUTOMOD_TOOL_RESULT_MAX_CHARS,
+  AUTOMOD_NOTE_HARNESS_FILLED,
 } = require("../src/features/automod/constants");
 
 const GUILD = "951000000000000001";
@@ -56,6 +57,7 @@ const REF = "851000000000000011";
 const SUB = "851000000000000012";
 const BYS = "851000000000000013";
 const MAX_NOTE_CONTENT = db.MAX_NOTE_CONTENT;
+const MAX_TICKET_REASON = db.MAX_TICKET_REASON;
 
 const CID = communityKey(`${GUILD}-728t`);
 const MEMBERS = new Set([REF, SUB, BYS]);
@@ -203,6 +205,78 @@ test("one call per (action, user) per run mirrors the executor slot uniqueness -
   // The SAME action for a different user is a different slot:
   const other = await d.executeTool("warn", { user_id: BYS, reason: "c" });
   assert.match(other, /^Recorded: warn for <@851000000000000013>/);
+});
+
+// ── #735: the ticket tool's member-visible contract at dispatch ─────────────
+
+test("the ticket schema makes `reason` REQUIRED — the subject reads it - issue #735", () => {
+  const ticket = buildToolset(modes()).find((t) => t.function.name === "ticket");
+  assert.deepEqual(ticket.function.parameters.required, ["user_id", "reason"],
+    "no member-safe opening ⇒ no ticket call (call nothing instead)");
+  assert.match(ticket.function.description, /member-visible/i,
+    "the tool description carries the member-visible law to the model");
+  assert.match(ticket.function.parameters.properties.reason.description, /member-visible/i);
+  // warn keeps its model-optional reason — the requiredness is ticket-specific:
+  const warn = buildToolset(modes()).find((t) => t.function.name === "warn");
+  assert.deepEqual(warn.function.parameters.required, ["user_id"]);
+});
+
+test("ticket without reason is refused with the member-visible law and records nothing - issue #735", async () => {
+  const d = dispatcherFor();
+  const refused = await d.executeTool("ticket", { user_id: SUB });
+  assert.match(refused, /`ticket` needs `reason` — it is the MEMBER-VISIBLE opening of the ticket/);
+  assert.match(refused, /If no member-safe wording can be written, call nothing/);
+  assert.deepEqual(d.actionIntents, [], "a refused ticket records no intent");
+  assert.deepEqual(d.consideredUserIds(), [], "…and considers nobody");
+  assert.equal(d.decisionLog.at(-1).state, "refused");
+  // Param refusals sit ABOVE the (action, user) slot check (#728/#732 law):
+  // the failed call must not have burned the ticket|SUB slot.
+  const ok = await d.executeTool("ticket", { user_id: SUB, reason: "how the exchange unfolded" });
+  assert.match(ok, /^Recorded: ticket for <@851000000000000012>/);
+});
+
+test("ticket reason is capped at the ticket system's own MAX_TICKET_REASON - issue #735", async () => {
+  const d = dispatcherFor();
+  const long = "a".repeat(MAX_TICKET_REASON + 1);
+  const refused = await d.executeTool("ticket", { user_id: SUB, reason: long });
+  assert.match(refused, new RegExp(`reason is ${MAX_TICKET_REASON + 1} characters — the cap is ${MAX_TICKET_REASON}`));
+  assert.match(refused, /the ticket system's own reason limit/);
+  assert.deepEqual(d.actionIntents, [],
+    "naming the cap beats letting createTicket reject the row later");
+  // Exactly at the cap passes the dispatcher (the ticket system owns it):
+  const atCap = await d.executeTool("ticket", { user_id: SUB, reason: "a".repeat(MAX_TICKET_REASON) });
+  assert.match(atCap, /^Recorded: ticket for/);
+});
+
+test("ticket reasons carrying staff-note machine strings are refused by label - issue #735", async () => {
+  const suffix = dispatcherFor();
+  const leak1 = await suffix.executeTool("ticket", {
+    user_id: SUB,
+    reason: "let's talk about your behavior (automod case A-7)",
+  });
+  assert.match(leak1, /contains the staff-note discovery suffix — automod staff-note text/);
+  assert.match(leak1, /must never reproduce a staff note/);
+
+  const marker = dispatcherFor();
+  const leak2 = await marker.executeTool("ticket", {
+    user_id: SUB,
+    reason: `summary of events ${AUTOMOD_NOTE_HARNESS_FILLED} please read`,
+  });
+  assert.match(leak2, /contains the harness-filled staff-note marker/);
+
+  assert.deepEqual(suffix.actionIntents, []);
+  assert.deepEqual(marker.actionIntents, []);
+
+  // The markers are machine-owned strings — a plain member-safe reason sails through:
+  const clean = dispatcherFor();
+  const ok = await clean.executeTool("ticket", {
+    user_id: SUB,
+    reason: "We're opening this ticket to talk about last night's exchange and the rules around it.",
+  });
+  assert.match(ok, /^Recorded: ticket for <@851000000000000012>/);
+  assert.deepEqual(clean.actionIntents[0].params, {
+    reason: "We're opening this ticket to talk about last night's exchange and the rules around it.",
+  });
 });
 
 test("delete_message defaults to the referred message; user-only cases must name ids - issue #734", async () => {

@@ -61,10 +61,21 @@
  * messageId}, …]` resolved from the BUNDLE (the model never names channels).
  * All of this runs BEFORE the (action, user) slot check (#728/#732 law: a
  * malformed call learns the param contract first and never burns the slot).
+ *
+ * THE TICKET TOOL'S DISPATCH LAW (#735, epic #723): the ticket's `reason` is
+ * the MEMBER-VISIBLE opening text — `openTicketChannel` posts it verbatim
+ * into the subject-readable open notice — so the dispatcher makes it
+ * REQUIRED, caps it at the ticket system's own `MAX_TICKET_REASON`, and
+ * refuses reasons containing machine-owned staff-note strings (the note
+ * discovery suffix / the harness-filled marker — zero false-positive risk).
+ * The deeper scrub (a reason that reproduces the queued staff-note
+ * NARRATIVE) lives at COMMIT — the note may be queued after the ticket
+ * call — see harness.js `queuedNoteNarrative` + the executor's overlap law.
+ * Every ticket param refusal sits above the slot check like everything else.
  */
 
 const { sliceSafe } = require("../../core/text");
-const { MAX_NOTE_CONTENT } = require("../../db");
+const { MAX_NOTE_CONTENT, MAX_TICKET_REASON } = require("../../db");
 const {
   readWarningsForLookup,
   readStaffNotesForLookup,
@@ -76,7 +87,33 @@ const {
   AUTOMOD_TOOL_RESULT_MAX_CHARS,
   AUTOMOD_DECISION_LOG_MAX_ENTRIES,
   AUTOMOD_DELETE_MAX_MESSAGES,
+  AUTOMOD_NOTE_HARNESS_FILLED,
 } = require("./constants");
+
+/**
+ * THE TICKET TOOL'S DISPATCH LAW (#735, epic #723) — member-visible from
+ * the first call. The ticket opening text is what the SUBJECT reads in the
+ * ticket channel (`openTicketChannel` posts the reason verbatim into the
+ * member-visible open notice), so:
+ *  - `reason` is REQUIRED — the refusal itself states the law: if no
+ *    member-safe wording can be written, the model calls NOTHING (a human
+ *    can open the ticket themselves);
+ *  - the cap is the ticket system's own `MAX_TICKET_REASON` — naming it
+ *    beats letting `createTicket` reject the row later;
+ *  - the scrub belt refuses reasons carrying machine-owned staff-note
+ *    strings — the note's discovery suffix / the harness-filled marker.
+ *    These strings are NEVER member prose, so the check has zero false-
+ *    positive risk; the deeper law (a reason that merely PARAPHRASES the
+ *    queued note) is enforced at commit by harness.js threading the
+ *    narrative into the executor's overlap scrub (#735) — the note may be
+ *    queued AFTER the ticket call, so commit is the authoritative seam.
+ * All of it runs ABOVE the (action, user) slot check (#728/#732 law).
+ */
+const TICKET_NOTE_DISCOVERY_SUFFIX = "(automod case A-";
+const TICKET_SCRUB_MARKERS = Object.freeze([
+  { needle: TICKET_NOTE_DISCOVERY_SUFFIX, label: "the staff-note discovery suffix" },
+  { needle: AUTOMOD_NOTE_HARNESS_FILLED, label: "the harness-filled staff-note marker" },
+]);
 
 /** Model-facing tool names. Action tools are named EXACTLY like the
  *  executor's action ids (one vocabulary across schema → dispatch → row). */
@@ -184,6 +221,9 @@ const ACTION_TOOL_SPECS = Object.freeze({
     extra: Object.freeze({
       reason: reasonProp("What the ticket should discuss (member-visible wording)"),
     }),
+    // #735: `reason` REQUIRED — it is the member-visible opening the subject
+    // reads in the ticket channel. No member-safe wording ⇒ call nothing.
+    required: Object.freeze(["user_id", "reason"]),
   }),
   timeout: Object.freeze({
     description:
@@ -525,6 +565,35 @@ function createToolDispatcher({
             name,
             args,
             "`no_action` needs `reason` — why no sanction is warranted for this user. It is recorded on the decision row and in the staff note. If they were merely a bystander, call NOTHING: no_action marks consideration and is not a bystander bin.",
+          );
+        }
+        params.reason = reason;
+      } else if (name === "ticket") {
+        // #735: the ticket's reason is REQUIRED, capped at the ticket
+        // system's own limit, and scrubbed for staff-note artifacts — the
+        // opening text is what the SUBJECT reads in the ticket channel.
+        // All refusals sit ABOVE the slot check (#728/#732 law) and each
+        // names the member-visible law so the model learns the contract.
+        if (!reason) {
+          return refuse(
+            name,
+            args,
+            "`ticket` needs `reason` — it is the MEMBER-VISIBLE opening of the ticket: the subject reads it in the ticket channel. Write what the ticket should discuss in ordinary language — never staff-note text, your private rationale, or a warning dump. If no member-safe wording can be written, call nothing — a human can open the ticket themselves.",
+          );
+        }
+        if (reason.length > MAX_TICKET_REASON) {
+          return refuse(
+            name,
+            args,
+            `\`ticket\` reason is ${reason.length} characters — the cap is ${MAX_TICKET_REASON} (the ticket system's own reason limit). Shorten it — nothing was recorded.`,
+          );
+        }
+        const leak = TICKET_SCRUB_MARKERS.find((m) => reason.includes(m.needle));
+        if (leak) {
+          return refuse(
+            name,
+            args,
+            `ticket refused: the reason contains ${leak.label} — automod staff-note text. The ticket opening is MEMBER-VISIBLE and must never reproduce a staff note (#723 decision 3). Rewrite it in member-safe language or call nothing — nothing was recorded.`,
           );
         }
         params.reason = reason;

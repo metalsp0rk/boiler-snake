@@ -41,6 +41,7 @@ after(() => {
 
 const harness = require("../src/features/automod/harness");
 const refer = require("../src/features/automod/refer");
+const executor = require("../src/features/automod/executor");
 const settingsService = require("../src/features/automod/settings");
 const automodFeature = require("../src/features/automod");
 const {
@@ -1204,4 +1205,329 @@ test("delete_message suggest: the posted card lists the messages as jump links �
   );
   assert.match(field, /Approve deletes 1 message\(s\) from this case — Dismiss leaves them untouched\./);
   assert.match(field, new RegExp(`Author: <@${SUB}>`));
+});
+
+// ── 7. #735: the ticket tool, end to end ────────────────────────────────────
+//
+// The ticket action opens the case's help ticket WITH the subject through the
+// SHIPPED `openTicketChannel` — in E2E the open itself is scripted at the
+// executor's `openCaseTicket` seam (its real internals are the ticket tests'
+// job); everything around it is REAL: dispatcher → rows → commit threading →
+// rate-slot seam → outcome merge into the note → the card line. The subject's
+// self-create rate slot is claimed SYNCHRONOUSLY before the first await
+// (#420 law), so `claimTicketRateSlot`/`releaseTicketRateSlot` are recorded
+// exactly as the executor calls them.
+
+const TICKET_CHANNEL = "952000000000009999";
+const CLAIM_STAMP = 1712345678901;
+
+/** Recording ticket seams (+ scriptable claim result / open throw). */
+function ticketSeams(over = {}) {
+  const calls = { claim: [], release: [], open: [] };
+  return {
+    calls,
+    seams: {
+      claimTicketRateSlot: (cidArg, uid) => {
+        calls.claim.push({ communityId: cidArg, userId: String(uid) });
+        return over.claim ?? { ok: true, stamp: CLAIM_STAMP };
+      },
+      releaseTicketRateSlot: (cidArg, uid, stamp) => {
+        calls.release.push({ communityId: cidArg, userId: String(uid), stamp });
+        return { ok: true };
+      },
+      openCaseTicket: async (args) => {
+        calls.open.push(args);
+        if (over.openThrows) throw over.openThrows;
+        return {
+          ticket: { ticket_number: 7, channel_id: TICKET_CHANNEL },
+          channel: { id: TICKET_CHANNEL },
+          skippedStaffRoles: [],
+        };
+      },
+    },
+  };
+}
+
+/** DM-belt client: any user-facing fetch screams (tickets never DM). */
+function dmBelt(w, dmAttempts) {
+  return {
+    ...w.client,
+    users: {
+      fetch: async (id) => {
+        dmAttempts.push(String(id));
+        throw new Error("the ticket world does not DM");
+      },
+    },
+  };
+}
+
+const TICKET_OK = "let's talk about last night's messages and the rules around them";
+
+test("ticket auto: subject's rate slot claimed, real open through the seam, honest success line, note carries it, zero DMs - issue #735", async () => {
+  const { cid, caseRow, w } = await seededCommunity("ticket-auto", {
+    settings: { modes: { ticket: "auto" } },
+  });
+  const { calls, seams } = ticketSeams();
+  const dmAttempts = [];
+
+  const chat = scripted([
+    {
+      tools: [
+        {
+          name: "write_staff_note",
+          args: { user_id: SUB, content: "weighed the referral; warned verbally already last week and the member apologized." },
+        },
+        { name: "ticket", args: { user_id: SUB, reason: TICKET_OK } },
+      ],
+    },
+  ]);
+
+  const res = await harness.runAutomodCase({
+    communityId: cid,
+    guildId: GUILD,
+    caseId: caseRow.id,
+    deps: w.deps({
+      chat,
+      client: dmBelt(w, dmAttempts),
+      actionDeps: { ...w.actionDeps, ...seams },
+    }),
+  });
+  assert.equal(res.ok, true, res.error);
+
+  // One claim — synchronous, for the SUBJECT (they ARE the ticket creator),
+  // and exactly one open through the shipped-pipeline seam:
+  assert.deepEqual(calls.claim, [{ communityId: cid, userId: SUB }],
+    "the subject's own ticket-create rate slot is the law (#420)");
+  assert.equal(calls.open.length, 1);
+  assert.deepEqual(calls.open[0], {
+    guildId: GUILD,
+    communityId: cid,
+    subjectUserId: SUB,
+    reason: TICKET_OK,
+    openedByStaffId: REF, // the case's referrer rides as the named staff member
+  }, "exactly the ticket pipeline's inputs — nothing else leaks through");
+  assert.deepEqual(calls.release, [], "a SUCCESS keeps the reservation — it ages out (#420)");
+
+  const rows = actionRows(cid, caseRow.id);
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].state, "executed");
+  assert.equal(
+    rows[0].result_text,
+    `Opened ticket T-7 with <@${SUB}>: <#${TICKET_CHANNEL}> (case A-${caseRow.case_number}).`,
+  );
+  assert.deepEqual(JSON.parse(rows[0].params_json), { reason: TICKET_OK },
+    "params_json stays the recorded {reason} — the narrative is NEVER persisted into it");
+
+  // The note stands AND carries the outcome (T-n + channel mention):
+  const notes = db.listStaffNotes(cid, SUB);
+  assert.equal(notes.length, 1);
+  assert.match(notes[0].content, /weighed the referral; warned verbally already last week/);
+  assert.match(
+    notes[0].content,
+    new RegExp(`\\*\\*Outcome:\\*\\*[\\s\\S]*Opened ticket T-7 with <@${SUB}>: <#${TICKET_CHANNEL}>`),
+  );
+
+  // The case card renders the result VERBATIM; nothing DM'd; one post + one edit.
+  assert.match(decisionField(w.edits[0]), new RegExp(`Opened ticket T-7 with <@${SUB}>: <#${TICKET_CHANNEL}>`));
+  assert.deepEqual(dmAttempts, [], "an opened ticket needs no DM — the subject is IN the channel");
+  assert.equal(w.posts.length, 1);
+  assert.equal(w.edits.length, 1);
+});
+
+test("ticket suggest: the card quotes the member-visible opening; Approve opens it, Dismiss never does - issue #735", async () => {
+  const { cid, caseRow, w } = await seededCommunity("ticket-suggest", {
+    settings: { modes: { ticket: "suggest" } },
+  });
+  const runSeams = ticketSeams();
+  const chat = scripted([
+    {
+      tools: [
+        { name: "write_staff_note", args: { user_id: SUB, content: "weighed the referral; a conversation beats a warning here." } },
+        { name: "ticket", args: { user_id: SUB, reason: TICKET_OK } },
+      ],
+    },
+  ]);
+  const res = await harness.runAutomodCase({
+    communityId: cid,
+    guildId: GUILD,
+    caseId: caseRow.id,
+    deps: w.deps({ chat, actionDeps: { ...w.actionDeps, ...runSeams.seams } }),
+  });
+  assert.equal(res.ok, true, res.error);
+  assert.deepEqual(runSeams.calls.open, [], "suggest records — zero ticket opens at commit");
+
+  const rows = actionRows(cid, caseRow.id);
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].state, "suggested");
+
+  // The suggested row shows staff EXACTLY what the subject will read:
+  const field = decisionField(w.edits[0]);
+  assert.match(field, /a staff decision is due — Approve opens the case's help ticket WITH the subject in it/);
+  assert.match(field, /the member-visible text the subject will read in the ticket channel\./);
+  assert.match(field, new RegExp(`Proposed opening: "${TICKET_OK}"\\.`));
+
+  // Approve (the card's executor call, with the case referrer threaded):
+  const approveSeams = ticketSeams();
+  const approved = await executor.approveSuggestion({
+    actionRowId: rows[0].id,
+    claimant: REF,
+    referrerUserId: REF,
+    deps: { ...w.actionDeps, ...approveSeams.seams },
+  });
+  assert.equal(approved.ok, true, approved.error);
+  assert.equal(approved.state, "executed");
+  assert.deepEqual(approveSeams.calls.open[0], {
+    guildId: GUILD,
+    communityId: cid,
+    subjectUserId: SUB,
+    reason: TICKET_OK,
+    openedByStaffId: REF,
+  });
+  assert.equal(
+    db.getAutomodAction(rows[0].id).result_text,
+    `Opened ticket T-7 with <@${SUB}>: <#${TICKET_CHANNEL}> (case A-${caseRow.case_number}).`,
+  );
+
+  // Dismiss on the SAME shape of run opens NOTHING:
+  const second = await seededCommunity("ticket-dismiss", {
+    settings: { modes: { ticket: "suggest" } },
+  });
+  const dismissSeams = ticketSeams();
+  const chat2 = scripted([
+    { tools: [{ name: "ticket", args: { user_id: SUB, reason: TICKET_OK } }] },
+  ]);
+  const res2 = await harness.runAutomodCase({
+    communityId: second.cid,
+    guildId: GUILD,
+    caseId: second.caseRow.id,
+    deps: second.w.deps({ chat: chat2, actionDeps: { ...second.w.actionDeps, ...dismissSeams.seams } }),
+  });
+  assert.equal(res2.ok, true, res2.error);
+  const [row2] = actionRows(second.cid, second.caseRow.id);
+  const dismissed = await executor.dismissSuggestion({ actionRowId: row2.id, claimant: REF });
+  assert.equal(dismissed.ok, true, dismissed.error);
+  assert.equal(dismissSeams.calls.open.length, 0, "Dismiss never opens a ticket — nothing runs");
+  assert.equal(dismissSeams.calls.claim.length, 0, "…not even a rate-slot claim");
+  assert.equal(db.getAutomodAction(row2.id).state, "dismissed");
+});
+
+test("ticket commit-overlap scrub: a reason that reproduces the queued note refuses; the note stands - issue #735", async () => {
+  const narrative =
+    "we weighed the whole referral, checked the warning history, and warned the member verbally last week";
+  const { cid, caseRow, w } = await seededCommunity("ticket-overlap", {
+    settings: { modes: { ticket: "auto" } },
+  });
+  const { calls, seams } = ticketSeams();
+  const chat = scripted([
+    {
+      tools: [
+        { name: "write_staff_note", args: { user_id: SUB, content: narrative } },
+        // The model copies the private note VERBATIM into the member-visible
+        // opening — the commit-time scrub is the enforcement seam (#735).
+        { name: "ticket", args: { user_id: SUB, reason: narrative } },
+      ],
+    },
+  ]);
+  const res = await harness.runAutomodCase({
+    communityId: cid,
+    guildId: GUILD,
+    caseId: caseRow.id,
+    deps: w.deps({ chat, actionDeps: { ...w.actionDeps, ...seams } }),
+  });
+  assert.equal(res.ok, true, res.error, "a refused action is an OUTCOME, not a failed run");
+
+  assert.deepEqual(calls.claim, [], "the scrub runs BEFORE the rate claim — a refused row costs no window");
+  assert.deepEqual(calls.open, [], "the leaking ticket is never opened");
+
+  const [row] = actionRows(cid, caseRow.id);
+  assert.equal(row.state, "refused");
+  assert.match(row.error_text, new RegExp(
+    `Refusing to open the case ticket: the member-visible reason reproduces <@${SUB}>'s queued staff-note narrative`,
+  ));
+  assert.match(row.error_text, /The staff note stands; the ticket was not opened\./);
+
+  // The private note itself survives untouched — the scrub kills the OPENING,
+  // never the record:
+  const notes = db.listStaffNotes(cid, SUB);
+  assert.equal(notes.length, 1);
+  assert.match(notes[0].content, /we weighed the whole referral, checked the warning history/);
+});
+
+test("ticket rate-limit refusal names both minute counts, releases nothing, and leaves the note - issue #735", async () => {
+  const { cid, caseRow, w } = await seededCommunity("ticket-rate", {
+    settings: { modes: { ticket: "auto" } },
+  });
+  // The shipped repo law: one self-created ticket per window — simulated:
+  const { calls, seams } = ticketSeams({
+    claim: { ok: false, minutes: 30, retryAfterMs: 330_000 },
+  });
+  const chat = scripted([
+    {
+      tools: [
+        { name: "write_staff_note", args: { user_id: SUB, content: "pattern confirmed; a conversation is what's due." } },
+        { name: "ticket", args: { user_id: SUB, reason: TICKET_OK } },
+      ],
+    },
+  ]);
+  const res = await harness.runAutomodCase({
+    communityId: cid,
+    guildId: GUILD,
+    caseId: caseRow.id,
+    deps: w.deps({ chat, actionDeps: { ...w.actionDeps, ...seams } }),
+  });
+  assert.equal(res.ok, true, res.error);
+
+  assert.equal(calls.claim.length, 1);
+  assert.deepEqual(calls.open, [], "the rate window blocks the open — nothing half-runs");
+  assert.deepEqual(calls.release, [],
+    "a REFUSED claim took no stamp — there is nothing to hand back (#420 law)");
+
+  const [row] = actionRows(cid, caseRow.id);
+  assert.equal(row.state, "refused");
+  assert.match(row.error_text, new RegExp(
+    `Could not open the case ticket: <@${SUB}> already opened a ticket inside the rate window`,
+  ));
+  assert.match(row.error_text, /one self-created ticket per 30 minute\(s\); the next attempt can succeed in about 6 minute\(s\)/);
+  assert.match(row.error_text, /The staff note for this case stands — the ticket was not opened\./);
+
+  const notes = db.listStaffNotes(cid, SUB);
+  assert.equal(notes.length, 1, "the rate refusal never erases the staff record");
+});
+
+test("ticket open failure: the thrown cause rides VERBATIM and the exact stamp is handed back - issue #735", async () => {
+  const { cid, caseRow, w } = await seededCommunity("ticket-openfail", {
+    settings: { modes: { ticket: "auto" } },
+  });
+  const boom = new Error(
+    "Missing Permissions: the bot lacks Send Messages in the ticket category — fix the channel overwrites and retry.",
+  );
+  const { calls, seams } = ticketSeams({ openThrows: boom });
+  const chat = scripted([
+    {
+      tools: [
+        { name: "write_staff_note", args: { user_id: SUB, content: "conversation still due despite the failed open." } },
+        { name: "ticket", args: { user_id: SUB, reason: TICKET_OK } },
+      ],
+    },
+  ]);
+  const res = await harness.runAutomodCase({
+    communityId: cid,
+    guildId: GUILD,
+    caseId: caseRow.id,
+    deps: w.deps({ chat, actionDeps: { ...w.actionDeps, ...seams } }),
+  });
+  assert.equal(res.ok, true, res.error);
+
+  assert.equal(calls.claim.length, 1);
+  assert.deepEqual(calls.open.length, 1);
+  assert.deepEqual(calls.release, [{ communityId: cid, userId: SUB, stamp: CLAIM_STAMP }],
+    "a create that never happened never costs the subject a window — EXACT stamp back");
+
+  const [row] = actionRows(cid, caseRow.id);
+  assert.equal(row.state, "refused", "a dead open is an honest cause on the row — never a silent drop");
+  assert.equal(row.error_text, boom.message,
+    "the typed Discord cause rides VERBATIM — no invented generic (rules 3+6)");
+
+  const notes = db.listStaffNotes(cid, SUB);
+  assert.equal(notes.length, 1, "a failed open still leaves the considered record");
 });

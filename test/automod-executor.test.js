@@ -5,7 +5,9 @@
  * records with ZERO Discord calls; auto runs), the staff-role + hierarchy
  * guards per mutating action (and no_action naming staff), the timeout
  * clamp matrix, the atomic claim (concurrent execute / double Approve run
- * the mutation EXACTLY once), the #735 ticket refusal, and the real
+ * the mutation EXACTLY once), the #735 ticket tool (real ticket seams: the
+ * member-visible law, the #420 rate-slot idiom, the commit-time note
+ * scrub), and the real
  * createWarning write.
  */
 const { describe, it, after } = require("node:test");
@@ -559,22 +561,343 @@ describe("claim-before-commit — mutations run EXACTLY once", () => {
   });
 });
 
-// ── Action-specific surfaces ─────────────────────────────────────────────────
+// ── #735: the ticket tool — the case ticket through the shipped seams ───────
 
-describe("action handlers — ticket seam, delete pre-flight, real warn", () => {
-  it("ticket auto runs the guards then returns the SPECIFIC #735 refusal", async () => {
+/**
+ * #735 ticket seams over the buildDefaultDeps surface — every call recorded,
+ * every arm scriptable:
+ *  - `claim` scripts the rate-slot answer, `claimError` makes the claim
+ *    throw (a claim refused takes NO stamp → the handler must not release);
+ *  - `openThrows` makes the open die with the typed cause the REAL
+ *    openTicketChannel throws (BOT_PERMISSIONS / CHANNEL_CREATE ride
+ *    formatChannelCreateError — the refusal must carry them verbatim);
+ *  - `opened` scripts the success shape; `releaseError` makes the release
+ *    itself die (logged only — the OPEN cause is what staff must see).
+ */
+function ticketSeams(over = {}) {
+  const claims = [];
+  const releases = [];
+  const opens = [];
+  const deps = {
+    claimTicketRateSlot: (communityId, userId) => {
+      claims.push({ communityId, userId });
+      if (over.claimError) throw over.claimError;
+      return over.claim ?? { ok: true, stamp: 1712345678901 };
+    },
+    releaseTicketRateSlot: (communityId, userId, stamp) => {
+      releases.push({ communityId, userId, stamp });
+      if (over.releaseError) throw over.releaseError;
+      return 1;
+    },
+    openCaseTicket: async (args) => {
+      opens.push(args);
+      if (over.openThrows) throw over.openThrows;
+      return over.opened ?? {
+        ticket: { id: 70, ticket_number: 7 },
+        channel: { id: "901000000000000099", name: "ticket-7" },
+        skippedStaffRoles: [],
+      };
+    },
+  };
+  return { claims, releases, opens, deps };
+}
+
+/** Auto-run one ticket intent through recorder guards + recorded seams. */
+async function runTicket(cid, caseId, {
+  params = { reason: "let's review the channel rules together" },
+  referrer = "staff-77",
+  narrative = undefined,
+  seamOver = {},
+  recorderOverrides = {},
+} = {}) {
+  const seams = ticketSeams(seamOver);
+  const { calls, deps } = makeRecorder({ ...recorderOverrides, deps: seams.deps });
+  const res = await executor.executeAutomodAction({
+    communityId: cid,
+    guildId: GUILD,
+    subjectUserId: SUBJECT,
+    action: "ticket",
+    caseId,
+    params,
+    referrerUserId: referrer,
+    ...(narrative !== undefined ? { queuedNoteNarrative: narrative } : {}),
+    deps,
+  });
+  return { res, calls, ...seams };
+}
+
+describe("ticket tool (#735) — the member-visible case ticket through the real ticket seams", () => {
+  it("auto opens the case ticket: creator = subject (the shipped member-add path), referrer as openedByStaffId, reservation KEPT", async () => {
     const cid = freshCommunity();
     setMode(cid, "ticket", "auto");
-    const { calls, promise } = run(cid, "ticket", { exec: { caseId: 40 } });
-    const res = await promise;
+    const c = db.createAutomodCase({
+      communityId: cid, referrerUserId: "staff-77", messageId: "401", channelId: "301",
+      targetUserId: SUBJECT, note: "ticket referral",
+    });
+    assert.equal(c.ok, true, c.error);
+    const { res, claims, releases, opens } = await runTicket(cid, c.case.id);
+    assert.equal(res.ok, true, res.error);
+    assert.equal(res.state, "executed");
+    assert.deepEqual(claims, [{ communityId: cid, userId: SUBJECT }],
+      "the SUBJECT is the rate-limited creator — the self-create limit applies to THEM");
+    assert.equal(opens.length, 1, "exactly one open attempt");
+    assert.equal(opens[0].subjectUserId, SUBJECT, "the subject joins the ticket — creator = the existing member-add path");
+    assert.equal(opens[0].openedByStaffId, "staff-77", "the referring staff member is the ticket's staff participant");
+    assert.equal(opens[0].reason, "let's review the channel rules together");
+    assert.equal(opens[0].communityId, cid);
+    assert.equal(opens[0].guildId, GUILD);
+    assert.equal(
+      res.result,
+      `Opened ticket T-7 with <@${SUBJECT}>: <#901000000000000099> (case A-${c.case.case_number}).`,
+      "the shipped result-line idiom — the channel MENTION is the card's channel link",
+    );
+    assert.deepEqual(releases, [], "SUCCESS keeps the reservation — it ages out (#420 law)");
+    const row = repo.getAutomodAction(res.actionRowId);
+    assert.equal(row.state, "executed");
+    assert.equal(row.result_text, res.result, "the card renders this line verbatim");
+  });
+
+  it("belt: auto without params.reason refuses with the member-visible cause — zero claims, zero opens", async () => {
+    const cid = freshCommunity();
+    setMode(cid, "ticket", "auto");
+    const { res, claims, opens } = await runTicket(cid, 60, { params: {} });
     assert.equal(res.ok, false);
     assert.equal(res.state, "refused");
-    assert.match(res.error, /the ticket action is not wired yet \(#735\)/);
-    assert.ok(calls.includes("roles"), "the staff guard still ran — #735 plugs into the same seam");
-    const row = rowsFor(cid, 40)[0];
-    assert.equal(row.state, "refused");
-    assert.equal(row.error_text, res.error);
+    assert.match(res.error, /needs params\.reason — the member-visible opening/);
+    assert.match(res.error, /Nothing was opened/);
+    assert.deepEqual(claims, []);
+    assert.deepEqual(opens, []);
+    assert.equal(rowsFor(cid, 60)[0].state, "refused");
   });
+
+  it("commit-time overlap scrub: a reason reproducing the queued note (≥ 40 normalized chars) refuses naming the duplication — BEFORE any slot is taken", async () => {
+    const cid = freshCommunity();
+    setMode(cid, "ticket", "auto");
+    const note = "posted repeated slurs at a member in general chat after two verbal asks to stop";
+    const { res, claims, releases, opens } = await runTicket(cid, 62, {
+      params: { reason: `${note.slice(0, 40)}— we should talk it through in here` },
+      narrative: note,
+    });
+    assert.equal(res.ok, false, "the member-visible opening would reproduce the private note");
+    assert.equal(res.state, "refused");
+    assert.match(res.error, new RegExp(`reproduces <@${SUBJECT}>'s queued staff-note narrative`));
+    assert.match(res.error, /staff note stands; the ticket was not opened/);
+    assert.deepEqual(claims, [], "the scrub precedes the rate slot — a refused row never spends the subject's window");
+    assert.deepEqual(opens, []);
+    assert.deepEqual(releases, []);
+    assert.equal(rowsFor(cid, 62)[0].state, "refused");
+  });
+
+  it("scrub floor: a narrative below 40 normalized chars never refuses; a whitespace-collapsed ≥ 40 one does", async () => {
+    const short = freshCommunity();
+    setMode(short, "ticket", "auto");
+    const s = await runTicket(short, 63, {
+      params: { reason: "spam incident — let's talk about it" },
+      narrative: "spam incident",
+    });
+    assert.equal(s.res.ok, true, s.res.error);
+    assert.equal(s.opens.length, 1, "a short quoted phrase is coincidence, not a reproduction");
+
+    const spaced = freshCommunity();
+    setMode(spaced, "ticket", "auto");
+    const raw = "spam   from   alt   accounts   in   general   and   off   topic   chat";
+    const collapsed = raw.replace(/\s+/g, " ");
+    assert.ok(collapsed.length >= 40 && collapsed.length < raw.length, "the fixture collapses past the floor");
+    const l = await runTicket(spaced, 64, {
+      params: { reason: `${collapsed} — explain the rules` },
+      narrative: raw,
+    });
+    assert.equal(l.res.ok, false, "normalization is part of the law — padding never dodges the floor");
+    assert.match(l.res.error, /queued staff-note narrative/);
+  });
+
+  it("the queued narrative NEVER persists: stored params stay exactly {reason}", async () => {
+    const cid = freshCommunity();
+    setMode(cid, "ticket", "auto");
+    const { res } = await runTicket(cid, 61, {
+      narrative: "weighed the referral; warned verbally already last week and the member apologized.",
+    });
+    assert.equal(res.ok, true, res.error);
+    const row = repo.getAutomodAction(res.actionRowId);
+    assert.deepEqual(
+      JSON.parse(row.params_json),
+      { reason: "let's review the channel rules together" },
+      "queuedNoteNarrative is a transient commit input — never params_json",
+    );
+  });
+
+  it("rate-limit refusal names BOTH minute counts and states the staff note stands; ZERO opens, no release (no stamp was taken)", async () => {
+    const cid = freshCommunity();
+    setMode(cid, "ticket", "auto");
+    const { res, claims, releases, opens } = await runTicket(cid, 65, {
+      seamOver: { claim: { ok: false, retryAfterMs: 156_000, minutes: 60 } },
+    });
+    assert.equal(res.ok, false);
+    assert.equal(res.state, "refused");
+    assert.match(res.error, /one self-created ticket per 60 minute\(s\)/, "the rate-limit minutes are named");
+    assert.match(res.error, /in about 3 minute\(s\)/, "the retry minutes are named");
+    assert.match(res.error, /The staff note for this case stands — the ticket was not opened/,
+      "contract verbatim: a rate-limit refusal does not delete the staff note");
+    assert.equal(claims.length, 1);
+    assert.deepEqual(opens, [], "the loser of the slot never reaches the ticket pipeline");
+    assert.deepEqual(releases, [], "a REFUSED claim took nothing — nothing to hand back (#420)");
+  });
+
+  it("a throwing rate-slot claim refuses with the checked-limit cause — zero opens", async () => {
+    const cid = freshCommunity();
+    setMode(cid, "ticket", "auto");
+    const { res, opens } = await runTicket(cid, 69, {
+      seamOver: { claimError: new Error("SQLITE_BUSY: database is locked") },
+    });
+    assert.equal(res.ok, false);
+    assert.equal(res.state, "refused");
+    assert.match(res.error, /Could not check the subject's ticket-create rate limit: SQLITE_BUSY/);
+    assert.deepEqual(opens, []);
+  });
+
+  it("BOT_PERMISSIONS from openTicketChannel: refused with the thrown message VERBATIM + release called with the EXACT stamp", async () => {
+    const cid = freshCommunity();
+    setMode(cid, "ticket", "auto");
+    const err = new Error("I am missing **Create Channels** in the ticket category — fix my permissions.");
+    err.code = "BOT_PERMISSIONS";
+    const { res, releases } = await runTicket(cid, 66, { seamOver: { openThrows: err } });
+    assert.equal(res.ok, false);
+    assert.equal(res.state, "refused");
+    assert.equal(res.error, err.message, "the typed cause rides VERBATIM — staff can act on it (rule 3)");
+    assert.deepEqual(releases, [{ communityId: cid, userId: SUBJECT, stamp: 1712345678901 }],
+      "a failed open hands the slot straight back — with the EXACT stamp (#420)");
+    assert.equal(rowsFor(cid, 66)[0].error_text, err.message);
+  });
+
+  it("CHANNEL_CREATE refuses verbatim too; a FAILING release is logged only — the refusal still carries the open cause", async () => {
+    const cid = freshCommunity();
+    setMode(cid, "ticket", "auto");
+    const err = new Error("Missing Permissions (Discord 50013) — I could not create the ticket channel.");
+    err.code = "CHANNEL_CREATE";
+    const { res, releases } = await runTicket(cid, 67, {
+      seamOver: { openThrows: err, releaseError: new Error("SQLITE_BUSY: database is locked") },
+    });
+    assert.equal(res.ok, false);
+    assert.equal(res.error, err.message, "the release failure never replaces the cause staff must fix");
+    assert.equal(releases.length, 1, "the release was still attempted with the exact stamp");
+    assert.equal(releases[0].stamp, 1712345678901);
+  });
+
+  it("skipped staff-role overwrites append the shipped honest access note (never hidden)", async () => {
+    const { formatStaffRoleAccessNote } = require("../src/features/tickets/overwrites");
+    const cid = freshCommunity();
+    setMode(cid, "ticket", "auto");
+    const skipped = [{ id: "role-mod", name: "Moderators", reason: "above bot role in hierarchy" }];
+    const { res } = await runTicket(cid, 70, {
+      seamOver: {
+        opened: {
+          ticket: { id: 71, ticket_number: 8 },
+          channel: { id: "902000000000000098", name: "ticket-8" },
+          skippedStaffRoles: skipped,
+        },
+      },
+    });
+    assert.equal(res.ok, true, res.error);
+    assert.match(res.result, new RegExp(`^Opened ticket T-8 with <@${SUBJECT}>: <#902000000000000098>`));
+    assert.ok(
+      res.result.endsWith(formatStaffRoleAccessNote(skipped)),
+      `the honest access note is appended via the shipped formatter: ${res.result}`,
+    );
+  });
+
+  it("staff-role subject: the SUGGESTION records at dispatch; Approve AND auto both refuse via the shipped decision-6 guard", async () => {
+    const cid = freshCommunity();
+    db.addStaffRole(cid, "role-mod", "senior", "tester");
+
+    // Recording a suggestion stays guard-dark (the card may still recommend).
+    const sug = await executor.executeAutomodAction({
+      communityId: cid, guildId: GUILD, subjectUserId: SUBJECT, action: "ticket",
+      caseId: 71, params: { reason: "let's talk it through" }, deps: makeRecorder().deps,
+    });
+    assert.equal(sug.state, "recorded_suggestion");
+
+    // Approve refuses — the guard set was NOT changed for #735.
+    const aSeams = ticketSeams();
+    const approved = await executor.approveSuggestion({
+      actionRowId: sug.actionRowId, claimant: "staff-1",
+      deps: makeRecorder({ roleIds: ["role-mod"], deps: aSeams.deps }).deps,
+    });
+    assert.equal(approved.ok, false);
+    assert.equal(approved.state, "refused");
+    assert.match(approved.error, /staff role <@&role-mod>/);
+    assert.match(approved.error, /#723 decision 6/);
+    assert.deepEqual(aSeams.claims, [], "Approve never reaches the rate slot or the pipeline");
+    assert.deepEqual(aSeams.opens, []);
+
+    // Auto refuses too (the ticket seam's own pin of the MUTATORS matrix).
+    setMode(cid, "ticket", "auto");
+    const auto = await runTicket(cid, 72, {
+      recorderOverrides: { roleIds: ["role-mod"] },
+    });
+    assert.equal(auto.res.ok, false);
+    assert.equal(auto.res.state, "refused");
+    assert.match(auto.res.error, /staff role <@&role-mod>/);
+    assert.deepEqual(auto.opens, []);
+    assert.deepEqual(auto.claims, []);
+  });
+
+  it("double Approve opens exactly ONE ticket — the loser reports the existing outcome (#735 claim law)", async () => {
+    const cid = freshCommunity();
+    const sug = await executor.executeAutomodAction({
+      communityId: cid, guildId: GUILD, subjectUserId: SUBJECT, action: "ticket",
+      caseId: 73, params: { reason: "talk it through" }, deps: makeRecorder().deps,
+    });
+    assert.equal(sug.state, "recorded_suggestion");
+
+    // The first click holds the open mid-flight; the second must NOT open again.
+    let release;
+    const gate = new Promise((res) => { release = res; });
+    const seams = ticketSeams();
+    const gated = {
+      ...seams.deps,
+      openCaseTicket: async (args) => {
+        const out = await seams.deps.openCaseTicket(args);
+        await gate;
+        return out;
+      },
+    };
+    const p1 = executor.approveSuggestion({
+      actionRowId: sug.actionRowId, claimant: "staff-A", deps: makeRecorder({ deps: gated }).deps,
+    });
+    const p2 = await executor.approveSuggestion({
+      actionRowId: sug.actionRowId, claimant: "staff-B", deps: makeRecorder({ deps: seams.deps }).deps,
+    });
+    assert.equal(p2.deduped, true, "the second click loses the claim and reports the existing outcome");
+    assert.equal(p2.inFlight, true);
+    release();
+    const res = await p1;
+    assert.equal(res.ok, true, res.error);
+    assert.equal(res.state, "executed");
+    assert.equal(seams.opens.length, 1, "ONE ticket opened for two clicks");
+    assert.equal(seams.claims.length, 1);
+
+    const late = await executor.approveSuggestion({
+      actionRowId: sug.actionRowId, claimant: "staff-C", deps: makeRecorder({ deps: seams.deps }).deps,
+    });
+    assert.equal(late.deduped, true);
+    assert.equal(late.state, "executed");
+    assert.equal(seams.opens.length, 1, "a late third click never re-opens");
+  });
+
+  it("a null referrer still opens (subject + staff-role overwrites) — the ticket is never orphaned", async () => {
+    const cid = freshCommunity();
+    setMode(cid, "ticket", "auto");
+    const { res, opens } = await runTicket(cid, 74, { referrer: null });
+    assert.equal(res.ok, true, res.error);
+    assert.equal(opens[0].openedByStaffId, null, "the belt passes null through — openTicketChannel grants subject + staff-role access");
+    assert.match(res.result, /^Opened ticket T-7 with <@200000000000000002>: <#901000000000000099>\./,
+      "no case row here — the line states the ticket + channel without inventing a case ref");
+  });
+});
+
+// ── Action-specific surfaces ─────────────────────────────────────────────────
+
+describe("action handlers — delete pre-flight, real warn", () => {
 
   it("delete_message: unresolvable params refuse naming both shapes; the legacy pair still deletes (#734)", async () => {
     const missing = freshCommunity();
