@@ -571,8 +571,30 @@ function buildRelayPayload(message, { bridge, direction, srcCommunityId, lookup 
       };
     });
 
-  const reference = message.messageReference ?? message.message_reference ?? null;
-  const referenced = message.referencedMessage ?? message.referenced_message ?? null;
+  // #744: discord.js v14 Messages expose the reply reference as
+  // `message.reference` (MessageReference: messageId/channelId/guildId/type).
+  // `messageReference` (the v13 name) and `referencedMessage` (the v13
+  // RESOLVED property — v14 moved resolution to fetchReference()/the channel
+  // cache) exist on NO v14 Message, and raw snake_case payload keys never
+  // appear on an instance: the old read saw `undefined` forever behind the
+  // optional chaining, so every Discord-sourced relay silently dropped its
+  // §10.5 reply header. The referenced message is resolved from the CHANNEL
+  // CACHE the Message constructor fills from `referenced_message` (Message#_patch)
+  // — the #176 pattern (gork/trigger.js), cached-only: enqueue is synchronous
+  // and network-free (spec §10.8), so NEVER fetchReference() here. A cache
+  // miss yields no header, never a crash. The camel/snake fallbacks below
+  // stay: on the Fluxer path they ARE the real shapes (raw payloads; the
+  // Fluxer SDK carries `message_reference` verbatim).
+  const v14Reference = message.reference ?? null;
+  const reference =
+    v14Reference ?? message.messageReference ?? message.message_reference ?? null;
+  let referenced = message.referencedMessage ?? message.referenced_message ?? null;
+  if (v14Reference && referenced == null) {
+    const refMessageId = v14Reference.messageId ?? v14Reference.message_id ?? null;
+    if (refMessageId != null) {
+      referenced = message.channel?.messages?.cache?.get(refMessageId) ?? null;
+    }
+  }
   const replyHeader = reference ? buildReplyHeader(referenced, lookup) : null;
 
   return {

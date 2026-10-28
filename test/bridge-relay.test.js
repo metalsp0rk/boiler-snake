@@ -1673,3 +1673,125 @@ describe("bridge relay worker (PR 5)", () => {
       "the EDIT path passes opCtx.destPlatform down",
     );
   });
+
+  // -------------------------------------------------------------------------
+  // #744: Discord-sourced reply headers were DEAD CODE — the builder read the
+  // discord.js v13 names `messageReference`/`referencedMessage`, which exist
+  // on NO v14 Message (found in the #175 triage; the v14 read is
+  // `message.reference` + the channel cache the Message constructor fills).
+  // This block pins the REAL v14 shape end-to-end through the builder: cache
+  // hit → §10.5 header with the quoted excerpt; cache miss → no header, never
+  // a crash; the Fluxer wire shapes keep working via the raw-key fallbacks.
+  // -------------------------------------------------------------------------
+
+  describe("bridge relay payload: Discord reply reference (issue #744)", () => {
+    const bridge744 = { public_id: "brg744" };
+
+    /** discord.js v14-shaped reply: `reference` + a channel cache Map. */
+    function v14DiscordReply({ cache, reference }) {
+      return {
+        id: "2000000000000000002",
+        platform: "discord",
+        channelId: "100",
+        content: "answering that",
+        author: { id: "u2", username: "bob", bot: false },
+        attachments: [],
+        embeds: [],
+        stickers: [],
+        mentions: { users: [], roles: [], channels: [] },
+        reference,
+        channel: cache ? { id: "100", messages: { cache } } : undefined,
+      };
+    }
+
+    function build(message) {
+      return relay.buildRelayPayload(message, {
+        bridge: bridge744,
+        direction: "a_to_b",
+        srcCommunityId: 1,
+        lookup: relay.mentionLookupFromMessage(message),
+      });
+    }
+
+    it("builds the reply header for a v14 Discord reply whose reference is cached", () => {
+      const referenced = {
+        id: "111",
+        content: "quoted   question\nhere",
+        author: { id: "u1", username: "alice" },
+        attachments: [],
+        stickers: [],
+      };
+      const message = v14DiscordReply({
+        reference: { channelId: "100", guildId: "5", messageId: "111", type: 0 },
+        cache: new Map([["111", referenced]]),
+      });
+      const payload = build(message);
+      assert.equal(
+        payload.replyHeader,
+        "↪ in reply to alice: quoted question here",
+        "#744: the v14 `reference` + channel-cache read rebuilds the §10.5 header",
+      );
+    });
+
+    it("drops the header (no crash) when the referenced message is not cached", () => {
+      const message = v14DiscordReply({
+        reference: { channelId: "100", guildId: "5", messageId: "404", type: 0 },
+        cache: new Map(),
+      });
+      assert.equal(build(message).replyHeader, null, "cache miss → no header");
+    });
+
+    it("drops the header (no crash) when the reply carries no channel at all", () => {
+      const message = v14DiscordReply({
+        reference: { channelId: "100", guildId: "5", messageId: "111", type: 0 },
+        cache: null,
+      });
+      assert.equal(build(message).replyHeader, null, "unresolvable channel → no header");
+    });
+
+    it("names an attachment-only referenced message in the header", () => {
+      const referenced = {
+        id: "111",
+        content: "",
+        author: { id: "u1", username: "alice" },
+        attachments: [{ id: "a1", name: "shot.png" }],
+        stickers: [],
+      };
+      const message = v14DiscordReply({
+        reference: { channelId: "100", guildId: "5", messageId: "111", type: 0 },
+        cache: new Map([["111", referenced]]),
+      });
+      assert.equal(build(message).replyHeader, "↪ in reply to alice: attachment");
+    });
+
+    it("keeps the Fluxer raw wire shapes working (message_reference + referenced_message)", () => {
+      const message = {
+        id: "3000000000000000001",
+        platform: "fluxer",
+        channelId: "f1",
+        communityId: 1,
+        content: "fluxer reply",
+        author: { id: "fu2", username: "fluxerbob", bot: false },
+        attachments: [],
+        embeds: [],
+        stickers: [],
+        message_reference: { message_id: "333" },
+        referenced_message: {
+          id: "333",
+          content: "raw quoted",
+          author: { id: "fu1", username: "fluxeralice" },
+          attachments: [],
+          stickers: [],
+        },
+      };
+      assert.equal(build(message).replyHeader, "↪ in reply to fluxeralice: raw quoted");
+    });
+
+    it("degrades a forward (reference type 1) to no header — never a crash", () => {
+      const message = v14DiscordReply({
+        reference: { channelId: "999", guildId: "5", messageId: "777", type: 1 },
+        cache: new Map([["111", { id: "111", content: "unrelated" }]]),
+      });
+      assert.equal(build(message).replyHeader, null, "cross-channel forward is uncached → no header");
+    });
+  });
