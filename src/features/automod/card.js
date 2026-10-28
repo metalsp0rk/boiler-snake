@@ -87,16 +87,21 @@ const {
   AUTOMOD_BREAKER_ACTIONS,
   AUTOMOD_NOTE_OUTCOME_HEADER,
   AUTOMOD_NOTE_TRUNCATION_MARKER,
+  AUTOMOD_DELETE_MAX_MESSAGES,
 } = require("./constants");
 const { readSettings } = require("./settings");
 // Shared case-note discovery law + the anchor jump link (#733): card, harness,
-// and executor all read the SAME `(automod case A-n)` convention.
-const { findCaseNoteRow, anchorJumpLink } = require("./caseNote");
+// and executor all read the SAME `(automod case A-n)` convention. #734 adds
+// the pair variant the suggested-delete rows render per targeted message.
+const { findCaseNoteRow, anchorJumpLink, messageJumpLink } = require("./caseNote");
 // READ-ONLY import of the shipped warnings feature (#733): the suggested-warn
 // card row shows the expiry the warning WILL honour — same accessor /warn add
 // uses, so the card can never promise a different date than the record lands.
 const { guildWarnExpiryDays } = require("../warnings/helpers");
-const { approveSuggestion, dismissSuggestion } = require("./executor");
+// The executor's ONE delete-target law (#734): the suggested-delete row
+// renders EXACTLY the pairs the Approve click will delete (canonical
+// params.messages, or the legacy single pair on older rows).
+const { approveSuggestion, dismissSuggestion, resolveDeleteTargets } = require("./executor");
 
 /** Embed palette — byte-identical to the harness family (placeholder colors
  *  the card EDITS carry over: review yellow / decision green / failure red). */
@@ -238,6 +243,34 @@ function renderRowLine(row, ctx = {}) {
             (evidence ? `Evidence: <${evidence}>. ` : "Evidence: none recorded. ") +
             `Expiry: ${warnExpiryLabel(row, params)}.`
           );
+        }
+        if (act === "delete_message") {
+          // #734: a suggested delete names its messages — jump links staff
+          // can OPEN before deciding. Approve deletes exactly these,
+          // Dismiss leaves them untouched. The pair list is the executor's
+          // own resolver (legacy single-pair rows render identically); a
+          // row with nothing resolvable keeps the generic line.
+          const params = parseAutomodActionParams(row)?.params ?? {};
+          const targets = resolveDeleteTargets(params);
+          if (targets.length > 0) {
+            const shown = targets
+              .slice(0, AUTOMOD_DELETE_MAX_MESSAGES)
+              .map((t) => {
+                const link = messageJumpLink(row.guild_id, t.channelId, t.messageId);
+                return link ? `<${link}>` : null; // <>-wrapped: a plain link, never an embed
+              })
+              .filter(Boolean);
+            const more =
+              targets.length > shown.length ? ` … +${targets.length - shown.length} more` : "";
+            const reason = snippet(params.reason ?? params.rationale ?? "", 140);
+            return (
+              `Approve deletes ${targets.length} message(s) from this case — ` +
+              "Dismiss leaves them untouched. " +
+              (shown.length ? `Targeted: ${shown.join(" ")}${more}. ` : "") +
+              `Author: <@${row.subject_user_id ?? "?"}>. ` +
+              (reason ? `Reason: "${reason}".` : "")
+            );
+          }
         }
         return "a staff decision is due — Approve runs the shared executor, Dismiss declines.";
       }

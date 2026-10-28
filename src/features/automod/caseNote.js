@@ -62,6 +62,34 @@ function findCaseNoteRow({ communityId, userId, caseNumber, botUserId = null, de
 }
 
 /**
+ * One (channel, message) pair's Discord jump link — the pair variant behind
+ * every jump link in the automod family. Missing piece → null (no link).
+ *
+ * `anchorJumpLink` delegates here (the referred message), the warn tool's
+ * default `evidenceMessageUrl` (#733) flows through that, and the case card's
+ * suggested-delete rows (#734) render THEIR pairs straight through this ONE
+ * shape — `https://discord.com/channels/<guild>/<channel>/<message>`.
+ *
+ * @param {string|null} guildId external Discord snowflake
+ * @param {string|null} channelId external Discord snowflake
+ * @param {string|null} messageId external Discord snowflake
+ * @returns {string|null}
+ */
+function messageJumpLink(guildId, channelId, messageId) {
+  const optional = (v) => {
+    if (v == null) return null;
+    const s = String(v).trim();
+    return s === "" ? null : s;
+  };
+  const gid = optional(guildId);
+  const cid = optional(channelId);
+  const mid = optional(messageId);
+  return gid && cid && mid
+    ? `https://discord.com/channels/${gid}/${cid}/${mid}`
+    : null;
+}
+
+/**
  * The referred message's Discord jump link — the note's evidence line, the
  * warn tool's default `evidenceMessageUrl` (#733: "the referred message when
  * the warning is about that message"), and the card's suggested-row evidence
@@ -72,20 +100,11 @@ function findCaseNoteRow({ communityId, userId, caseNumber, botUserId = null, de
  * @returns {string|null}
  */
 function anchorJumpLink(guildId, caseRow) {
-  const optional = (v) => {
-    if (v == null) return null;
-    const s = String(v).trim();
-    return s === "" ? null : s;
-  };
-  const gid = optional(guildId);
-  const cid = optional(caseRow?.channel_id);
-  const mid = optional(caseRow?.message_id);
-  return gid && cid && mid
-    ? `https://discord.com/channels/${gid}/${cid}/${mid}`
-    : null;
+  return messageJumpLink(guildId, caseRow?.channel_id, caseRow?.message_id);
 }
 
 module.exports = {
   findCaseNoteRow,
   anchorJumpLink,
+  messageJumpLink,
 };

@@ -63,7 +63,7 @@ settingsService.setRules(CID, "No harassment. No slurs. Be decent.");
 // ── fakes ─────────────────────────────────────────────────────────────────────
 
 function makeWorld() {
-  const mutations = { timeouts: [], kicks: [], bans: [] };
+  const mutations = { timeouts: [], kicks: [], bans: [], deletes: [] };
 
   const memberOf = (id) => ({
     id,
@@ -111,12 +111,29 @@ function makeWorld() {
     },
   };
 
+  // #734: the SOURCE channel a suggested delete targets — grants Manage
+  // Messages (the pre-flight seam) and records every real delete call.
+  const SRC_CH_734 = "972000000000000021";
+  const sourceChannel = {
+    id: SRC_CH_734,
+    permissionsFor: () => ({ has: () => true }),
+    messages: {
+      fetch: async (id) => ({
+        id,
+        delete: async (reason) => {
+          mutations.deletes.push({ id: String(id), reason });
+        },
+      }),
+    },
+  };
+
   const client = {
     user: { id: BOT },
     guilds: { cache: { get: (id) => (String(id) === GUILD ? guild : null) } },
     channels: {
       fetch: async (id) => {
         if (String(id) === AMOD_CH) return automodChannel;
+        if (String(id) === SRC_CH_734) return sourceChannel;
         throw new Error(`404: channel ${id} not found`);
       },
     },
@@ -128,6 +145,7 @@ function makeWorld() {
     cardMessage,
     automodChannel,
     ctx: { supervisor: { discord: client } },
+    SRC_CH_734,
   };
 }
 
@@ -564,4 +582,62 @@ test("approve on a row that vanished (old card): specific refusal, nothing claim
     it.replies[0].content,
     /No auto-mod action row #\d+ — this card is from an older build or the row is gone\. Nothing was run\./,
   );
+});
+
+// ── #734: the delete row's buttons (Approve deletes those messages, once) ────
+
+test("Approve on a delete row deletes exactly the listed messages ONCE — a second click says already handled and re-deletes nothing - issue #734", async () => {
+  const w = makeWorld();
+  const subj = nextSubject();
+  const caseRow = seededCase(subj);
+  const row = suggestRow(caseRow, "delete_message", subj, {
+    messages: [{ channelId: "972000000000000021", messageId: "972000000000000022" }],
+  });
+
+  const it = buttonInteraction(w, { customId: `${CARD_APPROVE_PREFIX}${row.id}` });
+  await card.handleCardApprove(it, w.ctx);
+
+  const final = db.getAutomodAction(row.id);
+  assert.equal(final.state, "executed");
+  assert.equal(final.result_text, "Deleted 1 message(s) in this case.");
+  assert.equal(w.mutations.deletes.length, 1, "the listed message was deleted through the real client seams");
+  assert.match(w.mutations.deletes[0].reason, /^Auto-mod delete_message \(case #\d+\)$/, "audit reason reaches the API");
+
+  // The delete row's subject is CONSIDERED — the outcome lands on the SAME
+  // harness note (#731 machinery; deleting never skips the note).
+  const note = db.listStaffNotes(CID, subj)[0];
+  assert.match(
+    note.content,
+    new RegExp(
+      `\\*\\*Outcome:\\*\\*[\\s\\S]*approved by <@${STAFF}> — executed: Deleted 1 message\\(s\\) in this case\\.`
+    ),
+  );
+
+  // Second click: already handled — never an error, never a second delete.
+  const again = buttonInteraction(w, { customId: `${CARD_APPROVE_PREFIX}${row.id}` });
+  await card.handleCardApprove(again, w.ctx);
+  assert.match(again.replies[0].content, /already handled/i);
+  assert.equal(w.mutations.deletes.length, 1, "Approving twice does NOT delete twice");
+
+  // The rebuilt card drops the buttons (fresh-rows render, executed line
+  // carries the per-id result verbatim).
+  const edit = w.cardMessage.edits.at(-1);
+  assert.ok(edit, "the card was edited after the decision");
+  const ids = (edit.components ?? []).flatMap((r) => (r.components ?? []).map((b) => b.custom_id));
+  assert.ok(!ids.includes(`${CARD_APPROVE_PREFIX}${row.id}`), "buttons regenerate from CURRENT states");
+});
+
+test("Dismiss on a delete row leaves the messages untouched — zero Discord calls ever - issue #734", async () => {
+  const w = makeWorld();
+  const subj = nextSubject();
+  const caseRow = seededCase(subj);
+  const row = suggestRow(caseRow, "delete_message", subj, {
+    messages: [{ channelId: "972000000000000021", messageId: "972000000000000022" }],
+  });
+
+  const it = buttonInteraction(w, { customId: `${CARD_DISMISS_PREFIX}${row.id}` });
+  await card.handleCardDismiss(it, w.ctx);
+
+  assert.equal(db.getAutomodAction(row.id).state, "dismissed");
+  assert.deepEqual(w.mutations.deletes, [], "Dismiss leaves every targeted message exactly where it is");
 });

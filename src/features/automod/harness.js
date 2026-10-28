@@ -32,7 +32,11 @@
  *     `chatWithTools`; tests script every round). READ tools execute
  *     immediately; ACTION tools + the staff-note tool only RECORD INTENT
  *     during the loop — NOTHING mutates until commit (contract commit
- *     shape). Rounds capped by AUTOMOD_MAX_TOOL_ROUNDS.
+ *     shape). Rounds capped by AUTOMOD_MAX_TOOL_ROUNDS. The #734 delete
+ *     tool's allow-list is threaded here too: the case anchor + the bundle's
+ *     fetched window entries (`buildAllowedMessages`) — ids outside it are
+ *     refused at dispatch, so nothing re-reads Discord or the db to decide
+ *     what a delete may name.
  *  6. PROVIDER ACCEPTED ⟺ the loop got a parsed provider response at some
  *     point (ok result, ≥1 executed tool call, cap, or an empty-but-2xx
  *     body). Exactly then — and exactly ONCE — `consumeAutomodCase` runs.
@@ -423,6 +427,42 @@ function automodNoteSuffix(caseRow) {
  *  the note-reconcile pure test pins this name. */
 function evidenceLink(guildId, caseRow) {
   return anchorJumpLink(guildId, caseRow);
+}
+
+/**
+ * THE #734 DELETE ALLOW-LIST — built once per run, threaded into the tool
+ * dispatcher. Contract law: the delete tool "may only name message ids that
+ * are in this case's referral or fetched context window." The sources are
+ * exactly two, and NEITHER is a db read:
+ *  - the case row's anchor pair (the referral itself; author seeded from the
+ *    intake's named target), and
+ *  - the bundle's window entries — what was ACTUALLY fetched, asker-scoped
+ *    (#727 decision-46 parity), each carrying its own channel + author.
+ * A window entry for the anchor id OVERWRITES the seeded author with the
+ * real one. The map is messageId → { channelId, authorId }; the dispatcher
+ * resolves delete targets from it, so the model never names channels.
+ *
+ * @param {{ caseRow?: object|null, context?: object|null }} input
+ * @returns {Map<string, { channelId: string|null, authorId: string|null }>}
+ */
+function buildAllowedMessages({ caseRow = null, context = null } = {}) {
+  const allowed = new Map();
+  const put = (messageId, channelId, authorId) => {
+    const id = optionalText(messageId);
+    if (!id) return;
+    const prev = allowed.get(id) ?? {};
+    allowed.set(id, {
+      channelId: optionalText(channelId) ?? prev.channelId ?? null,
+      authorId: optionalText(authorId) ?? prev.authorId ?? null,
+    });
+  };
+  if (caseRow?.message_id != null && caseRow?.channel_id != null) {
+    put(caseRow.message_id, caseRow.channel_id, caseRow?.target_user_id);
+  }
+  for (const m of Array.isArray(context?.window?.messages) ? context.window.messages : []) {
+    put(m?.id, m?.channel_id ?? context?.window?.channel_id ?? null, m?.author_id);
+  }
+  return allowed;
 }
 
 /** Note-side state words — deliberately the SAME words the case card renders
@@ -1189,12 +1229,18 @@ async function runCaseInner({ communityId, guildId, caseId, deps, nowMs }) {
   const context = built.context;
 
   // ── 6. tool rounds (schemas FROM the mode gate; intent-only during loop) ─
+  // #734: the delete tool's allow-list rides the dispatcher — the case's
+  // referred message + EXACTLY the window entries that were fetched. The
+  // bundle is the only source (no db reads here either); anything the model
+  // names outside this map refuses at dispatch with the specific cause.
+  const allowedMessages = buildAllowedMessages({ caseRow, context });
   const dispatcher = createToolDispatcher({
     communityId: cid,
     guildId: gid,
     caseRow,
     modes,
     subjectUserId: context?.subject?.user_id ?? null,
+    allowedMessages,
     deps: { lookupDeps: d.lookupDeps ?? {} },
   });
   const offeredActions = dispatcher.tools
@@ -1442,4 +1488,7 @@ module.exports = {
   plannedStateLabel,
   evidenceLink,
   automodNoteSuffix,
+  // Delete tool (#734): the case-anchor + fetched-window allow-list fed to
+  // the tool dispatcher (the delete tool may name nothing else).
+  buildAllowedMessages,
 };

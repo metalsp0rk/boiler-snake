@@ -46,6 +46,21 @@
  * passed through UNCLAMPED — the executor owns the [60 s, guild cap] clamp
  * and the row that echoes the duration actually used (#729). No second
  * clamp here.
+ *
+ * THE DELETE TOOL'S DISPATCH LAW (#734, epic #723): the delete tool names
+ * SPECIFIC messages only (no purge — decisions 2/9). The dispatcher owns the
+ * allow-list law verbatim from the contract: the model "may only name
+ * message ids that are in this case's referral or fetched context window.
+ * Any other id is a refusal with that specific cause." The allow-list is
+ * built from the case row's anchor pair + the harness-threaded window map
+ * (NO db reads — the bundle is the only source, asker-scoped); ids dedupe
+ * first, then the AUTOMOD_DELETE_MAX_MESSAGES cap, then membership, then the
+ * one-user author law (mixed authors refuse; a user_id that is not the
+ * messages' author refuses with the discrepancy — the row's subject is the
+ * author). Recorded params are canonical: `messages: [{channelId,
+ * messageId}, …]` resolved from the BUNDLE (the model never names channels).
+ * All of this runs BEFORE the (action, user) slot check (#728/#732 law: a
+ * malformed call learns the param contract first and never burns the slot).
  */
 
 const { sliceSafe } = require("../../core/text");
@@ -60,6 +75,7 @@ const {
   AUTOMOD_ACTIONS,
   AUTOMOD_TOOL_RESULT_MAX_CHARS,
   AUTOMOD_DECISION_LOG_MAX_ENTRIES,
+  AUTOMOD_DELETE_MAX_MESSAGES,
 } = require("./constants");
 
 /** Model-facing tool names. Action tools are named EXACTLY like the
@@ -144,19 +160,20 @@ const ACTION_TOOL_SPECS = Object.freeze({
   }),
   delete_message: Object.freeze({
     description:
-      "Delete ONE specific message. channel_id/message_id default to the " +
-      "referred message when omitted. This removes specific messages only — " +
-      "there is no bulk purge.",
+      "Delete specific messages from THIS case — ONE user's messages per " +
+      "call. `message_ids` may only name messages from this case's referred " +
+      "message or fetched context window (any other id is refused with that " +
+      "cause); omit `message_ids` to delete the referred message. This " +
+      "removes specific messages only — there is no bulk purge, and ban is " +
+      "not a delete tool.",
     extra: Object.freeze({
-      channel_id: Object.freeze({
-        type: "string",
-        description: "Channel holding the message (defaults to the referred message's channel)",
+      message_ids: Object.freeze({
+        type: "array",
+        items: Object.freeze({ type: "string" }),
+        description:
+          `Message ids to delete (1..${AUTOMOD_DELETE_MAX_MESSAGES} after dedupe, all written by the same user, each from the referred message or the fetched context window; defaults to the referred message). Channels are resolved by the system — never pass channel ids.`,
       }),
-      message_id: Object.freeze({
-        type: "string",
-        description: "Message id to delete (defaults to the referred message)",
-      }),
-      reason: reasonProp("Why the message breaks the rules"),
+      reason: reasonProp("Why the messages break the rules"),
     }),
   }),
   ticket: Object.freeze({
@@ -318,6 +335,11 @@ function logEntry(seq, toolName, args, state, note) {
  * @param {object} opts.caseRow                  the automod_cases row (anchor ids, referrer)
  * @param {Record<string,string>} opts.modes     per-action modes (settings read)
  * @param {string|null} [opts.subjectUserId]     the preloaded judgment subject (context)
+ * @param {Map<string,{channelId: string|null, authorId: string|null}>|object|null}
+ *       [opts.allowedMessages]                  #734 delete allow-list: messageId →
+ *                                               { channelId, authorId } for every id in the
+ *                                               fetched context window (harness-threaded;
+ *                                               the case anchor is always allowed on top)
  * @param {object} [opts.deps]
  * @param {object} [opts.deps.lookupDeps]        seam for the lookups' getMember
  * @param {(entry: object) => void} [opts.deps.onToolResult] observation hook (harness log)
@@ -328,7 +350,15 @@ function logEntry(seq, toolName, args, state, note) {
  *   consideredUserIds: string[], toolNames: string[], decisionLog: object[],
  * }}
  */
-function createToolDispatcher({ communityId, guildId, caseRow, modes = {}, subjectUserId = null, deps = {} } = {}) {
+function createToolDispatcher({
+  communityId,
+  guildId,
+  caseRow,
+  modes = {},
+  subjectUserId = null,
+  allowedMessages = null,
+  deps = {},
+} = {}) {
   const actionIntents = []; // { action, subjectUserId, params } — commit order
   const noteIntents = []; // { userId, content } — commit order after actions
   const considered = new Set();
@@ -337,6 +367,34 @@ function createToolDispatcher({ communityId, guildId, caseRow, modes = {}, subje
   const toolNames = [];
   const decisionLog = [];
   let seq = 0;
+
+  /* ── #734 delete allow-list (contract verbatim): the tool "may only name
+   * message ids that are in this case's referral or fetched context window."
+   * ONE source of truth: the case row's anchor pair + the harness-threaded
+   * window map — the bundle is the only source, NO db reads (window entries
+   * are exactly what was fetched, asker-scoped). messageId → {channelId,
+   * authorId}; a window entry wins over the anchor's target-user author guess
+   * for the same id (the actual author beats the intake's named target). */
+  const allowList = new Map();
+  const allow = (messageId, channelId, authorId) => {
+    const id = optionalText(messageId);
+    if (!id) return;
+    const prev = allowList.get(id) ?? {};
+    allowList.set(id, {
+      channelId: optionalText(channelId) ?? prev.channelId ?? null,
+      authorId: optionalText(authorId) ?? prev.authorId ?? null,
+    });
+  };
+  if (caseRow?.message_id != null && caseRow?.channel_id != null) {
+    allow(caseRow.message_id, caseRow.channel_id, caseRow?.target_user_id);
+  }
+  const windowEntries =
+    allowedMessages instanceof Map
+      ? [...allowedMessages.entries()]
+      : allowedMessages && typeof allowedMessages === "object"
+        ? Object.entries(allowedMessages)
+        : [];
+  for (const [id, meta] of windowEntries) allow(id, meta?.channelId, meta?.authorId);
 
   const rememberTool = (name) => {
     if (!toolNames.includes(name)) toolNames.push(name);
@@ -455,8 +513,6 @@ function createToolDispatcher({ communityId, guildId, caseRow, modes = {}, subje
         // means the model hallucinated — it cannot run (locked decision 2).
         return refuse(name, args, `The \`${name}\` action is off for this guild — it is not offered and cannot run this case.`);
       }
-      const slot = `${name}|${userId}`;
-
       const params = {};
       // #732: no_action's reason is REQUIRED — it is stored on the action
       // row AND carried into the staff note (contract verbatim). Every other
@@ -486,18 +542,98 @@ function createToolDispatcher({ communityId, guildId, caseRow, modes = {}, subje
         }
         params.durationSeconds = Math.floor(seconds);
       }
+      // #734: the delete tool's subject is the MESSAGES' author (author law
+      // below); every other action's subject is the model's user_id as ever.
+      let deleteSubject = userId;
       if (name === "delete_message") {
-        const channelId = optionalText(args.channel_id) ?? optionalText(caseRow?.channel_id);
-        const messageId = optionalText(args.message_id) ?? optionalText(caseRow?.message_id);
-        if (!channelId || !messageId) {
+        // Canonical params: `messages: [{ channelId, messageId }, …]`
+        // resolved AT DISPATCH from the case allow-list — the model names
+        // ids only; channel ids come from the bundle, never from the model.
+        // Validation order: shape → default → dedupe → cap → membership →
+        // channel resolvability → author law, ALL above the slot check.
+        let ids;
+        if (args.message_ids == null) {
+          const anchorId = optionalText(caseRow?.message_id);
+          if (!anchorId || !optionalText(caseRow?.channel_id) || !allowList.has(anchorId)) {
+            return refuse(
+              name,
+              args,
+              "`delete_message` needs `message_ids` — this case has no referred message to default to, so name the messages to delete. Only ids from this case's referred message or fetched context window may be deleted (specific messages only — no purge).",
+            );
+          }
+          ids = [anchorId];
+        } else if (!Array.isArray(args.message_ids)) {
           return refuse(
             name,
             args,
-            "`delete_message` needs `channel_id` and `message_id` — this case has no referred message to default to, so pass both explicitly. Specific messages only (no purge).",
+            "`delete_message` needs `message_ids` as an array of message id strings (1…" +
+              `${AUTOMOD_DELETE_MAX_MESSAGES}) — only ids from this case's referred message or fetched context window may be deleted.`,
+          );
+        } else {
+          ids = [...new Set(args.message_ids.map((v) => optionalText(v)).filter(Boolean))];
+          if (ids.length === 0) {
+            return refuse(
+              name,
+              args,
+              "`delete_message` received no usable `message_ids` — pass 1…" +
+                `${AUTOMOD_DELETE_MAX_MESSAGES} message id strings from this case's referred message or fetched context window.`,
+            );
+          }
+          if (ids.length > AUTOMOD_DELETE_MAX_MESSAGES) {
+            return refuse(
+              name,
+              args,
+              `delete_message accepts at most ${AUTOMOD_DELETE_MAX_MESSAGES} message ids per call — this call names ${ids.length} after dedupe. ` +
+                `Keep the ${AUTOMOD_DELETE_MAX_MESSAGES} most important messages of this case.`,
+            );
+          }
+        }
+        const unknown = ids.filter((id) => !allowList.has(id));
+        if (unknown.length > 0) {
+          return refuse(
+            name,
+            args,
+            `delete_message refused: message ${unknown.join(", ")} ${unknown.length > 1 ? "are" : "is"} ` +
+              "not part of this case's referred message or fetched context window — only those messages may be deleted.",
           );
         }
-        params.channelId = channelId;
-        params.messageId = messageId;
+        const unresolvable = ids.filter((id) => !allowList.get(id).channelId);
+        if (unresolvable.length > 0) {
+          return refuse(
+            name,
+            args,
+            `delete_message refused: message ${unresolvable.join(", ")} ${unresolvable.length > 1 ? "have" : "has"} ` +
+              "no channel recorded in this case's context — the delete target cannot be resolved.",
+          );
+        }
+        const authors = [...new Set(ids.map((id) => allowList.get(id).authorId).filter(Boolean))];
+        if (authors.length > 1) {
+          return refuse(
+            name,
+            args,
+            "delete_message refused: one delete call covers one user's messages — these ids were written by " +
+              `${authors.map((a) => `<@${a}>`).join(", ")}. Record one delete call per user.`,
+          );
+        }
+        // AUTHOR LAW: the row's subject is the messages' author. A user_id
+        // naming anyone else is REFUSED with the specific discrepancy (never
+        // silently rewritten — the model learns the law, the row stays
+        // honest, and #723 decision-6 staff protection cannot be sidestepped
+        // by pointing a delete at a stranger's ids).
+        const author = authors[0] ?? null;
+        if (author && author !== userId) {
+          return refuse(
+            name,
+            args,
+            `delete_message refused: the targeted messages were written by <@${author}>, not <@${userId}> — ` +
+              "one delete call covers one user's messages; the user_id must name their author.",
+          );
+        }
+        deleteSubject = author ?? userId;
+        params.messages = ids.map((id) => ({
+          channelId: allowList.get(id).channelId,
+          messageId: id,
+        }));
       }
       if (name === "warn") {
         // #733 evidence default: the case anchor's jump link, recorded ONCE
@@ -512,17 +648,24 @@ function createToolDispatcher({ communityId, guildId, caseRow, modes = {}, subje
 
       // Param validation ABOVE the slot check: a malformed call must learn
       // the param contract, not the (secondary) one-per-(action,user) rule.
+      // #734: a delete call is slotted under its AUTHOR (the subject the row
+      // will carry), so a refused delete never burns anyone's slot.
+      const slotSubject = name === "delete_message" ? deleteSubject : userId;
+      const slot = `${name}|${slotSubject}`;
       if (actionSlots.has(slot)) {
-        return refuse(name, args, `**${name}** is already recorded for <@${userId}> in this case — one call per (action, user) per run.`);
+        return refuse(name, args, `**${name}** is already recorded for <@${slotSubject}> in this case — one call per (action, user) per run.`);
       }
       actionSlots.add(slot);
-      considered.add(userId);
-      actionIntents.push({ action: name, subjectUserId: userId, params });
+      considered.add(slotSubject);
+      actionIntents.push({ action: name, subjectUserId: slotSubject, params });
       const message =
-        `Recorded: ${name} for <@${userId}> (mode: ${mode} — applied at commit).\n` +
+        `Recorded: ${name} for <@${slotSubject}> (mode: ${mode} — applied at commit).\n` +
         (mode === "suggest"
           ? "**Status:** awaiting staff approval"
-          : "**Status:** the executor runs it at commit and the case post carries the result.");
+          : "**Status:** the executor runs it at commit and the case post carries the result.") +
+        (name === "delete_message"
+          ? `\n**Targeted:** ${params.messages.length} message(s) of this case (${params.messages.map((m) => m.messageId).join(", ")}).`
+          : "");
       log(name, args, "recorded", `mode=${mode}`);
       return message;
     }

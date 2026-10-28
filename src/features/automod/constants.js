@@ -182,6 +182,16 @@ const AUTOMOD_NOTE_MIN_NARRATIVE = 160;
  */
 const AUTOMOD_NOTE_PLANNED_LABEL = "planned";
 
+/* ── Delete-message tool (#734, epic #723) ─────────────────────────────────
+ * One call deletes ONE user's specific messages from this case's referred
+ * message or fetched context window (never a channel purge, never ban's
+ * "delete N days of history" — #723 decisions 2/9). The cap below is the
+ * schema bound the model sees AND the dispatcher's over-cap refusal;
+ * docs/automod.md quotes it — grep before renaming. */
+
+/** Max message ids per `delete_message` call (counted AFTER dedupe). */
+const AUTOMOD_DELETE_MAX_MESSAGES = 10;
+
 /** Slash command builders use these for their option choices. */
 const MODE_CHOICES = AUTOMOD_MODES.map((m) => ({ name: m, value: m }));
 const ACTION_CHOICES = AUTOMOD_ACTIONS.map((a) => ({ name: a, value: a }));
@@ -238,4 +248,6 @@ module.exports = {
   AUTOMOD_NOTE_MIN_NARRATIVE,
   // Warning tool (#733): the two-phase note pre-pass state word.
   AUTOMOD_NOTE_PLANNED_LABEL,
+  // Delete tool (#734): the per-call message-id cap.
+  AUTOMOD_DELETE_MAX_MESSAGES,
 };

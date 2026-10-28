@@ -192,6 +192,54 @@ test("a suggested warn row shows the member-visible record: proposed reason, evi
   assert.match(field, /Evidence: none recorded\./);
 });
 
+test("a suggested delete row lists the targeted messages as jump links — Approve deletes, Dismiss leaves - issue #734", () => {
+  const SUB3 = "862000000000000016";
+  const { cid, caseRow } = seededCase("delete-links");
+
+  // Canonical params (#734): two ids, TWO DIFFERENT channels — the links
+  // resolve guild/channel/message straight from the recorded pairs.
+  const targeted = db.getAutomodAction(suggest(cid, caseRow, "delete_message", SUB2, {
+    reason: "targeted insult",
+    messages: [
+      { channelId: "963000000000000001", messageId: "963000000000000002" },
+      { channelId: "963000000000000003", messageId: "963000000000000004" },
+    ],
+  }).id);
+  const field = decisionField(card.buildCardPayload({ caseRow, rows: [targeted], summaryText: "s" }));
+  assert.match(
+    field,
+    /`delete_message` — \*\*pending approval\*\* — Approve deletes 2 message\(s\) from this case — Dismiss leaves them untouched\./,
+  );
+  assert.ok(field.includes(`<https://discord.com/channels/${GUILD}/963000000000000001/963000000000000002>`));
+  assert.ok(field.includes(`<https://discord.com/channels/${GUILD}/963000000000000003/963000000000000004>`));
+  assert.match(field, new RegExp(`Author: <@${SUB2}>`), "the author context rides — one call, one user");
+  assert.match(field, /Reason: "targeted insult"\./);
+
+  // LEGACY single-pair rows (#728-era params) render the SAME links — the
+  // card reads through the executor's fallback resolver.
+  const legacy = db.getAutomodAction(suggest(cid, caseRow, "delete_message", SUB, {
+    channelId: "963000000000000005",
+    messageId: "963000000000000006",
+  }).id);
+  const legacyField = decisionField(card.buildCardPayload({ caseRow, rows: [legacy], summaryText: "s" }));
+  assert.match(legacyField, /Approve deletes 1 message\(s\) from this case/);
+  assert.ok(legacyField.includes(`<https://discord.com/channels/${GUILD}/963000000000000005/963000000000000006>`));
+
+  // A row with NOTHING resolvable keeps the generic suggested line (the
+  // card never renders an empty "Targeted:" and never invents links).
+  const bare = db.getAutomodAction(suggest(cid, caseRow, "delete_message", SUB3).id);
+  const bareField = decisionField(card.buildCardPayload({ caseRow, rows: [bare], summaryText: "s" }));
+  assert.match(
+    bareField,
+    /`delete_message` — \*\*pending approval\*\* — a staff decision is due — Approve runs the shared executor, Dismiss declines\./,
+  );
+
+  // Executed/refused lines stay the existing verbatim-result machinery.
+  const done = toExecuted(targeted, "Deleted 2 message(s) in this case.");
+  const doneField = decisionField(card.buildCardPayload({ caseRow, rows: [done], summaryText: "s" }));
+  assert.match(doneField, /`delete_message` — \*\*executed\*\* — Deleted 2 message\(s\) in this case\./);
+});
+
 test("card buttons clamp honestly: 10 pending rows max, the overflow line names the rest - issue #730", () => {
   const { cid, caseRow } = seededCase("clamp");
   const acts = ["warn", "timeout", "kick", "ban", "delete_message", "ticket"];
