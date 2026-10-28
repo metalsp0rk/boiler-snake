@@ -137,8 +137,17 @@ test("action tools record intent with executor-shaped params and never mutate - 
   assert.match(res, /^Recorded: warn for <@851000000000000012> \(mode: suggest — applied at commit\)/);
   assert.match(res, /\*\*Status:\*\* awaiting staff approval/);
 
+  // #733: the dispatcher records the anchor's jump link ONCE as the warn's
+  // default evidence — the auto run and a later Approve share that URL.
   assert.deepEqual(d.actionIntents, [
-    { action: "warn", subjectUserId: SUB, params: { reason: "targeted harassment" } },
+    {
+      action: "warn",
+      subjectUserId: SUB,
+      params: {
+        reason: "targeted harassment",
+        evidenceMessageUrl: `https://discord.com/channels/${GUILD}/${SRC_CH}/${MSG}`,
+      },
+    },
   ]);
   assert.deepEqual(d.consideredUserIds(), [SUB]);
   assert.deepEqual(d.toolNames, ["warn"]);
@@ -214,6 +223,41 @@ test("delete_message defaults to the referred message; user-only cases must pass
   });
   assert.match(ok, /^Recorded: delete_message/);
   assert.deepEqual(orphan.actionIntents[0].params.channelId, SRC_CH);
+});
+
+test("warn evidence defaults to the referred message's jump link; an explicit link wins; no anchor, no evidence - issue #733", async () => {
+  const anchorUrl = `https://discord.com/channels/${GUILD}/${SRC_CH}/${MSG}`;
+
+  const anchored = dispatcherFor();
+  await anchored.executeTool("warn", { user_id: SUB, reason: "harassment" });
+  assert.deepEqual(anchored.actionIntents[0].params.evidenceMessageUrl, anchorUrl,
+    "the warning is about the referred message — record its permalink once, at intent time");
+
+  const explicit = dispatcherFor();
+  await explicit.executeTool("warn", {
+    user_id: SUB,
+    reason: "harassment",
+    evidence_message_url: "https://discord.com/channels/1/2/3",
+  });
+  assert.equal(explicit.actionIntents[0].params.evidenceMessageUrl, "https://discord.com/channels/1/2/3",
+    "the model's explicit evidence always wins");
+
+  const orphan = dispatcherFor({ caseRow: userOnlyRow });
+  const res = await orphan.executeTool("warn", { user_id: SUB, reason: "harassment" });
+  assert.match(res, /^Recorded: warn/);
+  assert.equal(orphan.actionIntents[0].params.evidenceMessageUrl, undefined,
+    "a case with no referred message carries NO evidence key — never a fabricated link");
+});
+
+test("the warn schema exposes evidence_message_url and warns that reason is member-facing - issue #733", () => {
+  const warn = buildToolset(modes()).find((t) => t.function.name === "warn");
+  const props = warn.function.parameters.properties;
+  assert.ok(props.evidence_message_url, "the model can carry an evidence permalink on a warn");
+  assert.match(props.evidence_message_url.description, /defaults to the referred message/);
+  assert.match(warn.function.description, /MEMBER-FACING/, "reason is what the member reads");
+  assert.match(props.reason.description, /shown to the member/);
+  assert.deepEqual(warn.function.parameters.required, ["user_id"],
+    "reason stays model-optional (the executor synthesizes one); evidence always optional — the default covers it");
 });
 
 // ── reads execute immediately (ungated, guild-isolated) ─────────────────────

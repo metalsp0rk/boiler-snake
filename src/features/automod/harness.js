@@ -38,20 +38,31 @@
  *     body). Exactly then — and exactly ONCE — `consumeAutomodCase` runs.
  *     A call that never got accepted (HTTP 4xx/5xx, network, timeout,
  *     parse) consumes NOTHING (contract; test-pinned).
- *  7. COMMIT: every recorded action intent through
- *     `executeAutomodAction({... caseId, referrerUserId, claimant:
- *     "harness" })` — the executor already applies the mode gate, staff/
- *     hierarchy guards, the atomic claim, and the timeout clamp; the
- *     harness clamps nothing itself. The STAFF-NOTE story (#731) is owned by
- *     the commit-time RECONCILER (`reconcileCaseNotes`, the default behind
- *     `deps.reconcileNotes` — the hook stays overridable): every user with
- *     action intent ends with EXACTLY ONE note written through the real
- *     `createStaffNote` (author = the bot acting for the harness) — the
- *     model's narrative when it wrote one, the harness-filled marker body
- *     when it did not — each body carrying case A-n, the action list with
- *     the commit states (auto mode's executed/refused already in the note at
- *     birth), and the evidence link. A note queued for a user WITHOUT intent
- *     is DROPPED (zero rows) and the card carries the honest dropped line.
+ *  7. COMMIT is TWO-PHASE around the actions (#733, epic #723):
+ *     a. NOTE PRE-PASS (`prepareCaseNotes`, default behind
+ *        `deps.prepareNotes`): every user with action intent gets their
+ *        EXACTLY-ONE case note written through the real `createStaffNote`
+ *        BEFORE any action runs (author = the bot) — the model's narrative
+ *        or the harness-filled marker — the body's `**Actions:**` list
+ *        carries the PLANNED state per intent (suggest rows: deterministic
+ *        "pending approval"; auto rows: "planned"; `no_action`: the
+ *        "recorded decision" it always was). Discovery-first: an existing
+ *        automod note for the case is REUSED, never doubled.
+ *     b. ACTIONS: every recorded intent through `executeAutomodAction({...
+ *        caseId, referrerUserId, claimant: "harness" })` — the executor owns
+ *        the mode gate, guards, atomic claim, and clamp; the harness clamps
+ *        nothing. A warn intent gets `params.relatedNoteId` injected from
+ *        its subject's pre-pass note row (#733), so the auto run AND a
+ *        later Approve replay both carry the case-note link.
+ *     c. NOTE POST-PASS (`reconcileCaseNotes`, default behind
+ *        `deps.reconcileNotes`): queued notes for users WITHOUT intent are
+ *        DROPPED (zero rows, honest card line, locked decision 4) and each
+ *        action's REAL commit outcome is MERGED into the subject's SAME
+ *        note through the card's `updateNoteOutcome` law (identical lines
+ *        never duplicate): auto rows gain their executed/refused entry,
+ *        suggest rows already read correctly and need no merge. Both passes
+ *        are guarded hooks overridable via deps — a dead one degrades to a
+ *        partial-failure card line, never a dead commit.
  *  8. Outcome post (#730): the placeholder is EDITED (or a fresh post lands
  *     when the placeholder never did) into the interactive CASE CARD —
  *     per-subject outcome sections built from a FRESH re-read of the action
@@ -117,6 +128,10 @@ const { readSettings } = require("./settings");
 const { createToolDispatcher } = require("./harnessTools");
 const { buildSystemPrompt, buildUserMessage } = require("./prompt");
 const card = require("./card");
+// Shared case-note discovery law + the anchor jump link (#733): ONE shape for
+// the note evidence line, the warn tool's default evidence URL, and the
+// card/executor's note lookup (see ./caseNote.js).
+const { anchorJumpLink, findCaseNoteRow } = require("./caseNote");
 const {
   AUTOMOD_ACTIONS,
   AUTOMOD_MAX_TOOL_ROUNDS,
@@ -128,6 +143,7 @@ const {
   AUTOMOD_NOTE_TRUNCATION_MARKER,
   AUTOMOD_NOTE_ACTION_ENTRY_MAX,
   AUTOMOD_NOTE_MIN_NARRATIVE,
+  AUTOMOD_NOTE_PLANNED_LABEL,
 } = require("./constants");
 
 /** The boot-sweep cause, pinned by the sweep test (#728 contract copy). */
@@ -346,11 +362,21 @@ function makeRunDeps({ client = null } = {}) {
       }
       return message.edit(payload);
     },
-    /** The #731 staff-note completeness reconciler (see commitRunIntents):
-     *  ONE note per considered subject (narrative or harness-filled), note
-     *  calls without intent dropped with a card line. Tests override or wrap
+    /** The #733 TWO-PHASE note commit — PRE-PASS (see commitRunIntents):
+     *  the case's exactly-one note per subject is written (or reused, via
+     *  the shared discovery law) BEFORE any action runs, so a warn intent
+     *  can carry its subject's note as `relatedNoteId`. Tests override or
+     *  wrap this seam; a broken pre-pass degrades to a card line. */
+    prepareNotes: (args) => prepareCaseNotes(args),
+    /** The #731/#733 POST-PASS reconciler: drops queued notes without
+     *  intent (zero rows, honest card line) and merges each action's real
+     *  commit outcome into the subject's SAME note. Tests override or wrap
      *  this seam; a broken reconciler can never break the commit. */
     reconcileNotes: (args) => reconcileCaseNotes(args),
+    /** The note-outcome merge law (#731, card.js) — the POST-PASS default.
+     *  Real repository write through the card's cap/merge/idempotence
+     *  discipline; tests may substitute the seam. */
+    updateNoteOutcome: (args) => card.updateNoteOutcome(args),
   };
 }
 
@@ -360,19 +386,25 @@ function buildRunDeps(over = {}) {
   return { ...base, ...over };
 }
 
-/* ── staff-note layer (#731, epic #723) — the one-note law ─────────────────
+/* ── staff-note layer (#731 + #733, epic #723) — the one-note law, two-phase ─
  * Every user the model selects with ANY action tool (no_action included)
  * ends the commit with EXACTLY ONE automod staff note, written through the
- * real `createStaffNote` (author = the bot). Body law (#731): case A-n,
- * what was weighed (the model's narrative, or the harness-filled marker
- * when the model omitted it), what was performed / left pending / refused
- * (the action list with the commit states — auto mode's executed/refused
- * result is in the note AT BIRTH), and the evidence message link when the
- * case has one — all inside the 2000-char cap (the narrative truncates with
- * an explicit marker; the case never fails for it). A note the model queued
- * for a user WITHOUT action intent is DROPPED (zero rows) and the card says
- * why. Staff Approve/Dismiss later UPDATE this same row (`card.updateNoteOutcome`)
- * — never a second automod note for the same case+user. */
+ * real `createStaffNote` (author = the bot) in the PRE-PASS, BEFORE the
+ * actions run (#733, so a warn carries it as relatedNoteId). Body law (#731):
+ * case A-n, what was weighed (the model's narrative, or the harness-filled
+ * marker when the model omitted it), the action list in its PLANNED state
+ * (mode-aware: suggest "pending approval", auto "planned", no_action
+ * "recorded decision"), and the evidence message link when the case has one
+ * — all inside the 2000-char cap (the narrative truncates with an explicit
+ * marker; the case never fails for it). The POST-PASS then merges each
+ * action's REAL commit outcome into the SAME row through the card's
+ * `updateNoteOutcome` law — identical lines never duplicate, so a suggest
+ * run writes the note once and never touches it again, while auto rows
+ * gain their executed/refused entry under **Outcome:** before the card
+ * posts. A note the model queued for a user WITHOUT action intent is
+ * DROPPED (zero rows) and the case card says why. Staff Approve/Dismiss
+ * later UPDATE this same row (`card.updateNoteOutcome`) — never a second
+ * automod note for the same case+user. */
 
 /** The note-write actor: the bot acting for the harness (the repository
  *  stores the id verbatim; the staff surfaces render the bot user). */
@@ -385,14 +417,12 @@ function automodNoteSuffix(caseRow) {
   return ` (automod case A-${caseRow?.case_number ?? "?"})`;
 }
 
-/** The referred message's jump link — the note's evidence line when present. */
+/** The referred message's jump link — the note's evidence line when present.
+ *  #733: ONE shape shared with the warn tool's default evidence URL and the
+ *  card's suggested-row link (./caseNote.js `anchorJumpLink`). Export kept:
+ *  the note-reconcile pure test pins this name. */
 function evidenceLink(guildId, caseRow) {
-  const gid = optionalText(guildId);
-  const cid = optionalText(caseRow?.channel_id);
-  const mid = optionalText(caseRow?.message_id);
-  return gid && cid && mid
-    ? `https://discord.com/channels/${gid}/${cid}/${mid}`
-    : null;
+  return anchorJumpLink(guildId, caseRow);
 }
 
 /** Note-side state words — deliberately the SAME words the case card renders
@@ -405,6 +435,36 @@ function noteStateLabel(intent, out) {
   if (state === "approved" || out?.inFlight) return "in flight";
   if (state === "dismissed") return "dismissed";
   return String(state);
+}
+
+/**
+ * The state word a PRE-PASS note carries for an intent that has NOT run yet
+ * (#733 two-phase commit). Mode-aware, and the run's OWN settings view decides
+ * (the same map the toolset was gated with — what the model was offered):
+ *  - `no_action` → "recorded decision" — it IS the decision, from birth;
+ *  - suggest mode → "pending approval" — deterministic: recording the intent
+ *    can only land the pending suggestion row;
+ *  - auto mode → AUTOMOD_NOTE_PLANNED_LABEL ("planned") — honest: the write
+ *    precedes the run, and the POST-PASS merges the real executed/refused
+ *    entry through the card's updateNoteOutcome law before the card posts.
+ */
+function plannedStateLabel(action, modes = {}) {
+  if (String(action ?? "") === "no_action") return "recorded decision";
+  const mode = String(modes?.[action] ?? "suggest").trim().toLowerCase();
+  return mode === "auto" ? AUTOMOD_NOTE_PLANNED_LABEL : "pending approval";
+}
+
+/** One PRE-PASS `**Actions:**` line — the planned twin of `noteActionEntry`
+ *  (same grammar, no outcome yet). The POST-PASS compares its TRIMMED form
+ *  against the committed entry: equal ⇒ no merge (a suggest row's note is
+ *  written once and never rewritten). */
+function plannedNoteEntry({ intent, modes = {} } = {}) {
+  const pieces = [
+    `  - \`${intent?.action ?? "?"}\` — ${plannedStateLabel(intent?.action, modes)}`,
+  ];
+  const why = optionalText(intent?.params?.reason ?? intent?.params?.rationale);
+  if (why) pieces.push(`— reason: "${sliceSafe(why, 120)}"`);
+  return sliceSafe(pieces.filter(Boolean).join(" "), AUTOMOD_NOTE_ACTION_ENTRY_MAX - 16);
 }
 
 /** One `**Actions:**` line: action, commit state, the reason the model gave,
@@ -483,58 +543,56 @@ function assembleAutomodNoteBody({
 }
 
 /**
- * THE #731 RECONCILER — the commit-time enforcement of the one-note law
- * (the contract: "prompt text is not enough"). Plugged in as the default
- * behind `deps.reconcileNotes`; commitRunIntents guards it, so a throwing
- * reconciler degrades to a partial-failure card line, never a dead commit.
+ * THE #733 NOTE PRE-PASS — the one-note law enforced BEFORE the actions run
+ * (a warn must be able to link its case's ONE staff note, so the note exists
+ * first). Default behind `deps.prepareNotes`; commitRunIntents guards it, so
+ * a throwing pre-pass degrades to a partial-failure card line, never a dead
+ * commit.
  *
- * Law it enforces:
+ * Law it enforces (#731 unchanged; only the timing moved):
  *  - considered (ANY action intent, no_action included) → exactly ONE note;
  *    narrative from the queued note when the model wrote one, else the
  *    harness-filled marker body ("model omitted the narrative");
- *  - queued note WITHOUT intent (a window speaker, the referrer who only
- *    filed, a lookup target) → DROPPED: zero staff_notes rows and one
- *    honest `**Staff note dropped:**` card line naming the user;
- *  - several actions for one subject → ONE note whose body lists each;
+ *  - the body's `**Actions:**` list carries each intent in its PLANNED state
+ *    (`plannedStateLabel`) — the POST-PASS merges the real commit outcome;
+ *  - discovery-first: the case's automod note already on the books is
+ *    REUSED, never doubled (the one-note law survives re-entry);
  *  - never DMs the note, never touches ticket/DM copy (that copy law lives
  *    in the note body itself + #735's scrub).
  *
  * @param {object} args the commitRunIntents hook shape: { communityId,
- *   guildId, caseRow, ids, consideredUserIds, notedUserIds, noteIntents,
- *   actionIntents, actionResults, deps }
- * @returns {Promise<{ lines: string[], extraLines: string[],
- *                     noteResults: Array<{ ok: boolean, userId: string,
- *                     row?: object, error?: string, dropped?: boolean }> }>}
+ *   guildId, caseRow, ids, modes, consideredUserIds, notedUserIds,
+ *   noteIntents, actionIntents, deps }
+ * @returns {Promise<{ lines: string[], extraLines: string[], noteResults:
+ *   Array<{ ok: boolean, userId: string, row?: object, error?: string,
+ *   reused?: boolean }>, notes: Map<string, object> }>}
  */
-async function reconcileCaseNotes({
+async function prepareCaseNotes({
   communityId,
   guildId = null,
   caseRow,
-  consideredUserIds = [],
-  notedUserIds = [],
   noteIntents = [],
   actionIntents = [],
-  actionResults = [],
+  modes = {},
   deps = {},
 } = {}) {
   const lines = [];
   const extraLines = [];
   const noteResults = [];
-  const suffix = automodNoteSuffix(caseRow);
-  const evidence = evidenceLink(guildId, caseRow);
+  const notes = new Map(); // subject user id → the case's ONE note row
 
-  // Subject → its action results, FIRST-SEEN order (one note per subject,
-  // body lists every action against them — contract 3c).
-  const bySubject = new Map();
+  // Subjects in FIRST-SEEN intent order (one note per subject, the body
+  // lists every action against them — contract 3c).
   const subjectOrder = [];
-  for (const r of Array.isArray(actionResults) ? actionResults : []) {
-    const subject = String(r?.intent?.subjectUserId ?? "").trim();
+  const bySubject = new Map();
+  for (const intent of Array.isArray(actionIntents) ? actionIntents : []) {
+    const subject = String(intent?.subjectUserId ?? "").trim();
     if (!subject) continue;
     if (!bySubject.has(subject)) {
       bySubject.set(subject, []);
       subjectOrder.push(subject);
     }
-    bySubject.get(subject).push(r);
+    bySubject.get(subject).push(intent);
   }
 
   const queued = new Map();
@@ -543,34 +601,47 @@ async function reconcileCaseNotes({
     if (userId && !queued.has(userId)) queued.set(userId, n);
   }
 
-  const writeNote = (userId, { narrative, harnessFilled }) => {
-    const entryLines = (bySubject.get(userId) ?? []).map(noteActionEntry);
-    const content = assembleAutomodNoteBody({
-      narrative,
-      harnessFilled,
-      entryLines,
-      evidenceUrl: evidence,
-      suffix,
-    });
-    const row = deps.createNote({
-      communityId,
-      userId,
-      authorId: noteAuthorId(deps),
-      content,
-    });
-    noteResults.push({ ok: true, userId, row });
-    lines.push(
-      `- staff note → <@${userId}>: recorded (N-${row?.note_number ?? "?"})${harnessFilled ? " — harness-filled" : ""}.`,
-    );
-  };
+  const suffix = automodNoteSuffix(caseRow);
+  const evidence = evidenceLink(guildId, caseRow);
 
   for (const userId of subjectOrder) {
     const note = queued.get(userId);
     try {
-      writeNote(userId, {
-        narrative: note?.content ?? "",
-        harnessFilled: !note,
+      // Discovery first (#733): an existing automod note for this case+user
+      // is REUSED — never a second note, even on re-entry.
+      let row = findCaseNoteRow({
+        communityId,
+        userId,
+        caseNumber: caseRow?.case_number,
+        botUserId: optionalText(deps.botUserId),
       });
+      if (row) {
+        notes.set(userId, row);
+        noteResults.push({ ok: true, userId, row, reused: true });
+        lines.push(
+          `- staff note → <@${userId}>: reused (N-${row?.note_number ?? "?"}) — the case already carried its automod note.`,
+        );
+        continue;
+      }
+      row = deps.createNote({
+        communityId,
+        userId,
+        authorId: noteAuthorId(deps),
+        content: assembleAutomodNoteBody({
+          narrative: note?.content ?? "",
+          harnessFilled: !note,
+          entryLines: (bySubject.get(userId) ?? []).map((intent) =>
+            plannedNoteEntry({ intent, modes }),
+          ),
+          evidenceUrl: evidence,
+          suffix,
+        }),
+      });
+      notes.set(userId, row);
+      noteResults.push({ ok: true, userId, row });
+      lines.push(
+        `- staff note → <@${userId}>: recorded (N-${row?.note_number ?? "?"})${note ? "" : " — harness-filled"}.`,
+      );
     } catch (err) {
       const cause = sliceSafe(err?.message || String(err), 200);
       console.error(
@@ -581,6 +652,64 @@ async function reconcileCaseNotes({
       lines.push(`- staff note → <@${userId}>: **could not record** — ${cause}`);
       extraLines.push(`- **Staff note:** could not record for <@${userId}> — ${cause}`);
     }
+  }
+
+  return { lines, extraLines, noteResults, notes };
+}
+
+/**
+ * THE #731/#733 NOTE POST-PASS — the commit-time completion of the one-note
+ * law (the contract: "prompt text is not enough"). Default behind
+ * `deps.reconcileNotes`; commitRunIntents guards it, so a throwing
+ * reconciler degrades to a partial-failure card line, never a dead commit.
+ * It writes NO notes — the PRE-PASS owns writing; this pass:
+ *  - queued note WITHOUT intent (a window speaker, the referrer who only
+ *    filed, a lookup target) → DROPPED: zero staff_notes rows and one
+ *    honest `**Staff note dropped:**` card line naming the user;
+ *  - each executed action's REAL outcome MERGED into the subject's SAME
+ *    note through the card's `updateNoteOutcome` law (identical lines never
+ *    duplicate): auto rows gain their executed/refused entry, a suggest row
+ *    whose planned line already states the truth needs NO merge;
+ *  - never DMs the note, never touches ticket/DM copy (that copy law lives
+ *    in the note body itself + #735's scrub).
+ *
+ * @param {object} args the commitRunIntents hook shape: { communityId,
+ *   guildId, caseRow, ids, modes, consideredUserIds, notedUserIds,
+ *   noteIntents, actionIntents, actionResults, notes, deps }
+ * @returns {Promise<{ lines: string[], extraLines: string[],
+ *                     noteResults: Array<{ ok: boolean, userId: string,
+ *                     row?: object, dropped?: boolean, mergeError?: string }> }>}
+ */
+async function reconcileCaseNotes({
+  communityId,
+  guildId = null,
+  caseRow = null,
+  consideredUserIds = [],
+  notedUserIds = [],
+  noteIntents = [],
+  actionResults = [],
+  modes = {},
+  notes = null,
+  deps = {},
+} = {}) {
+  const lines = [];
+  const extraLines = [];
+  const noteResults = [];
+
+  // Subject → its action results, FIRST-SEEN order (merge one entry per
+  // action against the subject's single note).
+  const bySubject = new Map();
+  for (const r of Array.isArray(actionResults) ? actionResults : []) {
+    const subject = String(r?.intent?.subjectUserId ?? "").trim();
+    if (!subject) continue;
+    if (!bySubject.has(subject)) bySubject.set(subject, []);
+    bySubject.get(subject).push(r);
+  }
+
+  const queued = new Map();
+  for (const n of Array.isArray(noteIntents) ? noteIntents : []) {
+    const userId = String(n?.userId ?? "").trim();
+    if (userId && !queued.has(userId)) queued.set(userId, n);
   }
 
   // Queued notes for users with NO action intent: dropped, never written
@@ -599,6 +728,50 @@ async function reconcileCaseNotes({
     lines.push(report);
     extraLines.push(report);
     noteResults.push({ ok: true, userId, dropped: true });
+  }
+
+  // Outcome merge (#733 two-phase law): the PRE-PASS wrote the note with
+  // PLANNED states; the real commit outcome lands on the SAME row through
+  // the card's merge discipline. The planned-line comparison keeps suggest
+  // runs quiet (their planned line IS the truth — no edit stamp, no
+  // churn); auto/executed/refused rows gain their entry under **Outcome:**
+  // BEFORE the case card posts.
+  const noteRows =
+    notes instanceof Map ? notes : new Map(Object.entries(notes ?? {}));
+  const editor = noteAuthorId(deps);
+  if (typeof deps.updateNoteOutcome === "function") {
+    for (const [userId, results] of bySubject) {
+      const row = noteRows.get(String(userId));
+      if (!row || row.note_number == null) continue; // write failed — already reported
+      for (const { intent, out } of results) {
+        const entry = noteActionEntry({ intent, out }).trim();
+        const planned = plannedNoteEntry({ intent, modes }).trim();
+        if (!entry || entry === planned) continue;
+        try {
+          const done = await deps.updateNoteOutcome({
+            communityId,
+            noteNumber: row.note_number,
+            outcomeLine: entry,
+            editedBy: editor,
+          });
+          if (!done?.ok) {
+            throw new Error(done?.error || "the note refused the outcome entry");
+          }
+        } catch (err) {
+          // Rule 5: the note EXISTS and the action outcome is on the row +
+          // card — only the merge failed. Say so; keep the note ref alive.
+          const cause = sliceSafe(err?.message || String(err), 200);
+          console.error(
+            `[automod] harness note outcome merge failed (community ${communityId} user ${userId} ` +
+            `case ${caseRow?.case_number != null ? `A-${caseRow.case_number}` : `#${caseRow?.id ?? "?"}`}): ${cause}`,
+          );
+          const line = `- **Staff note N-${row.note_number}:** outcome merge failed for <@${userId}> — ${cause}`;
+          lines.push(line);
+          extraLines.push(line);
+          noteResults.push({ ok: true, userId, row, mergeError: cause });
+        }
+      }
+    }
   }
 
   return { lines, extraLines, noteResults, consideredUserIds, notedUserIds };
@@ -622,23 +795,78 @@ function formatActionLine(intent, out) {
 }
 
 /**
- * Run every recorded intent through the executor, then the whole #731
- * staff-note story through the reconciler hook (default `reconcileCaseNotes`
- * — the only note writer at commit). Order (documented for #730/#731):
- * ACTIONS first (the executor's own claims/dedupe own those rows), NOTES
- * second (the reconciler owns writing, dropping, and harness-filling).
- * Partial failures report partial results (AGENTS.md rule 5) — one dead
- * intent never cancels the rest.
+ * TWO-PHASE COMMIT (#733): NOTE PRE-PASS → ACTIONS → NOTE POST-PASS.
+ *  a. `deps.prepareNotes` (default `prepareCaseNotes`) writes/reuses the
+ *     case's exactly-one note per subject BEFORE any action, so a warn
+ *     intent can carry its subject's note as `params.relatedNoteId` — the
+ *     suggestion row stores it and the auto run AND a later Approve replay
+ *     both pass it to `createWarning` (#733).
+ *  b. ACTIONS through the executor (its own claims/dedupe own those rows);
+ *     the mode gate, guards, and the clamp live there — the harness passes
+ *     through.
+ *  c. `deps.reconcileNotes` (default `reconcileCaseNotes`) drops queued
+ *     notes without intent and merges each real commit outcome into the
+ *     subject's SAME note (card `updateNoteOutcome` law; planned-equal lines
+ *     never merge).
+ * Overriding either hook replaces that phase (wrap the default to keep its
+ * story — see test/automod-harness.test.js). Partial failures report partial
+ * results (AGENTS.md rule 5) — one dead intent never cancels the rest, and
+ * one dead hook never cancels the commit.
  */
-async function commitRunIntents({ d, cid, gid, caseRow, referrerUserId, dispatcher, ids }) {
+async function commitRunIntents({ d, cid, gid, caseRow, referrerUserId, dispatcher, modes = {}, ids }) {
   const lines = [];
   // Lines the CASE CARD appends to its Decision field that the ledger rows
-  // cannot carry: note-write failures and the reconciler's report.
+  // cannot carry: note-write failures, drop reports, and merge failures.
   const extraLines = [];
   const actionResults = [];
   const noteResults = [];
 
+  const hookArgs = () => ({
+    communityId: cid,
+    guildId: gid,
+    caseRow,
+    ids,
+    modes,
+    consideredUserIds: dispatcher.consideredUserIds(),
+    notedUserIds: dispatcher.noteIntents.map((n) => n.userId),
+    noteIntents: dispatcher.noteIntents,
+    actionIntents: dispatcher.actionIntents,
+    deps: d,
+  });
+
+  // ── 1. NOTE PRE-PASS (#733) — the note exists BEFORE the actions run.
+  // Guarded (rule 5): a dead pre-pass degrades to one partial-failure line;
+  // the warn note-link then stays the executor's best-effort resolve.
+  let notes = new Map();
+  if (typeof d.prepareNotes === "function") {
+    try {
+      const pre = await d.prepareNotes({ ...hookArgs(), actionResults: [] });
+      if (Array.isArray(pre?.lines)) lines.push(...pre.lines);
+      if (Array.isArray(pre?.extraLines)) extraLines.push(...pre.extraLines);
+      if (Array.isArray(pre?.noteResults)) noteResults.push(...pre.noteResults);
+      if (pre?.notes instanceof Map) notes = pre.notes;
+    } catch (err) {
+      logFail("note pre-pass", ids, err);
+      const line = `- note pre-pass: **failed** — ${sliceSafe(err?.message || String(err), 200)}`;
+      lines.push(line);
+      extraLines.push(line);
+    }
+  }
+
+  // ── 2. ACTIONS through the executor ──────────────────────────────────────
   for (const intent of dispatcher.actionIntents) {
+    // #733 warn → relatedNoteId: the subject's case note (pre-pass row) is
+    // recorded ON the intent so the suggestion row carries it — Approve
+    // replays it without re-discovery. A pre-pass note failure leaves the
+    // link unset; the executor's own resolveCaseNoteId stays the fallback.
+    let params = intent.params;
+    if (intent.action === "warn" && params?.relatedNoteId == null) {
+      const noteRow = notes.get(String(intent.subjectUserId ?? ""));
+      if (noteRow?.id != null) {
+        params = { ...(params ?? {}), relatedNoteId: noteRow.id };
+        intent.params = params; // the recorded intent carries it too (report honesty)
+      }
+    }
     let out;
     try {
       out = await d.executeAction({
@@ -647,7 +875,7 @@ async function commitRunIntents({ d, cid, gid, caseRow, referrerUserId, dispatch
         caseId: caseRow.id,
         action: intent.action,
         subjectUserId: intent.subjectUserId,
-        params: intent.params,
+        params,
         referrerUserId,
         claimant: "harness",
         deps: d.actionDeps ?? {},
@@ -662,29 +890,17 @@ async function commitRunIntents({ d, cid, gid, caseRow, referrerUserId, dispatch
     lines.push(formatActionLine(intent, out));
   }
 
-  // ── STAFF NOTES (#731): the whole note story runs through the reconciler —
-  // the default is `reconcileCaseNotes` above (one note per considered
-  // subject, narrative or harness-filled; queued notes without intent are
-  // dropped with an honest card line). Overriding `deps.reconcileNotes`
-  // replaces the whole story (wrap the default to keep writing — see
-  // test/automod-harness.test.js). `lines` report to the commit result;
-  // `extraLines` are the non-ledger lines the CASE CARD must carry.
-  // Guarded (rule 5): a dead reconciler degrades to one partial-failure
-  // line — the committed actions above stay.
+  // ── 3. NOTE POST-PASS (#731 + #733) — the note story completes here:
+  // queued notes without intent are dropped with an honest card line, and
+  // each action's REAL commit outcome merges into the subject's SAME note
+  // (default `reconcileCaseNotes`; `notes` is the pre-pass Map of written/
+  // reused rows). `lines` report to the commit result; `extraLines` are the
+  // non-ledger lines the CASE CARD must carry. Guarded (rule 5): a dead
+  // reconciler degrades to one partial-failure line — the actions and the
+  // notes written by the pre-pass above all stay.
   if (typeof d.reconcileNotes === "function") {
     try {
-      const extra = await d.reconcileNotes({
-        communityId: cid,
-        guildId: gid,
-        caseRow,
-        ids,
-        consideredUserIds: dispatcher.consideredUserIds(),
-        notedUserIds: dispatcher.noteIntents.map((n) => n.userId),
-        noteIntents: dispatcher.noteIntents,
-        actionIntents: dispatcher.actionIntents,
-        actionResults,
-        deps: d,
-      });
+      const extra = await d.reconcileNotes({ ...hookArgs(), actionResults, notes });
       if (Array.isArray(extra?.lines)) lines.push(...extra.lines);
       if (Array.isArray(extra?.extraLines)) extraLines.push(...extra.extraLines);
       if (Array.isArray(extra?.noteResults)) noteResults.push(...extra.noteResults);
@@ -1047,9 +1263,18 @@ async function runCaseInner({ communityId, guildId, caseId, deps, nowMs }) {
     }
   }
 
-  // ── 9. COMMIT (contract: nothing mutated during the rounds; the
-  //       executor + the real note writer own everything from here) ────────
-  const commit = await commitRunIntents({ d, cid, gid, caseRow, referrerUserId, dispatcher, ids });
+  // ── 9. TWO-PHASE COMMIT (nothing mutated during the rounds; from here
+  //       the executor + the note pre-/post-pass own everything, #733) ────
+  const commit = await commitRunIntents({
+    d,
+    cid,
+    gid,
+    caseRow,
+    referrerUserId,
+    dispatcher,
+    modes,
+    ids,
+  });
 
   // ── 10. outcome CARD + metadata ──────────────────────────────────────────
   // Card extras: note refs from the rows the commit actually wrote, the
@@ -1205,13 +1430,16 @@ module.exports = {
   formatProviderCause,
   formatActionLine,
   commitRunIntents,
-  // Staff-note layer (#731 — the reconciler IS the default
-  // `deps.reconcileNotes`; tests wrap or replace the seam, and the pure
-  // pieces are pinned directly):
+  // Staff-note layer (#731 + #733 — the PRE/POST-PASS pair is the default
+  // behind `deps.prepareNotes` / `deps.reconcileNotes`; tests wrap or replace
+  // the seams, and the pure pieces are pinned directly):
+  prepareCaseNotes,
   reconcileCaseNotes,
   assembleAutomodNoteBody,
   noteActionEntry,
+  plannedNoteEntry,
   noteStateLabel,
+  plannedStateLabel,
   evidenceLink,
   automodNoteSuffix,
 };

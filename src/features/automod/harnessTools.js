@@ -55,6 +55,7 @@ const {
   readStaffNotesForLookup,
   LOOKUP_TOOL_NAMES,
 } = require("./lookups");
+const { anchorJumpLink } = require("./caseNote");
 const {
   AUTOMOD_ACTIONS,
   AUTOMOD_TOOL_RESULT_MAX_CHARS,
@@ -126,9 +127,19 @@ const ACTION_TOOL_SPECS = Object.freeze({
   warn: Object.freeze({
     description:
       "Record a FORMAL warning against the user (the permanent warnings " +
-      "record, distinct from a staff note). Read their history first.",
+      "record, distinct from a staff note). Read their history first. " +
+      "`reason` is MEMBER-FACING — the warned user reads it verbatim in " +
+      "their warning DM, so write what they did, never your private " +
+      "rationale or anything from a staff note.",
     extra: Object.freeze({
-      reason: reasonProp("The rule broken, in one line (goes on the formal record)"),
+      reason: reasonProp(
+        "The rule broken, in one line — shown to the member on the formal record and in their DM",
+      ),
+      evidence_message_url: Object.freeze({
+        type: "string",
+        description:
+          "Permalink to the message the warning is about (defaults to the referred message)",
+      }),
     }),
   }),
   delete_message: Object.freeze({
@@ -487,6 +498,16 @@ function createToolDispatcher({ communityId, guildId, caseRow, modes = {}, subje
         }
         params.channelId = channelId;
         params.messageId = messageId;
+      }
+      if (name === "warn") {
+        // #733 evidence default: the case anchor's jump link, recorded ONCE
+        // here so the auto run and a later Approve replay share the exact
+        // evidence URL. An explicit model URL always wins; a case with no
+        // anchor message carries no evidence (parity with the delete-tool
+        // defaults above).
+        const evidenceUrl =
+          optionalText(args.evidence_message_url) ?? anchorJumpLink(guildId, caseRow);
+        if (evidenceUrl) params.evidenceMessageUrl = evidenceUrl;
       }
 
       // Param validation ABOVE the slot check: a malformed call must learn

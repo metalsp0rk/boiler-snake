@@ -73,7 +73,6 @@ const {
   getAutomodCaseById,
   listAutomodActionsForCase,
   parseAutomodActionParams,
-  listStaffNotes,
   getStaffNote,
   updateStaffNote,
   isAutomodPaused,
@@ -90,6 +89,13 @@ const {
   AUTOMOD_NOTE_TRUNCATION_MARKER,
 } = require("./constants");
 const { readSettings } = require("./settings");
+// Shared case-note discovery law + the anchor jump link (#733): card, harness,
+// and executor all read the SAME `(automod case A-n)` convention.
+const { findCaseNoteRow, anchorJumpLink } = require("./caseNote");
+// READ-ONLY import of the shipped warnings feature (#733): the suggested-warn
+// card row shows the expiry the warning WILL honour — same accessor /warn add
+// uses, so the card can never promise a different date than the record lands.
+const { guildWarnExpiryDays } = require("../warnings/helpers");
 const { approveSuggestion, dismissSuggestion } = require("./executor");
 
 /** Embed palette — byte-identical to the harness family (placeholder colors
@@ -160,7 +166,38 @@ function idTag({ communityId, guildId, caseId, caseNumber }) {
  * **pending approval** (contract word) — except `no_action`, which is
  * already a recorded decision and never gets buttons.
  */
-function renderRowLine(row) {
+/**
+ * What a suggested WARN row shows as expiry (#733): the row's own proposal
+ * wins when it carries one (0 = the model proposed no expiry), else the
+ * CURRENT guild setting — the same accessor `/warn add` honours, labeled so
+ * staff know the setting still governs at Approve time (the warning records
+ * its expiry then, not here).
+ */
+function warnExpiryLabel(row, params) {
+  if (params?.expiresDays != null) {
+    const d = Math.floor(Number(params.expiresDays));
+    return d > 0
+      ? `in ${d} day(s) — as proposed on this row`
+      : "never — the proposal carries no expiry";
+  }
+  try {
+    const days = guildWarnExpiryDays(Number(row.community_id));
+    return days > 0
+      ? `in ${days} day(s) — current guild setting`
+      : "never — current guild setting";
+  } catch {
+    return "per the current guild setting (unreadable at render time)";
+  }
+}
+
+/**
+ * @param {object} row the ledger row
+ * @param {object} [ctx] render context — currently `{ caseRow }`: the case's
+ *   anchor supplies the warn row's evidence link when the row itself carries
+ *   none (#733: "the referred message when the warning is about that
+ *   message"; rebuilds render identically because the row's params ride).
+ */
+function renderRowLine(row, ctx = {}) {
   const act = String(row.action ?? "?");
   const detail = (() => {
     switch (row.state) {
@@ -176,6 +213,30 @@ function renderRowLine(row) {
           return (
             "considered, no sanction warranted — already a recorded " +
             `decision${rationale ? ` — "${rationale}"` : ""}`
+          );
+        }
+        if (act === "warn") {
+          // #733: a suggested warning is the whole member-facing record —
+          // Approve files the formal reason, links the case note, honours
+          // the guild's expiry, and DMs the member per the warn settings.
+          // The card shows what the member will READ (the reason + the
+          // evidence the row carries), never staff-note prose.
+          const params = parseAutomodActionParams(row)?.params ?? {};
+          const reason = snippet(
+            params.reason ?? params.rationale ?? "",
+            160,
+          );
+          const evidence =
+            (typeof params.evidenceMessageUrl === "string" &&
+              params.evidenceMessageUrl.trim()) ||
+            anchorJumpLink(row.guild_id, ctx?.caseRow) ||
+            "";
+          return (
+            "a staff decision is due — Approve records the formal warning " +
+            "and DMs the member per the server's warn settings. " +
+            (reason ? `Proposed reason: "${reason}". ` : "") +
+            (evidence ? `Evidence: <${evidence}>. ` : "Evidence: none recorded. ") +
+            `Expiry: ${warnExpiryLabel(row, params)}.`
           );
         }
         return "a staff decision is due — Approve runs the shared executor, Dismiss declines.";
@@ -210,9 +271,11 @@ function renderRowLine(row) {
  * lines (staff-note write failures, the #731 reconciler output).
  *
  * @param {object[]} rows ledger rows, insertion order
- * @param {{ noteRefs?: Record<string, number|string|null>, extraLines?: string[] }} opts
+ * @param {{ noteRefs?: Record<string, number|string|null>, extraLines?: string[], caseRow?: object|null }} opts
+ *   caseRow: the automod_cases row — rows without a recorded evidence link
+ *   fall back to its anchor jump link (#733 evidence default).
  */
-function renderDecisionBody(rows, { noteRefs = {}, extraLines = [] } = {}) {
+function renderDecisionBody(rows, { noteRefs = {}, extraLines = [], caseRow = null } = {}) {
   const sections = [];
 
   const tally = { total: rows.length, executed: 0, suggested: 0, dismissed: 0, refused: 0, failed: 0, approved: 0 };
@@ -247,7 +310,7 @@ function renderDecisionBody(rows, { noteRefs = {}, extraLines = [] } = {}) {
     const ref = noteRefs?.[subject];
     const noteRef = ref != null ? `N-${ref}` : "no note recorded for this case";
     const header = `**Subject:** <@${subject || "?"}> · **Staff note:** ${noteRef}`;
-    const lines = subjectRows.map(renderRowLine);
+    const lines = subjectRows.map((r) => renderRowLine(r, { caseRow }));
     sections.push([header, ...lines].join("\n"));
   }
 
@@ -367,7 +430,7 @@ function buildCardPayload({
       : "";
   const decisionValue =
     sliceSafe(
-      renderDecisionBody(rows, { noteRefs, extraLines: bodyExtras }),
+      renderDecisionBody(rows, { noteRefs, extraLines: bodyExtras, caseRow }),
       Math.max(256, EMBED_FIELD_MAX - overflowSuffix.length),
     ) + overflowSuffix;
 
@@ -586,42 +649,13 @@ function defaultSummaryFor(caseRow) {
 /* ── staff-note ref + outcome UPDATE (#731 law: same note, updated) ───────── */
 
 /**
- * The harness writes ONE note per considered user per case with the
- * content suffix `(automod case A-n)` and the bot as author
- * (`harness.commitRunIntents` — author = bot user id, fallback label
- * "automod"). The scan replays that convention; a note whose author is
- * neither is FOREIGN (a human note quoting the case ref) and is skipped —
- * the outcome never lands in someone else's record.
- *
- * @param {object} input
- * @param {number} input.communityId
- * @param {string} input.userId
- * @param {number|string} input.caseNumber
- * @param {string|null} [input.botUserId]
- * @param {object} [input.deps] ({ listNotes })
- * @returns {object|null} the note row, newest match first
+ * `findCaseNoteRow` — the `(automod case A-n)` discovery law — moved to
+ * `./caseNote.js` in #733 so the harness pre-pass, the executor's note-link
+ * resolution, and this module share ONE reader convention (and a foreign
+ * author can never receive an outcome). The import above keeps the historic
+ * `card.findCaseNoteRow` export alive — the note-ref scan below, the button
+ * arms, and the card tests all keep driving it from here.
  */
-function findCaseNoteRow({ communityId, userId, caseNumber, botUserId = null, deps = {} } = {}) {
-  const needle = `(automod case A-${caseNumber})`;
-  try {
-    const notes = (deps.listNotes ?? listStaffNotes)(communityId, String(userId), { limit: 100 }) ?? [];
-    for (const note of notes) {
-      if (!String(note?.content ?? "").includes(needle)) continue;
-      const author = note.author_id == null ? null : String(note.author_id);
-      if (author != null && author !== "automod" &&
-          (botUserId == null || author !== String(botUserId))) {
-        continue; // foreign author — never write into a human's note
-      }
-      return note; // listStaffNotes is newest-first: the live harness note wins
-    }
-  } catch (err) {
-    console.error(
-      `[automod] card staff-note scan failed (community ${communityId} user ${userId} case A-${caseNumber}):`,
-      err?.message || err,
-    );
-  }
-  return null;
-}
 
 /**
  * Record a staff decision on the subject's automod note — by UPDATING THE

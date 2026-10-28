@@ -9,11 +9,12 @@
  *  - the budget PRE-GATE refuses before the claim (case stays `recorded`);
  *    `consumeAutomodCase` fires EXACTLY ONCE at provider acceptance — an
  *    unaccepted call (HTTP error, throwing seam, no key) consumes NOTHING;
- *  - zero mutation during tool rounds; COMMIT after the loop through the
- *    real executor, then the whole #731 staff-note story through the
- *    commit-time reconciler hook (actions → reconcileNotes, which owns
- *    writing / dropping / harness-filling); the round cap STILL commits and
- *    finishes `complete` naming
+ *  - zero mutation during tool rounds; COMMIT after the loop is TWO-PHASE
+ *    around the real executor (#733): the note PRE-PASS (prepareNotes —
+ *    writing / harness-filling) runs FIRST so a warn intent carries its
+ *    case note as relatedNoteId, then the actions through the executor,
+ *    then the note POST-PASS (reconcileNotes — dropping / outcome merges);
+ *    the round cap STILL commits and finishes `complete` naming
  *    "tool-round cap (12) reached" in last_run_error;
  *  - the referrer-visible lines carry the specific cause —
  *    `**Referred by:** <@id> — provider error: …`, never "something failed"
@@ -357,10 +358,12 @@ test("accepted run: lifecycle, zero-mutation rounds, commit via the real executo
   assert.match(notes[0].content, new RegExp(`\\*\\*Evidence:\\*\\* <https://discord\\.com/channels/${GUILD}/${SRC_CH}/${MSG}>`));
   assert.doesNotMatch(notes[0].content, /harness-filled/, "the model's narrative rides — no marker");
 
-  // commit order is ACTIONS → NOTES (documented for #730/#731)
+  // #733 TWO-PHASE commit order: NOTE PRE-PASS → ACTIONS (documented for
+  // #730/#731/#733) — the note row must EXIST before a warn runs so the
+  // warning can carry it as relatedNoteId; the post-pass merges afterwards.
   const warnLine = res.commit.lines.findIndex((l) => l.startsWith("- `warn`"));
   const noteLine = res.commit.lines.findIndex((l) => l.startsWith("- staff note"));
-  assert.ok(warnLine >= 0 && noteLine > warnLine, `order: ${res.commit.lines.join(" | ")}`);
+  assert.ok(warnLine >= 0 && noteLine >= 0 && noteLine < warnLine, `order: ${res.commit.lines.join(" | ")}`);
 
   // ── posts: placeholder first, then the EDITED case card (#730)
   assert.equal(w.posts.length, 1, "one send — the outcome EDITS the placeholder");

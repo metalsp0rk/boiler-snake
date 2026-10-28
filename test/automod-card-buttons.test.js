@@ -257,6 +257,59 @@ test("Approve runs the shared executor: warning recorded, the SAME note updated,
   );
 });
 
+test("Approve with a DM-able member sends the standard warning DM — member-facing copy only — and links the case note - issue #733", async () => {
+  const w = makeWorld();
+  const subj = nextSubject();
+  const caseRow = seededCase(subj);
+  const row = suggestRow(caseRow, "warn", subj);
+  const note = db.listStaffNotes(CID, subj)[0];
+
+  // The ONLY world difference: this client can resolve users to DMs.
+  const dms = [];
+  const user = { id: subj, send: async (payload) => { dms.push(payload); return { id: "972000000000000020" }; } };
+  w.client.users = { fetch: async (id) => (String(id) === String(subj) ? user : null) };
+
+  const it = buttonInteraction(w, { customId: `${CARD_APPROVE_PREFIX}${row.id}` });
+  await card.handleCardApprove(it, w.ctx);
+
+  const final = db.getAutomodAction(row.id);
+  assert.equal(final.state, "executed");
+  assert.match(final.result_text, /Formal warning W-\d+ recorded/);
+  assert.match(final.result_text, /Member notified by DM\./, "the DM went — the executed line says so");
+  assert.match(it.replies[0].content, /Member notified by DM\./, "the clicker sees the member was notified");
+
+  // The warning links the case's ONE automod note (#733 relatedNoteId law).
+  const warnRow = db.db.prepare(`SELECT related_note_id FROM warnings WHERE community_id=? AND user_id=?`)
+    .get(CID, subj);
+  assert.equal(warnRow.related_note_id, note.id, "the approve replay discovers the case note through the shared law");
+
+  // The member DM: the standard /warn add framing, the formal reason rides,
+  // and NOTHING staff-only ever reaches the wire.
+  assert.equal(dms.length, 1);
+  const dm = dms[0].embeds[0];
+  assert.equal(dm.title, "Warning issued in this server", "the fake guild carries no name — honest fallback");
+  const fields = Object.fromEntries(dm.fields.map((f) => [f.name, f.value]));
+  assert.equal(fields.Reason, "harassment", "the member reads the formal reason");
+  assert.equal(fields["Issued by"], `<@${REF}>`, "the case referrer is the issuer — as a mention");
+  assert.equal(fields["Active warnings"], "1");
+  const wire = JSON.stringify(dms[0]);
+  assert.ok(!wire.includes("weighed the referral"), "the staff-note body NEVER enters the member DM");
+  assert.ok(!wire.includes("automod case"), "no note refs or case grammar in the member DM");
+
+  // The note keeps the staff-side story (one Outcome section, same row)…
+  const notes = db.listStaffNotes(CID, subj);
+  assert.equal(notes.length, 1, "one note — updated, never re-created");
+  assert.match(
+    notes[0].content,
+    new RegExp(`\\nOutcome: approved by <@${STAFF}> — executed: Formal warning`),
+  );
+
+  // …and the rebuilt card carries the executed line with the buttons gone.
+  const edited = w.cardMessage.edits[0];
+  assert.match(decisionField(edited), /`warn` — \*\*executed\*\*/);
+  assert.deepEqual(buttonIds(edited), []);
+});
+
 test("double click: the second click says already handled and the mutation count stays 1 - issue #730", async () => {
   const w = makeWorld();
   const subj = nextSubject();

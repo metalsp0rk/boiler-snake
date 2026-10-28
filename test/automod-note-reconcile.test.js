@@ -21,9 +21,12 @@
  *    still records the queued call.
  *  - NOTE SHAPE: author = the bot, normal N-n ids, body within the 2000-char
  *    cap carrying case A-n, what was weighed (narrative or the marker), the
- *    action list with the commit states (auto mode's executed/refused at
- *    birth), and the evidence message link; the narrative truncates with the
- *    explicit marker rather than failing the case with no note.
+ *    action list in its PLANNED state written by the two-phase PRE-PASS
+ *    (#733: suggest "pending approval", auto "planned", no_action "recorded
+ *    decision"), and the evidence message link — auto rows then gain their
+ *    real executed/refused entry MERGED under **Outcome:** by the POST-PASS
+ *    BEFORE the card posts; the narrative truncates with the explicit marker
+ *    rather than failing the case with no note.
  *  - OUTCOME: Approve/Dismiss UPDATE the same note row (card.js, pinned in
  *    automod-card-buttons.test.js) — a staff-role subject who is only
  *    recommended still gets the note and the executor still refuses.
@@ -428,6 +431,9 @@ test("sanction with the note call OMITTED still produces one harness-filled note
   assert.equal(notes.length, 1, "prompt text is not enough — the harness enforces the note");
   assert.ok(notes[0].content.includes(AUTOMOD_NOTE_HARNESS_FILLED), "harness-filled marker present");
   assert.match(notes[0].content, /- `warn` — pending approval — reason: "targeted harassment"/);
+  // #733 contrast: a SUGGEST run's planned line already states the truth —
+  // the POST-PASS merges nothing, so the note row is never rewritten.
+  assert.equal(notes[0].edited_by, null, "a planned-equal suggest note is written once, never merged");
   assert.match(
     res.commit.lines.join("\n"),
     /staff note → <@853000000000000012>: recorded \(N-\d+\) — harness-filled/,
@@ -435,7 +441,7 @@ test("sanction with the note call OMITTED still produces one harness-filled note
   );
 });
 
-test("auto mode: the note is created ALREADY carrying the executed result (outcome at birth) - issue #731", async () => {
+test("auto mode: the note is born with the PLANNED state; the POST-PASS merges the real outcome before the card posts - issue #731/#733", async () => {
   const { cid, caseRow, w } = await seededCommunity("auto-birth", {
     settings: { modes: { timeout: "auto" } },
   });
@@ -452,7 +458,23 @@ test("auto mode: the note is created ALREADY carrying the executed result (outco
   const notes = db.listStaffNotes(cid, SUB);
   assert.equal(notes.length, 1);
   assert.ok(notes[0].content.includes(AUTOMOD_NOTE_HARNESS_FILLED), "no narrative → marker");
-  assert.match(notes[0].content, /- `timeout` — executed — Timed out <@853000000000000012> for 300s/);
+  // #733 two-phase law: the PRE-PASS wrote the note BEFORE the action ran, so
+  // the **Actions:** line carries the honest PLANNED state…
+  assert.match(notes[0].content, /- `timeout` — planned — reason: "raid"/);
+  // …and the POST-PASS merged the real executed entry under the **Outcome:**
+  // header through the card's updateNoteOutcome law BEFORE the card posted
+  // (identical lines never duplicate — the planned line is never rewritten).
+  assert.ok(notes[0].content.includes(`\n\n${AUTOMOD_NOTE_OUTCOME_HEADER}\n`), "merged outcome section");
+  assert.match(
+    notes[0].content,
+    new RegExp(`${esc(AUTOMOD_NOTE_OUTCOME_HEADER)}\\n- \`timeout\` — executed — Timed out <@${SUB}> for 300s`),
+  );
+  assert.equal(notes[0].edited_by, BOT, "the merge is stamped by the harness's bot editor");
+  assert.match(
+    notes[0].content,
+    new RegExp(`\\(automod case A-${caseRow.case_number}\\)`),
+    "the discovery suffix rides the base body — a merged note stays findable",
+  );
 });
 
 test("a 2000-character narrative still yields the note: explicit truncation, never a failed case - issue #731", async () => {
@@ -612,26 +634,22 @@ test("evidenceLink + assembler: link only with a full anchor; marker/truncation/
   assert.ok(filled.startsWith(AUTOMOD_NOTE_HARNESS_FILLED), "marker leads a harness-filled body");
 });
 
-test("reconcileCaseNotes (unit): one note per subject, intentless notes dropped, noteResults honest - issue #731", async () => {
+test("prepareCaseNotes (unit): the PRE-PASS writes ONE note per considered subject with PLANNED entries and hands back the notes Map - issue #731/#733", async () => {
   const written = [];
-  const out = await harness.reconcileCaseNotes({
+  const out = await harness.prepareCaseNotes({
     communityId: 7,
     guildId: GUILD,
     caseRow: { id: 1, case_number: 77 },
-    consideredUserIds: ["u1"],
-    notedUserIds: ["u2", "u1"],
     noteIntents: [
       { userId: "u2", content: "no intent for this one" },
       { userId: "u1", content: "the subject's narrative" },
     ],
     actionIntents: [{ action: "warn", subjectUserId: "u1", params: { reason: "harassment" } }],
-    actionResults: [
-      { intent: { action: "warn", subjectUserId: "u1", params: { reason: "harassment" } }, out: { ok: true, state: "recorded_suggestion" } },
-    ],
+    modes: { warn: "auto" },
     deps: {
       createNote: (args) => {
         written.push(args);
-        return { note_number: 5 };
+        return { id: 40, note_number: 5 };
       },
       botUserId: BOT,
     },
@@ -641,7 +659,95 @@ test("reconcileCaseNotes (unit): one note per subject, intentless notes dropped,
   assert.equal(written[0].authorId, BOT);
   assert.ok(written[0].content.includes("the subject's narrative"));
   assert.ok(written[0].content.includes("(automod case A-77)"));
-  assert.equal(out.noteResults.filter((r) => r.dropped).length, 1, "u2 dropped");
-  assert.ok(out.extraLines.some((l) => l.includes(AUTOMOD_NOTE_DROPPED_LABEL) && l.includes("<@u2>")));
+  // The pre-pass body carries the intent's PLANNED state (auto: "planned") —
+  // an outcome that has not happened yet is never written as one.
+  assert.match(written[0].content, /- `warn` — planned — reason: "harassment"/);
+  assert.equal(out.notes.get("u1").note_number, 5, "the notes Map carries the written row for the warn link");
   assert.ok(out.lines.some((l) => l.includes("staff note → <@u1>: recorded (N-5)")));
+  assert.equal(out.noteResults.length, 1);
+  assert.equal(out.noteResults[0].ok, true);
+});
+
+test("reconcileCaseNotes (unit, POST-PASS): drops stay, planned-equal lines never merge, real outcomes merge once through the card law - issue #731/#733", async () => {
+  const intent = { action: "warn", subjectUserId: "u1", params: { reason: "harassment" } };
+  const base = {
+    communityId: 7,
+    guildId: GUILD,
+    caseRow: { id: 1, case_number: 77 },
+    consideredUserIds: ["u1"],
+    notedUserIds: ["u2", "u1"],
+    noteIntents: [
+      { userId: "u2", content: "no intent for this one" },
+      { userId: "u1", content: "the subject's narrative" },
+    ],
+    notes: new Map([["u1", { id: 40, note_number: 5 }]]),
+  };
+
+  // Suggest run: the planned line IS the truth → the post-pass drops the
+  // intentless note but merges NOTHING (a written-once note stays written once).
+  const quietMerges = [];
+  const quiet = await harness.reconcileCaseNotes({
+    ...base,
+    actionResults: [{ intent, out: { ok: true, state: "recorded_suggestion" } }],
+    modes: { warn: "suggest" },
+    deps: {
+      botUserId: BOT,
+      updateNoteOutcome: async (args) => {
+        quietMerges.push(args);
+        return { ok: true };
+      },
+    },
+  });
+  assert.equal(quiet.noteResults.filter((r) => r.dropped).length, 1, "u2 dropped");
+  assert.ok(quiet.extraLines.some((l) => l.includes(AUTOMOD_NOTE_DROPPED_LABEL) && l.includes("<@u2>")));
+  assert.deepEqual(quietMerges, [], "a planned-equal suggest entry never rewrites the note");
+
+  // Auto run: the executed entry merges into the SAME note through the card's
+  // updateNoteOutcome law — once per action, bot-stamped.
+  const merges = [];
+  const merged = await harness.reconcileCaseNotes({
+    ...base,
+    actionResults: [{ intent, out: { ok: true, state: "executed", result: "Formal warning W-1 recorded." } }],
+    modes: { warn: "auto" },
+    deps: {
+      botUserId: BOT,
+      updateNoteOutcome: async (args) => {
+        merges.push(args);
+        return { ok: true, noteNumber: 5 };
+      },
+    },
+  });
+  assert.equal(merges.length, 1, "exactly one merge");
+  assert.equal(merges[0].noteNumber, 5, "the SAME note row");
+  assert.equal(merges[0].editedBy, BOT, "the harness merge stamps its own editor");
+  assert.equal(merges[0].outcomeLine, '- `warn` — executed — Formal warning W-1 recorded. — reason: "harassment"');
+  assert.ok(!merged.noteResults.some((r) => r.mergeError), "a clean merge reports no failure");
+
+  // A THROWING merge is rule 5 in miniature: the note stays alive (noteResults
+  // ok:true + mergeError), one honest card line names the cause.
+  const broken = await harness.reconcileCaseNotes({
+    ...base,
+    actionResults: [{ intent, out: { ok: true, state: "executed", result: "Formal warning W-1 recorded." } }],
+    modes: { warn: "auto" },
+    deps: {
+      botUserId: BOT,
+      updateNoteOutcome: async () => {
+        throw new Error("note db down");
+      },
+    },
+  });
+  assert.ok(
+    broken.lines.some((l) => l.includes("**Staff note N-5:** outcome merge failed for <@u1>") && l.includes("note db down")),
+    `merge failure is reported: ${broken.lines.join(" | ")}`,
+  );
+  assert.ok(broken.noteResults.some((r) => r.userId === "u1" && r.ok === true && r.mergeError === "note db down"));
+
+  // A unit world WITHOUT the seam (no updateNoteOutcome) simply skips merges.
+  const noSeam = await harness.reconcileCaseNotes({
+    ...base,
+    actionResults: [{ intent, out: { ok: true, state: "executed", result: "Formal warning W-1 recorded." } }],
+    modes: { warn: "auto" },
+    deps: { botUserId: BOT },
+  });
+  assert.ok(noSeam.noteResults.every((r) => !r.mergeError), "no seam ⇒ no merges, no errors — the note stands");
 });

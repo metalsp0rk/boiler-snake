@@ -625,6 +625,155 @@ describe("action handlers — ticket seam, delete pre-flight, real warn", () => 
     assert.equal(warn.reason, "Auto-moderation sanction from case #45");
   });
 
+  // ── #733: the member-facing warn law (DM setting, framing, partials) ──────
+
+  it("warn honours the guild's warn-DM setting: disabled ⇒ ZERO sends, the skip is reported (#733 — same gate as /warn add)", async () => {
+    const cid = freshCommunity();
+    setMode(cid, "warn", "auto");
+    db.updateGuildSettings(cid, { warn_dm_members: 0 });
+    const dms = [];
+    const res = await executor.executeAutomodAction({
+      communityId: cid, guildId: GUILD, subjectUserId: SUBJECT, action: "warn", caseId: 47,
+      referrerUserId: "staff-77",
+      params: { reason: "posted targeted harassment" },
+      deps: makeRecorder({ deps: { sendWarnDm: async (userId, payload) => { dms.push({ userId, payload }); } } }).deps,
+    });
+    assert.equal(res.ok, true);
+    assert.equal(res.state, "executed");
+    assert.deepEqual(dms, [], "member DMs are off for this server — nothing is DM'd (no automod-specific setting)");
+    assert.match(
+      res.result,
+      /Member DM skipped — member DMs are disabled for this server \(`\/setwarn dm`\)/,
+    );
+    assert.equal(db.countActiveWarnings(cid, SUBJECT), 1, "the warning itself is recorded regardless");
+  });
+
+  it("warn DMs the member the standard /warn add framing — reason rides, staff-only artifacts NEVER do (#733)", async () => {
+    const cid = freshCommunity();
+    setMode(cid, "warn", "auto");
+    const dms = [];
+    const res = await executor.executeAutomodAction({
+      communityId: cid, guildId: GUILD, subjectUserId: SUBJECT, action: "warn", caseId: 48,
+      referrerUserId: "872000000000000099",
+      params: {
+        reason: "posted targeted harassment",
+        evidenceMessageUrl: `https://discord.com/channels/${GUILD}/301/special-evidence-id-98765`,
+      },
+      deps: makeRecorder({ deps: {
+        fetchGuildName: async () => "Test Guild",
+        sendWarnDm: async (userId, payload) => { dms.push({ userId, payload }); },
+      } }).deps,
+    });
+    assert.equal(res.ok, true, res.error);
+    assert.equal(res.state, "executed");
+    assert.match(res.result, /Member notified by DM\./);
+    assert.equal(dms.length, 1);
+    assert.equal(dms[0].userId, SUBJECT);
+    const dm = dms[0].payload.embeds[0];
+    assert.equal(dm.title, "Warning issued in Test Guild");
+    const fields = Object.fromEntries(dm.fields.map((f) => [f.name, f.value]));
+    assert.equal(fields.Reason, "posted targeted harassment", "the member reads the formal reason");
+    assert.equal(fields["Issued by"], "<@872000000000000099>", "a snowflake issuer renders as a mention");
+    assert.equal(fields["Active warnings"], "1");
+    assert.match(dm.footer.text, /\/warn mine/);
+    const wire = JSON.stringify(dms[0].payload);
+    assert.ok(!wire.includes("automod case"), "no note refs / case grammar in the member DM");
+    assert.ok(!wire.includes("special-evidence-id-98765"), "the evidence permalink stays staff-only — never in the member DM");
+  });
+
+  it("a failing member DM NEVER costs the warning — the executed line reports the partial success (#733, rule 5)", async () => {
+    const cid = freshCommunity();
+    setMode(cid, "warn", "auto");
+    const res = await executor.executeAutomodAction({
+      communityId: cid, guildId: GUILD, subjectUserId: SUBJECT, action: "warn", caseId: 49,
+      referrerUserId: "staff-77",
+      params: { reason: "posted targeted harassment" },
+      deps: makeRecorder({ deps: {
+        sendWarnDm: async () => { throw new Error("Cannot send messages to this user"); },
+      } }).deps,
+    });
+    assert.equal(res.ok, true, "the record exists — the DM names its own cause (never a silent drop)");
+    assert.equal(res.state, "executed");
+    assert.match(res.result, /Formal warning W-1 recorded/);
+    assert.match(res.result, /warning recorded, member DM failed: Cannot send messages to this user/);
+    assert.equal(db.countActiveWarnings(cid, SUBJECT), 1, "the warning stayed recorded");
+  });
+
+  it("warn links the case's ONE automod note as relatedNoteId — injected from params or discovered (#733)", async () => {
+    const cid = freshCommunity();
+    setMode(cid, "warn", "auto");
+
+    // Injected (what the harness two-phase commit records on the intent):
+    const c1 = db.createAutomodCase({
+      communityId: cid, referrerUserId: "staff-77", messageId: "401", channelId: "301",
+      targetUserId: SUBJECT, note: "harassment referral",
+    });
+    assert.equal(c1.ok, true, c1.error);
+    const note1 = db.createStaffNote({
+      communityId: cid, userId: SUBJECT, authorId: "automod",
+      content: `weighed the referral (automod case A-${c1.case.case_number})`,
+    });
+    const injected = await executor.executeAutomodAction({
+      communityId: cid, guildId: GUILD, subjectUserId: SUBJECT, action: "warn", caseId: c1.case.id,
+      referrerUserId: "staff-77",
+      params: { reason: "harassment", relatedNoteId: note1.id },
+      deps: makeRecorder({ deps: { sendWarnDm: async () => {} } }).deps,
+    });
+    assert.equal(injected.ok, true, injected.error);
+    assert.equal(
+      db.db.prepare(`SELECT related_note_id FROM warnings WHERE community_id=?`).get(cid).related_note_id,
+      note1.id,
+      "the pre-pass note rides the row params into createWarning",
+    );
+
+    // Replay fallback (older rows / direct calls): discovery through the
+    // shared caseNote.js law — author "automod" + the case suffix.
+    const c2 = db.createAutomodCase({
+      communityId: cid, referrerUserId: "staff-77", messageId: "402", channelId: "301",
+      targetUserId: SUBJECT, note: "repeat referral",
+    });
+    assert.equal(c2.ok, true, c2.error);
+    const note2 = db.createStaffNote({
+      communityId: cid, userId: SUBJECT, authorId: "automod",
+      content: `second pass (automod case A-${c2.case.case_number})`,
+    });
+    const replay = await executor.executeAutomodAction({
+      communityId: cid, guildId: GUILD, subjectUserId: SUBJECT, action: "warn", caseId: c2.case.id,
+      referrerUserId: "staff-77",
+      params: { reason: "harassment (repeat)" },
+      deps: makeRecorder({ deps: { sendWarnDm: async () => {} } }).deps,
+    });
+    assert.equal(replay.ok, true, replay.error);
+    assert.equal(
+      db.db.prepare(`SELECT related_note_id FROM warnings WHERE community_id=? ORDER BY warning_number DESC LIMIT 1`)
+        .get(cid).related_note_id,
+      note2.id,
+      "the replay discovers the case's own note — never the older case's",
+    );
+  });
+
+  it("double Approve on a warn records exactly ONE warning (Approving twice never doubles it, #733)", async () => {
+    const cid = freshCommunity();
+    const sug = await executor.executeAutomodAction({
+      communityId: cid, guildId: GUILD, subjectUserId: SUBJECT, action: "warn", caseId: 50,
+      referrerUserId: "staff-77", params: { reason: "harassment" },
+      deps: makeRecorder().deps,
+    });
+    assert.equal(sug.state, "recorded_suggestion");
+    const p1 = executor.approveSuggestion({
+      actionRowId: sug.actionRowId, claimant: "staff-A",
+      deps: makeRecorder({ deps: { sendWarnDm: async () => {} } }).deps,
+    });
+    const p2 = await executor.approveSuggestion({
+      actionRowId: sug.actionRowId, claimant: "staff-B", deps: makeRecorder().deps,
+    });
+    assert.equal(p2.deduped, true, "the second click loses the claim and reports the existing outcome");
+    const res = await p1;
+    assert.equal(res.ok, true, res.error);
+    assert.equal(res.state, "executed");
+    assert.equal(db.countActiveWarnings(cid, SUBJECT), 1, "approving twice does NOT create two warnings");
+  });
+
   it("a handler that THROWS is recorded as failed with the cause — never propagates", async () => {
     const cid = freshCommunity();
     setMode(cid, "kick", "auto");
