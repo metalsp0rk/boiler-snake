@@ -19,14 +19,15 @@ const features = require("../src/features");
 after(cleanup);
 
 describe("command definitions via registry", () => {
-  it("exports 39 slash commands + 3 context menus with unique names", () => {
+  it("exports 40 slash commands + 3 context menus with unique names", () => {
     const { commands } = buildDefaultRegistry();
     // #745: 37 slash builders + "Report Post"/"Report User" context menus.
     // #725: + /automod and /automodconfig (auto-moderation epic #723).
     // #726: + "Refer to automod" context menu (/automod refer is a
     // SUBCOMMAND of the existing /automod builder — top-level count moves
     // only by the one menu).
-    assert.equal(commands.length, 42);
+    // #771: + /set-moderation-queue (admin alias over the automod channel).
+    assert.equal(commands.length, 43);
     const names = commands.map((c) => c.name);
     assert.equal(new Set(names).size, names.length);
     assert.ok(names.includes("eventreminder"));

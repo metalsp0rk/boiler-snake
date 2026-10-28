@@ -339,7 +339,7 @@ Each Discord server (guild) has its own settings stored in SQLite.
 | `honeypot_pause_reason` | *(none)* | Set while the mass-ban safety valve has enforcement paused (#440; clear via `/honeypot safety resume`) |
 | `gork_*` | various | The Gork assistant family (`gork_enabled`, `gork_keyword` `@gork`, `gork_role_id`, `gork_context_window` 10, `gork_cooldown_sec`, `gork_search_enabled`, `gork_ste_enabled`, `gork_memory_*`, `gork_daily_limit`, `gork_log_channel_id`, …) — inventoried on [Gork](gork.md) |
 | `automod_enabled` | `0` | Auto-moderation master switch (`/automodconfig enable`; referrals refuse naming this cause while off) — [Auto-moderation](automod.md) |
-| `automod_channel_id` | *(none)* | Case-card channel (`/automodconfig channel set`; `@everyone`-view is warned, never rewritten) |
+| `automod_channel_id` | *(none)* | Moderation queue / case-card channel (`/automodconfig channel set`, or its admin alias `/set-moderation-queue set` (#771); `@everyone`-view is warned, never rewritten) |
 | `automod_rules` | *(none)* | Rules text the judge applies, cap 4000 chars (`/automodconfig rules set`, modal when omitted) |
 | `automod_mode_*` | `suggest` | Per-action modes `off`/`suggest`/`auto` for `no_action`, `warn`, `delete_message`, `ticket`, `timeout`, `kick`, `ban` (`/automodconfig mode`) — staff notes have NO mode (always on) |
 | `automod_timeout_cap` | 3600 | Max automod-run timeout in seconds, 60–2,419,200 (28 days) (`/automodconfig timeout-cap`) |

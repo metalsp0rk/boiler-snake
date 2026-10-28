@@ -34,6 +34,15 @@ const CARD_DISMISS_PREFIX = "am:card:dismiss:";
  */
 const AUTOMOD_CARD_MAX_BUTTON_ROWS = 10;
 
+/**
+ * #771: once the card carries the CASE-LEVEL queue row (Reveal + three
+ * resolutions, one packed ActionRow), the row buttons get four ActionRows
+ * — 8 pending rows × 2 = 16 buttons + 4 queue buttons = 20 ≤ 25 across
+ * exactly five ActionRows. Overflow keeps the "**More pending rows:**"
+ * line; the buttons regenerate on every rebuild.
+ */
+const AUTOMOD_CARD_MAX_BUTTON_ROWS_QUEUED = 8;
+
 /** Display cap on the "**Seen, not considered:**" mention list (`… +N more`). */
 const AUTOMOD_CARD_NOT_CONSIDERED_MAX = 25;
 
@@ -63,7 +72,9 @@ const {
 } = require("../../db/repositories/automodSettings");
 const {
   AUTOMOD_CASE_STATUSES,
+  AUTOMOD_CASE_RESOLUTIONS,
   AUTOMOD_REFER_NOTE_MAX_LEN,
+  AUTOMOD_REFER_CONTEXT_MAX_LEN,
 } = require("../../db/repositories/automodCases");
 
 /**
@@ -240,6 +251,108 @@ const AUTOMOD_CARD_TICKET_PROPOSED_LABEL = "Proposed opening:";
  */
 const AUTOMOD_TICKET_NOTE_OVERLAP_MIN = 40;
 
+/* ── Moderation queue (#771, epic #723) ─────────────────────────────────────
+ * The automod channel is an explicit QUEUE: the referral opens a MODAL
+ * (problem required + required context + per-case read window), the card
+ * keeps the reporter anonymous until a staff Reveal press, and every case
+ * carries three case-level resolution buttons. The copy below is shipped:
+ * docs/automod.md quotes it verbatim — grep before renaming. */
+
+/** Modal customId PREFIX: referral-form submit (`am:refer:<token>`). The
+ *  32-hex token rides inside the id (41 chars — the 100-char budget is
+ *  nowhere near reached); the pending referral lives in referModal.js. */
+const MODAL_REFER_PREFIX = "am:refer:";
+/** Text-input customIds inside the referral modal. */
+const MODAL_FIELD_PROBLEM = "problem";
+const MODAL_FIELD_REQUIRED_CONTEXT = "required_context";
+const MODAL_FIELD_READ_BEFORE = "read_before";
+const MODAL_FIELD_READ_AFTER = "read_after";
+
+/** Human labels of the modal fields — the reject copy names these exactly. */
+const MODAL_LABEL_PROBLEM = "Problem";
+const MODAL_LABEL_REQUIRED_CONTEXT = "Required context";
+const MODAL_LABEL_READ_BEFORE = "Messages before";
+const MODAL_LABEL_READ_AFTER = "Messages after";
+
+/**
+ * Per-case read window (issue #771 §2): the modal's two integer fields
+ * REPLACE the shipped global 40/10 for new cases — defaults 100 back /
+ * 20 forward, each clamped 0–AUTOMOD_REFER_READ_MAX. Legacy rows (columns
+ * NULL) keep the historical Gork-owned 40/10 (caseContext.js).
+ */
+const AUTOMOD_REFER_DEFAULT_READ_BEFORE = 100;
+const AUTOMOD_REFER_DEFAULT_READ_AFTER = 20;
+const AUTOMOD_REFER_READ_MIN = 0;
+const AUTOMOD_REFER_READ_MAX = 500;
+
+/** Pending referral-form lifetime: Discord modals live minutes, not hours;
+ *  an expired token gets the honest "modal expired" refusal, never a
+ *  half-read intake. */
+const AUTOMOD_REFER_PENDING_TTL_MS = 10 * 60 * 1000;
+/** Open forms ceiling (pruned oldest-first) — a leak can never grow the
+ *  process unboundedly. */
+const AUTOMOD_REFER_PENDING_MAX = 200;
+
+/** Cap on the persisted anchor-message snippet rendered under
+ *  "**Reported message:**" on the card (single-line). */
+const AUTOMOD_CARD_SNIPPET_MAX = 300;
+
+/** Cap on the persisted harness incident estimate ("What happened"). */
+const AUTOMOD_INCIDENT_SUMMARY_MAX = 1000;
+
+/* Case-level queue buttons (#771). customId grammar:
+ *   am:case:reveal:<caseId> · am:case:resolve:<resolution>:<caseId>
+ * The id carries ONLY the integer case id — every fact the arms act on is
+ * re-read from the database (same law as the row buttons). */
+
+/** Reveal-reporter button prefix (`am:case:reveal:<caseId>`). */
+const CASE_REVEAL_PREFIX = "am:case:reveal:";
+/** Resolution button prefixes (router matches the LONGEST prefix). */
+const CASE_RESOLVE_RECOMMENDED_PREFIX = "am:case:resolve:recommended:";
+const CASE_RESOLVE_MANUAL_PREFIX = "am:case:resolve:manual:";
+const CASE_RESOLVE_NONE_PREFIX = "am:case:resolve:none:";
+
+/** Button labels (docs quote them). */
+const CASE_REVEAL_LABEL = "Reveal reporter";
+const CASE_RESOLVE_RECOMMENDED_LABEL = "Take recommended action";
+const CASE_RESOLVE_MANUAL_LABEL = "Manual action taken";
+const CASE_RESOLVE_NONE_LABEL = "No action taken";
+
+/** resolution → its button label (card line, refusals, audit details). */
+const CASE_RESOLUTION_LABELS = Object.freeze({
+  recommended: CASE_RESOLVE_RECOMMENDED_LABEL,
+  manual: CASE_RESOLVE_MANUAL_LABEL,
+  none: CASE_RESOLVE_NONE_LABEL,
+});
+
+/**
+ * The anonymity line: while a case is unrevealed the queue shows this INSTEAD
+ * of `**Referred by:** <@staff>` (card summary line — the harness's live-run
+ * twins and the placeholder/interrupted posts honour the same rule).
+ */
+const AUTOMOD_CARD_REPORTER_HIDDEN = "**Reporter:** hidden";
+
+/**
+ * Referral-form copy (#771 §1). The non-integer reject names the EXACT field
+ * — never silently proceed on a misread; over-cap CLAMPS and SAYS SO.
+ */
+function refusalModalExpired() {
+  return (
+    "**Modal expired:** the referral form closed (10 minutes) — nothing was " +
+    "filed. Open it again with `/automod refer` or the message context menu."
+  );
+}
+
+/** @param {string} label the modal field's human label */
+function refusalNotNumber(label) {
+  return `\`${label}\` wasn't a number — nothing was filed.`;
+}
+
+/** @param {string} label @param {number} cap */
+function clampNote(label, cap) {
+  return `\`${label}\` was above the ${cap} cap — clamped to ${cap}.`;
+}
+
 /** Slash command builders use these for their option choices. */
 const MODE_CHOICES = AUTOMOD_MODES.map((m) => ({ name: m, value: m }));
 const ACTION_CHOICES = AUTOMOD_ACTIONS.map((a) => ({ name: a, value: a }));
@@ -251,6 +364,7 @@ module.exports = {
   CARD_APPROVE_PREFIX,
   CARD_DISMISS_PREFIX,
   AUTOMOD_CARD_MAX_BUTTON_ROWS,
+  AUTOMOD_CARD_MAX_BUTTON_ROWS_QUEUED,
   AUTOMOD_CARD_NOT_CONSIDERED_MAX,
   AUTOMOD_BREAKER_ACTIONS,
   NOT_ON_FLUXER,
@@ -270,7 +384,9 @@ module.exports = {
   // Case intake (#726): status vocabulary + the referrer-note cap, owned by
   // src/db/repositories/automodCases.js.
   AUTOMOD_CASE_STATUSES,
+  AUTOMOD_CASE_RESOLUTIONS,
   AUTOMOD_REFER_NOTE_MAX_LEN,
+  AUTOMOD_REFER_CONTEXT_MAX_LEN,
   // Case-context gathering caps (#727): the user-only scan bounds and the
   // records-preload page. The anchor window caps are GORK-owned — import
   // READ_DISCORD_* from ../gork/constants (see the block comment above).
@@ -307,4 +423,36 @@ module.exports = {
   // escalating three (docs quote both).
   AUTOMOD_BREAKER_WINDOW_MS,
   AUTOMOD_BREAKER_MAX_ATTEMPTS,
+  // Moderation queue (#771): the referral modal, the per-case read window,
+  // the case-level queue buttons, and their shipped copy.
+  MODAL_REFER_PREFIX,
+  MODAL_FIELD_PROBLEM,
+  MODAL_FIELD_REQUIRED_CONTEXT,
+  MODAL_FIELD_READ_BEFORE,
+  MODAL_FIELD_READ_AFTER,
+  MODAL_LABEL_PROBLEM,
+  MODAL_LABEL_REQUIRED_CONTEXT,
+  MODAL_LABEL_READ_BEFORE,
+  MODAL_LABEL_READ_AFTER,
+  AUTOMOD_REFER_DEFAULT_READ_BEFORE,
+  AUTOMOD_REFER_DEFAULT_READ_AFTER,
+  AUTOMOD_REFER_READ_MIN,
+  AUTOMOD_REFER_READ_MAX,
+  AUTOMOD_REFER_PENDING_TTL_MS,
+  AUTOMOD_REFER_PENDING_MAX,
+  AUTOMOD_CARD_SNIPPET_MAX,
+  AUTOMOD_INCIDENT_SUMMARY_MAX,
+  CASE_REVEAL_PREFIX,
+  CASE_RESOLVE_RECOMMENDED_PREFIX,
+  CASE_RESOLVE_MANUAL_PREFIX,
+  CASE_RESOLVE_NONE_PREFIX,
+  CASE_REVEAL_LABEL,
+  CASE_RESOLVE_RECOMMENDED_LABEL,
+  CASE_RESOLVE_MANUAL_LABEL,
+  CASE_RESOLVE_NONE_LABEL,
+  CASE_RESOLUTION_LABELS,
+  AUTOMOD_CARD_REPORTER_HIDDEN,
+  refusalModalExpired,
+  refusalNotNumber,
+  clampNote,
 };

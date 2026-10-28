@@ -372,7 +372,22 @@ test("accepted run: lifecycle, zero-mutation rounds, commit via the real executo
   const decision = w.edits[0];
   assert.ok(decision, "the outcome edited the placeholder");
   assert.match(embed(decision).title, new RegExp(`case A-${caseRow.case_number} — decision$`));
-  assert.equal(embed(decision).description, `**Referred by:** <@${REF}> — review complete.`);
+  // #771 §3: an UNREVEALED case hides the reporter lead; §4: the queue lines
+  // render from the case row (snippet jump link, problem, estimate, window).
+  assert.match(embed(decision).description, /^\*\*Reporter:\*\* hidden — review complete\./);
+  assert.doesNotMatch(embed(decision).description, new RegExp(`Referred by:\\*\\* <@${REF}>`));
+  assert.match(
+    embed(decision).description,
+    new RegExp(`\\*\\*Reported message:\\*\\* \\[jump\\]\\(https://discord\\.com/channels/[^/]+/${SRC_CH}/${MSG}\\)`),
+  );
+  assert.match(embed(decision).description, /you are the worst person who ever lived/);
+  assert.match(embed(decision).description, /\*\*Reported problem:\*\* same pattern as yesterday/);
+  assert.match(embed(decision).description, /\*\*What happened:\*\* decision summary text/);
+  assert.match(
+    embed(decision).description,
+    /\*\*Window:\*\* 40 before \/ 10 after/,
+    "legacy row (window columns NULL) keeps the historical 40/10",
+  );
   const field = decisionField(decision);
   // #730: the Decision field renders from the LEDGER ROWS — per-subject
   // section header with the note ref + one line per row.
@@ -383,8 +398,15 @@ test("accepted run: lifecycle, zero-mutation rounds, commit via the real executo
   const buttons = (decision.components ?? []).flatMap((r) => r.components ?? []);
   assert.deepEqual(
     buttons.map((b) => b.custom_id),
-    [`am:card:approve:${actions[0].id}`, `am:card:dismiss:${actions[0].id}`],
-    "#730: Approve/Dismiss ride the pending row's id",
+    [
+      `am:card:approve:${actions[0].id}`,
+      `am:card:dismiss:${actions[0].id}`,
+      `am:case:reveal:${caseRow.id}`,
+      `am:case:resolve:recommended:${caseRow.id}`,
+      `am:case:resolve:manual:${caseRow.id}`,
+      `am:case:resolve:none:${caseRow.id}`,
+    ],
+    "#730: Approve/Dismiss ride the pending row's id · #771: the queue row (reveal + three resolutions) trails it",
   );
 
   // ── 070 metadata
@@ -431,7 +453,12 @@ test("HTTP 500 before acceptance: failed case, zero budget, the provider's own w
 
   const decision = w.edits[0];
   assert.match(embed(decision).title, /run failed/);
-  assert.match(embed(decision).description, new RegExp(`\\*\\*Referred by:\\*\\* <@${REF}> — provider error: HTTP 500 upstream exploded`));
+  // #771 §3: the failure line keeps the referrer-visible CAUSE but the lead
+  // is anonymity-aware — an unrevealed case reads `**Reporter:** hidden —`.
+  assert.match(
+    embed(decision).description,
+    /\*\*Reporter:\*\* hidden — provider error: HTTP 500 upstream exploded/,
+  );
   assert.match(embed(decision).description, /provider said: \{"error"/, "the provider's body names the real cause");
   assert.match(decisionField(decision), /No action calls were recorded this run/);
 
@@ -828,7 +855,10 @@ test("boot sweep terminalizes stuck processing rows and posts the interrupted no
   const delivered = await waitFor(() => w.posts.length >= 1);
   assert.ok(delivered, "the detached sweep notice lands in the automod channel");
   assert.match(embed(w.posts[0]).title, /— interrupted$/);
-  assert.match(embed(w.posts[0]).description, new RegExp(`Referred by <@${REF}>`));
+  // #771 §3: the interrupted notice honours the anonymity law too — the
+  // unrevealed reporter is never named.
+  assert.match(embed(w.posts[0]).description, /\*\*Reporter:\*\* hidden/);
+  assert.doesNotMatch(embed(w.posts[0]).description, new RegExp(`<@${REF}>`));
   assert.match(embed(w.posts[0]).description, /run interrupted by restart/);
 });
 
@@ -867,6 +897,42 @@ test("the sweep survives a dead channel (best-effort notice, the flip is what ma
 });
 
 // ── 10. refer trigger (the real slash arm) + its crash guard ─────────────────
+
+/**
+ * #771: the slash refer arm now OPENS the referral modal before the case
+ * exists. These two trigger tests complete the round-trip the way Discord
+ * would: capture showModal, then submit the form (problem filled) through
+ * the real modal handler. Returns a driver resolving to the submit fake
+ * (whose `replies` carry the ack / refusal).
+ */
+function modalRoundTrip(commandCtx, fields = { problem: "posted slurs at a member" }) {
+  const shown = { payload: null };
+  commandCtx.rawInteraction.showModal = async (modal) => {
+    shown.payload = typeof modal?.toJSON === "function" ? modal.toJSON() : modal;
+  };
+  return async () => {
+    const referModal = require("../src/features/automod/referModal");
+    const raw = commandCtx.rawInteraction;
+    const replies = [];
+    const submit = {
+      isModalSubmit: () => true,
+      customId: shown.payload?.custom_id ?? "am:refer:",
+      guildId: commandCtx.externalGuildId,
+      guild: raw.guild,
+      user: raw.user,
+      member: raw.member,
+      memberPermissions: { has: () => true }, // ManageGuild leg of the staff gate
+      fields: { getTextInputValue: (id) => fields[id] ?? "" },
+      replies,
+      reply: async (payload) => {
+        replies.push(typeof payload === "string" ? { content: payload } : payload);
+        return payload;
+      },
+    };
+    await referModal.handleReferModal(submit, {});
+    return submit;
+  };
+}
 
 test("the refer handler fires the harness detached after the ack - issue #728", async () => {
   const cid = communityKey(`${GUILD}-728-trigger-${(seq += 1)}`);
@@ -911,11 +977,15 @@ test("the refer handler fires the harness detached after the ack - issue #728", 
     reply: async (payload) => replies.push(payload),
   };
 
+  const drive = modalRoundTrip(commandCtx);
   try {
     await refer.handleReferCommand(commandCtx);
-    // The ack ships FIRST — the run is detached behind it.
-    assert.match(replies[0].content, /Case: \*\*A-1\*\* — recorded\./);
-    assert.equal(replies[0].sensitive, true);
+    assert.equal(replies.length, 0, "#771: the slash arm opens the modal — no ack before the form");
+
+    // The ack ships on SUBMIT — the run is detached behind it.
+    const submit = await drive();
+    assert.match(String(submit.replies[0]?.content ?? ""), /Case: \*\*A-1\*\* — recorded\./);
+    assert.ok(submit.replies[0]?.flags != null, "the submit ack is ephemeral");
 
     const ran = await waitFor(() => {
       const row = db.db
@@ -945,31 +1015,36 @@ test("a crashing harness run is logged with ids and never surfaces as an unhandl
   const onUnhandled = (reason) => unhandled.push(String(reason));
   process.on("unhandledRejection", onUnhandled);
   const cap = captureConsole();
-  try {
-    await refer.handleReferCommand({
-      communityId: cid,
-      externalGuildId: GUILD,
-      userId: REF,
-      subcommand: "refer",
-      options: {
-        getString: (n) => (n === "message" ? `https://discord.com/channels/${GUILD}/${SRC_CH}/${MSG}` : null),
-        getUser: () => null,
-      },
-      rawInteraction: {
-        guild: {
-          id: GUILD,
-          channels: {
-            cache: new Map(
-              [SRC_CH, AMOD_CH].map((id) => [id, w.referDeps.getGuildChannel(GUILD, id)]),
-            ),
-          },
-          members: { me: member(BOT), cache: new Map([[REF, member(REF)]]) },
+  // #771: intake now runs on the modal SUBMIT — drive the round-trip so the
+  // case is filed and the crashing hook actually fires.
+  const crashCtx = {
+    communityId: cid,
+    externalGuildId: GUILD,
+    userId: REF,
+    subcommand: "refer",
+    options: {
+      getString: (n) => (n === "message" ? `https://discord.com/channels/${GUILD}/${SRC_CH}/${MSG}` : null),
+      getUser: () => null,
+    },
+    rawInteraction: {
+      guild: {
+        id: GUILD,
+        channels: {
+          cache: new Map(
+            [SRC_CH, AMOD_CH].map((id) => [id, w.referDeps.getGuildChannel(GUILD, id)]),
+          ),
         },
-        user: { id: REF },
-        member: member(REF),
+        members: { me: member(BOT), cache: new Map([[REF, member(REF)]]) },
       },
-      reply: async () => {},
-    });
+      user: { id: REF },
+      member: member(REF),
+    },
+    reply: async () => {},
+  };
+  const drive = modalRoundTrip(crashCtx);
+  try {
+    await refer.handleReferCommand(crashCtx);
+    await drive();
 
     const logged = await waitFor(() =>
       cap.lines.some(

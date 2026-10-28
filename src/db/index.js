@@ -427,13 +427,18 @@ module.exports = {
   // `recorded` row (per-community A-n, the N-n note precedent); #727/#728 read
   // it and move status through processing → complete/failed.
   AUTOMOD_CASE_STATUSES: automodCases.AUTOMOD_CASE_STATUSES,
+  AUTOMOD_CASE_RESOLUTIONS: automodCases.AUTOMOD_CASE_RESOLUTIONS,
   AUTOMOD_REFER_NOTE_MAX_LEN: automodCases.AUTOMOD_REFER_NOTE_MAX_LEN,
+  AUTOMOD_REFER_CONTEXT_MAX_LEN: automodCases.AUTOMOD_REFER_CONTEXT_MAX_LEN,
   nextAutomodCaseNumber: automodCases.nextCaseNumber,
   createAutomodCase: automodCases.createAutomodCase,
   getAutomodCaseById: automodCases.getAutomodCaseById,
   getAutomodCase: automodCases.getAutomodCase,
   listAutomodCases: automodCases.listAutomodCases,
   setAutomodCaseStatus: automodCases.setAutomodCaseStatus,
+  setAutomodCaseIncidentSummary: automodCases.setAutomodCaseIncidentSummary,
+  revealAutomodCaseReporter: automodCases.revealAutomodCaseReporter,
+  resolveAutomodCase: automodCases.resolveAutomodCase,
 
   // auto-moderation case-action ledger (#729, epic #723 — automod_case_actions,
   // migration 069). Atomic claim/commit primitives for the executor + reads

@@ -37,6 +37,7 @@ const {
   CARD_APPROVE_PREFIX,
   CARD_DISMISS_PREFIX,
   AUTOMOD_CARD_MAX_BUTTON_ROWS,
+  AUTOMOD_CARD_MAX_BUTTON_ROWS_QUEUED,
   AUTOMOD_CARD_NOT_CONSIDERED_MAX,
   AUTOMOD_NOTE_OUTCOME_HEADER,
   AUTOMOD_NOTE_TRUNCATION_MARKER,
@@ -132,7 +133,19 @@ test("card payload: sections, note refs, pending approval word, footer, meta fam
 
   assert.deepEqual(payload.allowedMentions, { parse: [] });
   assert.match(embed(payload).title, new RegExp(`^Automod — case A-${caseRow.case_number} — decision$`));
-  assert.equal(embed(payload).description, `**Referred by:** <@${REF}> — review complete.`);
+  // #771 §4: the summary rides first, then the queue lines (jump link +
+  // problem + the effective window; the fixture row predates the modal, so
+  // the legacy 40/10 renders).
+  assert.match(
+    embed(payload).description,
+    new RegExp(`^\\*\\*Referred by:\\*\\* <@${REF}> — review complete\\.\n`),
+  );
+  assert.match(
+    embed(payload).description,
+    new RegExp(`\\*\\*Reported message:\\*\\* \\[jump\\]\\(https://discord\\.com/channels/[^/]+/${AMOD_CH}/${MSG}\\)`),
+  );
+  assert.match(embed(payload).description, /\*\*Reported problem:\*\* card fixture referral/);
+  assert.match(embed(payload).description, /\*\*Window:\*\* 40 before \/ 10 after/);
   assert.equal(embed(payload).fields[0].name, "Decision");
   assert.equal(embed(payload).footer.text, "Model test-model · 1234 ms · 2 round(s) · tools: warn");
   assert.equal(embed(payload).color, card.COLORS.complete);
@@ -147,9 +160,15 @@ test("card payload: sections, note refs, pending approval word, footer, meta fam
   );
 
   // Buttons: warn row only — no_action NEVER gets buttons (recorded decision).
+  // #771: the case-level queue row trails the row buttons (reveal + the
+  // three mutually exclusive resolutions, carrying only the case id).
   assert.deepEqual(buttonIds(payload), [
     `${CARD_APPROVE_PREFIX}${warn.id}`,
     `${CARD_DISMISS_PREFIX}${warn.id}`,
+    `am:case:reveal:${caseRow.id}`,
+    `am:case:resolve:recommended:${caseRow.id}`,
+    `am:case:resolve:manual:${caseRow.id}`,
+    `am:case:resolve:none:${caseRow.id}`,
   ]);
 });
 
@@ -330,10 +349,30 @@ test("card buttons clamp honestly: 10 pending rows max, the overflow line names 
   assert.equal(total, AUTOMOD_CARD_MAX_BUTTON_ROWS * 2);
   assert.ok(total <= 25 && components.length + total <= 25, "Discord's 25-component cap holds");
 
+  // #771: once the card carries the QUEUE row, the row-button clamp drops to
+  // AUTOMOD_CARD_MAX_BUTTON_ROWS_QUEUED (8) — 4 packed rows × 2 = 16 buttons
+  // + 4 queue buttons = 20 across five ActionRows (Discord: ≤25, ≤5 rows).
   const payload = card.buildCardPayload({ caseRow, rows, summaryText: "s" });
   assert.match(
     decisionField(payload),
-    /\*\*More pending rows:\*\* 2 pending row\(s\) have no buttons on this card — approve or dismiss the earlier ones and the rebuilt card carries them\./,
+    /\*\*More pending rows:\*\* 4 pending row\(s\) have no buttons on this card — approve or dismiss the earlier ones and the rebuilt card carries them\./,
+  );
+  const ids = buttonIds(payload);
+  assert.equal(
+    ids.filter((id) => id.startsWith(CARD_APPROVE_PREFIX)).length,
+    AUTOMOD_CARD_MAX_BUTTON_ROWS_QUEUED,
+  );
+  assert.deepEqual(ids.slice(-4), [
+    `am:case:reveal:${caseRow.id}`,
+    `am:case:resolve:recommended:${caseRow.id}`,
+    `am:case:resolve:manual:${caseRow.id}`,
+    `am:case:resolve:none:${caseRow.id}`,
+  ]);
+  const total2 = (payload.components ?? []).flatMap((r) => r.components ?? []).length;
+  assert.ok(
+    total2 <= 25 && (payload.components ?? []).length <= 5,
+    "the QUEUED shape still fits Discord's caps: " +
+      `${total2} buttons across ${(payload.components ?? []).length} rows`,
   );
 });
 
@@ -420,19 +459,44 @@ test("buildCardFromCase: current states, buttons only for rows still suggested, 
   const built = card.buildCardFromCase({ communityId: cid, caseId: caseRow.id, botUserId: BOT });
   assert.equal(built.ok, true, built.error);
   assert.match(embed(built.payload).title, /— decision$/);
+  // #771 §3: an unrevealed rebuild leads with the anonymity line — the
+  // state family behind the dash is unchanged.
   assert.match(
     embed(built.payload).description,
-    new RegExp(`^\\*\\*Referred by:\\*\\* <@${REF}> — review complete\\.`),
-    "rebuilds keep the referrer-visible family",
+    /^\*\*Reporter:\*\* hidden — review complete\./,
+    "rebuilds keep the state family — under reporter anonymity",
   );
   const field = decisionField(built.payload);
   assert.match(field, new RegExp(`\`warn\` — \\*\\*executed\\*\\* — Formal warning W-1 recorded\\.`));
   assert.match(field, /`timeout` — \*\*pending approval\*\*/);
-  // The executed row's buttons are GONE; only the still-suggested row rides.
+  // The executed row's buttons are GONE; only the still-suggested row rides,
+  // with the #771 queue row behind it (reveal enabled — the case is neither
+  // revealed nor resolved).
   assert.deepEqual(buttonIds(built.payload), [
     `${CARD_APPROVE_PREFIX}${pending.id}`,
     `${CARD_DISMISS_PREFIX}${pending.id}`,
+    `am:case:reveal:${caseRow.id}`,
+    `am:case:resolve:recommended:${caseRow.id}`,
+    `am:case:resolve:manual:${caseRow.id}`,
+    `am:case:resolve:none:${caseRow.id}`,
   ]);
+
+  // #771 §3: a REVEALED case restores the shipped `**Referred by:**` line
+  // byte-for-byte and renders the Reveal button disabled.
+  db.db
+    .prepare(`UPDATE automod_cases SET revealed_at=1700000000000, revealed_by_user_id='u-staff-x' WHERE id=?`)
+    .run(caseRow.id);
+  const revealed = card.buildCardFromCase({ communityId: cid, caseId: caseRow.id });
+  assert.match(
+    embed(revealed.payload).description,
+    new RegExp(`^\\*\\*Referred by:\\*\\* <@${REF}> — review complete\\.`),
+  );
+  const revealedButtons = (revealed.payload.components ?? []).flatMap((r) => r.components ?? []);
+  assert.equal(
+    revealedButtons.find((b) => b.custom_id === `am:case:reveal:${caseRow.id}`).disabled,
+    true,
+    "a revealed card cannot reveal twice",
+  );
 
   // Footer meta rides the persisted 070 columns; rounds show "?" (run-time data).
   db.db

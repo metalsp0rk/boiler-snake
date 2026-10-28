@@ -9,7 +9,10 @@
  * source of truth: /automod gate = requireStaff, /automodconfig =
  * isAdminOrMod (ManageGuild), per the epic.
  *
- * #726 adds `/automod refer` (message/user/note options) beside `status`.
+ * #726 adds `/automod refer` beside `status`; #771 retires its free-text
+ * `note:` option (the referral MODAL captures problem + context + window
+ * instead — design-record §13.1) and adds the `/set-moderation-queue` admin
+ * alias over the same automod-channel setting.
  * The "Refer to automod" context-menu builder lives in ./contextMenu.js and
  * is wired through the feature's commands export.
  */
@@ -21,7 +24,6 @@ const {
 } = require("discord.js");
 const {
   AUTOMOD_RULES_MAX_LEN,
-  AUTOMOD_REFER_NOTE_MAX_LEN,
   AUTOMOD_TIMEOUT_CAP_MIN,
   AUTOMOD_TIMEOUT_CAP_MAX,
   AUTOMOD_BUDGET_MIN,
@@ -40,10 +42,15 @@ const commands = [
     // #726: the ONLY way a case starts (besides the "Refer to automod"
     // message context menu). Discord cannot cross-enforce "at least one of
     // message|user" — the handler replies with the specific cause.
+    // #771: with a target given this opens the REFERRAL MODAL (problem +
+    // required context + read window) — the old free-text `note:` option is
+    // retired (design-record §13.1): the case intake shape is the modal.
     .addSubcommand((sc) =>
       sc
         .setName("refer")
-        .setDescription("Refer a message and/or a member to auto-moderation.")
+        .setDescription(
+          "Refer a message and/or a member to auto-moderation (opens the referral form).",
+        )
         .addStringOption((opt) =>
           opt
             .setName("message")
@@ -57,15 +64,6 @@ const commands = [
             .setName("user")
             .setDescription("Member the referral is about")
             .setRequired(false),
-        )
-        .addStringOption((opt) =>
-          opt
-            .setName("note")
-            .setDescription(
-              `Your explanation — case input (max ${AUTOMOD_REFER_NOTE_MAX_LEN})`,
-            )
-            .setRequired(false)
-            .setMaxLength(AUTOMOD_REFER_NOTE_MAX_LEN),
         ),
     )
     .addSubcommand((sc) =>
@@ -223,6 +221,37 @@ const commands = [
                   "Set true to actually re-arm (without it this only previews)",
                 ),
             ),
+        ),
+    ),
+
+  // #771 §6: a THIN admin alias over the already-shipped automod-channel
+  // setting (`/automodconfig channel`, #725) — one queue, one source of
+  // truth. It writes the SAME column, keeps the @everyone-visibility
+  // warning, and lands its own audit rows.
+  new SlashCommandBuilder()
+    .setName("set-moderation-queue")
+    .setDescription("Point the auto-mod queue at a channel (alias of /automodconfig channel; admin).")
+    .setDefaultMemberPermissions(staffPerms)
+    .addSubcommand((sc) =>
+      sc
+        .setName("set")
+        .setDescription("Post auto-mod case cards (the queue) to this channel.")
+        .addChannelOption((opt) =>
+          opt
+            .setName("channel")
+            .setDescription("Text channel for the queue (restrict it to staff!)")
+            .addChannelTypes(
+              ChannelType.GuildText,
+              ChannelType.GuildAnnouncement,
+            )
+            .setRequired(true),
+        ),
+    )
+    .addSubcommand((sc) =>
+      sc
+        .setName("clear")
+        .setDescription(
+          "Unset the queue channel (referrals then refuse until it is set).",
         ),
     ),
 ];

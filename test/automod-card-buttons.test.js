@@ -222,6 +222,11 @@ function suggestRow(caseRow, action = "warn", subject = SUB, params = { reason: 
 const decisionField = (payload) => payload.embeds[0].fields[0].value;
 const buttonIds = (payload) =>
   (payload.components ?? []).flatMap((r) => (r.components ?? []).map((b) => b.custom_id));
+// #771: every rebuild carries the case-level queue row (Reveal + three
+// resolutions) while the case is open — these tests pin the PER-ROW buttons
+// retiring, so they look at the am:card:* legs only.
+const rowButtonIds = (payload) => buttonIds(payload).filter((id) => id.startsWith("am:card:"));
+const queueButtonIds = (payload) => buttonIds(payload).filter((id) => id.startsWith("am:case:"));
 
 function captureConsole() {
   const orig = console.error;
@@ -265,7 +270,14 @@ test("Approve runs the shared executor: warning recorded, the SAME note updated,
   assert.equal(w.cardMessage.edits.length, 1);
   const edited = w.cardMessage.edits[0];
   assert.match(decisionField(edited), /`warn` — \*\*executed\*\*/);
-  assert.deepEqual(buttonIds(edited), [], "a decided row never keeps buttons");
+  assert.deepEqual(rowButtonIds(edited), [], "a decided row never keeps buttons");
+  // #771: the queue row survives row decisions — the CASE is still open.
+  assert.deepEqual(queueButtonIds(edited), [
+    `am:case:reveal:${caseRow.id}`,
+    `am:case:resolve:recommended:${caseRow.id}`,
+    `am:case:resolve:manual:${caseRow.id}`,
+    `am:case:resolve:none:${caseRow.id}`,
+  ]);
 
   // Ephemeral: specific outcome, not a generic thank-you.
   assert.equal(it.replies.length, 1);
@@ -325,7 +337,7 @@ test("Approve with a DM-able member sends the standard warning DM — member-fac
   // …and the rebuilt card carries the executed line with the buttons gone.
   const edited = w.cardMessage.edits[0];
   assert.match(decisionField(edited), /`warn` — \*\*executed\*\*/);
-  assert.deepEqual(buttonIds(edited), []);
+  assert.deepEqual(rowButtonIds(edited), []);
 });
 
 test("double click: the second click says already handled and the mutation count stays 1 - issue #730", async () => {
@@ -513,7 +525,7 @@ test("Dismiss declines without running anything and records the dismissal on the
   const edited = w.cardMessage.edits[0];
   assert.ok(edited, "the card was edited from fresh rows");
   assert.match(decisionField(edited), /`timeout` — \*\*dismissed\*\*/);
-  assert.deepEqual(buttonIds(edited), []);
+  assert.deepEqual(rowButtonIds(edited), []);
   assert.match(it.replies[0].content, /\*\*dismissed\*\*/);
 });
 

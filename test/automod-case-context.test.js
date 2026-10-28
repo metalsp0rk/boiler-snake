@@ -933,7 +933,10 @@ describe("case context — never throws (rule 6) + bundle shape (for #728)", () 
         "window",
       ].sort(),
     );
-    assert.equal(ctx.schema, "automod-case-context/1");
+    // #771 /2: `referral.required_context` joins the bundle and the window
+    // counts become PER-CASE (modal values; legacy rows keep 40/10).
+    assert.equal(ctx.schema, "automod-case-context/2");
+    assert.equal("required_context" in ctx.referral, true, "#771 referral block carries the context field");
     assert.equal(ctx.case.case_ref, `A-${row.case_number}`);
     assert.equal(ctx.meta.collected_at, 1765000000000);
     assert.equal(ctx.meta.caps.before_window, READ_DISCORD_BEFORE_WINDOW);
@@ -969,6 +972,128 @@ describe("case context — never throws (rule 6) + bundle shape (for #728)", () 
     });
     assert.equal(res.ok, true, res.error);
     assert.equal(res.context.case.id, row.id);
+  });
+});
+
+// ── #771: the PER-CASE read window ─────────────────────────────────────────
+
+describe("#771 per-case read window", () => {
+  it("effectiveReadWindow: modal values clamp; legacy NULL rows keep 40/10", () => {
+    assert.deepEqual(
+      caseContext.effectiveReadWindow({ read_before: 250, read_after: 5 }),
+      { before: 250, after: 5 },
+    );
+    assert.deepEqual(caseContext.effectiveReadWindow({}), {
+      before: READ_DISCORD_BEFORE_WINDOW,
+      after: READ_DISCORD_AFTER_WINDOW,
+    });
+    assert.deepEqual(
+      caseContext.effectiveReadWindow({ read_before: "900", read_after: "-3" }),
+      { before: 500, after: 0 },
+      "the repository belt again at read time: 0–500, never beyond",
+    );
+    assert.deepEqual(
+      caseContext.effectiveReadWindow({ read_before: "abc", read_after: "" }),
+      { before: READ_DISCORD_BEFORE_WINDOW, after: READ_DISCORD_AFTER_WINDOW },
+      "garbage falls back to the historical pair",
+    );
+  });
+
+  it("the bundle reports what THIS case reads (caps + real window = modal values)", async () => {
+    const communityId = readyCommunity();
+    const row = makeCase(communityId, {
+      messageId: mid(ANCHOR_N),
+      channelId: SRC_CH,
+      targetUserId: TARGET,
+      readBefore: 30,
+      readAfter: 4,
+      requiredContext: "the thread that started this",
+    });
+    const channel = fakeMessageChannel({ messages: anchorSeed().all, deliver: "honest" });
+    const res = await caseContext.buildCaseContext({
+      communityId,
+      guildId: GUILD,
+      caseNumber: row.case_number,
+      deps: makeCtxDeps({ channel }),
+    });
+    assert.equal(res.ok, true, res.error);
+    assert.equal(res.context.meta.caps.before_window, 30);
+    assert.equal(res.context.meta.caps.after_window, 4);
+    assert.equal(res.context.window.messages.length, 1 + 30 + 4);
+    assert.equal(res.context.referral.required_context, "the thread that started this");
+  });
+
+  it("a 250-message read PAGINATES past the 100-per-fetch cap (three pages)", async () => {
+    const communityId = readyCommunity();
+    const row = makeCase(communityId, {
+      messageId: mid(ANCHOR_N),
+      channelId: SRC_CH,
+      targetUserId: TARGET,
+      readBefore: 250,
+      readAfter: 0,
+    });
+    const seed = [];
+    for (let n = 200; n < ANCHOR_N; n++) seed.push(msgAt(n, `u-b-${n % 4}`));
+    seed.push(msgAt(ANCHOR_N, ANCHOR_AUTHOR, "the offense"));
+    const channel = fakeMessageChannel({ messages: seed, deliver: "honest" });
+    const pageLimits = [];
+    const origFetch = channel.messages.fetch;
+    channel.messages.fetch = async (opts) => {
+      if (typeof opts !== "string") pageLimits.push(opts.limit);
+      return origFetch(opts);
+    };
+    const res = await caseContext.buildCaseContext({
+      communityId,
+      guildId: GUILD,
+      caseNumber: row.case_number,
+      deps: makeCtxDeps({ channel }),
+    });
+    assert.equal(res.ok, true, res.error);
+    assert.deepEqual(pageLimits, [100, 100, 50], "100-per-page cursor walk, exact remainder last");
+    assert.equal(res.context.window.messages.length, 251, "250 before + the anchor (0 after)");
+    assert.equal(res.context.window.messages[250].is_anchor, true);
+  });
+
+  it("a mid-pagination throw stays FAIL-CLOSED (a half-read window is never judged)", async () => {
+    const communityId = readyCommunity();
+    const row = makeCase(communityId, {
+      messageId: mid(ANCHOR_N),
+      channelId: SRC_CH,
+      targetUserId: TARGET,
+      readBefore: 250,
+      readAfter: 0,
+    });
+    const seed = [];
+    for (let n = 200; n < ANCHOR_N; n++) seed.push(msgAt(n, ANCHOR_AUTHOR));
+    seed.push(msgAt(ANCHOR_N, ANCHOR_AUTHOR, "the offense"));
+    const channel = fakeMessageChannel({ messages: seed, deliver: "honest" });
+    let windowFetches = 0;
+    const origFetch = channel.messages.fetch;
+    channel.messages.fetch = async (opts) => {
+      if (typeof opts !== "string") {
+        windowFetches += 1;
+        if (windowFetches === 2) throw Object.assign(new Error("429 rate limited"), { code: 429 });
+      }
+      return origFetch(opts);
+    };
+    const { res, lines } = await withCapturedLogs(() =>
+      caseContext.buildCaseContext({
+        communityId,
+        guildId: GUILD,
+        caseNumber: row.case_number,
+        deps: makeCtxDeps({ channel }),
+      }),
+    );
+    assert.equal(res.ok, false, "page 2 dying must not yield a 100-message 'complete' window");
+    assert.match(
+      res.error,
+      /half-read window/,
+      `the refusal names the law: ${res.error}`,
+    );
+    assert.ok(
+      lines.some((l) => l.includes("429 rate limited")),
+      "the real cause is logged, not just named around",
+    );
   });
 });
 

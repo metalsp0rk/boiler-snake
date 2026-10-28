@@ -66,7 +66,10 @@ const { ButtonBuilder, ButtonStyle } = require("discord.js");
 const { sliceSafe, snippet } = require("../../core/text");
 const { replyEphemeral } = require("../../core/interaction");
 const { requireStaff } = require("../../core/permissions");
-const { discordCommunityId } = require("../../platform/community");
+const { discordCommunityId, getCommunityById } = require("../../platform/community");
+const { recordSlashAudit } = require("../../core/auditTrail");
+const { logConfigChange } = require("../logs/auditLog");
+const { getDiscordOutbound } = require("../../platform/discord/outbound");
 const {
   db: facadeDb,
   getAutomodAction,
@@ -76,6 +79,8 @@ const {
   getStaffNote,
   updateStaffNote,
   isAutomodPaused,
+  revealAutomodCaseReporter,
+  resolveAutomodCase,
   MAX_NOTE_CONTENT,
 } = require("../../db");
 const {
@@ -83,6 +88,7 @@ const {
   CARD_APPROVE_PREFIX,
   CARD_DISMISS_PREFIX,
   AUTOMOD_CARD_MAX_BUTTON_ROWS,
+  AUTOMOD_CARD_MAX_BUTTON_ROWS_QUEUED,
   AUTOMOD_CARD_NOT_CONSIDERED_MAX,
   AUTOMOD_BREAKER_ACTIONS,
   AUTOMOD_NOTE_OUTCOME_HEADER,
@@ -90,12 +96,26 @@ const {
   AUTOMOD_DELETE_MAX_MESSAGES,
   AUTOMOD_CARD_TICKET_SUGGESTED_HEAD,
   AUTOMOD_CARD_TICKET_PROPOSED_LABEL,
+  AUTOMOD_CARD_SNIPPET_MAX,
+  AUTOMOD_CARD_REPORTER_HIDDEN,
+  CASE_RESOLUTION_LABELS,
+  CASE_REVEAL_PREFIX,
+  CASE_REVEAL_LABEL,
+  CASE_RESOLVE_RECOMMENDED_PREFIX,
+  CASE_RESOLVE_MANUAL_PREFIX,
+  CASE_RESOLVE_NONE_PREFIX,
+  CASE_RESOLVE_RECOMMENDED_LABEL,
+  CASE_RESOLVE_MANUAL_LABEL,
+  CASE_RESOLVE_NONE_LABEL,
 } = require("./constants");
 const { readSettings } = require("./settings");
 // Shared case-note discovery law + the anchor jump link (#733): card, harness,
 // and executor all read the SAME `(automod case A-n)` convention. #734 adds
 // the pair variant the suggested-delete rows render per targeted message.
 const { findCaseNoteRow, anchorJumpLink, messageJumpLink } = require("./caseNote");
+// The card's `**Window:**` line and the context collector read the SAME
+// per-case window (#771 §2) — one reader, no drift.
+const { effectiveReadWindow } = require("./caseContext");
 // READ-ONLY import of the shipped warnings feature (#733): the suggested-warn
 // card row shows the expiry the warning WILL honour — same accessor /warn add
 // uses, so the card can never promise a different date than the record lands.
@@ -445,11 +465,15 @@ function renderDecisionBody(rows, { noteRefs = {}, extraLines = [], caseRow = nu
  * @param {object[]} rows
  * @returns {{ components: object[]|null, overflow: number, pendingCount: number }}
  */
-function buildCardButtons(rows) {
+function buildCardButtons(rows, caseRow = null) {
+  const resolved = caseRow?.resolved_at != null;
   const pending = (Array.isArray(rows) ? rows : []).filter(
     (r) => r.state === "suggested" && r.action !== "no_action",
   );
-  const clamped = pending.slice(0, AUTOMOD_CARD_MAX_BUTTON_ROWS);
+  const cap = caseRow
+    ? Math.min(AUTOMOD_CARD_MAX_BUTTON_ROWS, AUTOMOD_CARD_MAX_BUTTON_ROWS_QUEUED)
+    : AUTOMOD_CARD_MAX_BUTTON_ROWS;
+  const clamped = pending.slice(0, cap);
   const overflow = pending.length - clamped.length;
 
   const buttons = clamped.flatMap((row) => [
@@ -457,25 +481,169 @@ function buildCardButtons(rows) {
       .setCustomId(`${CARD_APPROVE_PREFIX}${row.id}`)
       .setLabel(`Approve ${row.action}`)
       .setStyle(ButtonStyle.Primary)
+      .setDisabled(resolved)
       .toJSON(),
     new ButtonBuilder()
       .setCustomId(`${CARD_DISMISS_PREFIX}${row.id}`)
       .setLabel(`Dismiss ${row.action}`)
       .setStyle(ButtonStyle.Danger)
+      .setDisabled(resolved)
       .toJSON(),
   ]);
 
-  // Pack four buttons (two Approve+Dismiss pairs) per ActionRow — five rows
-  // × four = the 20-button clamp (AUTOMOD_CARD_MAX_BUTTON_ROWS × 2 ≤ 25).
+  // Pack four buttons (two Approve+Dismiss pairs) per ActionRow.
   const components = [];
   for (let i = 0; i < buttons.length; i += 4) {
     components.push({ type: 1, components: buttons.slice(i, i + 4) });
+  }
+  // #771: the queue row — Reveal + the three mutually exclusive case-level
+  // resolutions, packed as ONE trailing ActionRow. Ids carry only the
+  // integer case id; the arms re-read everything from the database (the
+  // buttons are a SHAPE, the row is the truth — same law as the row
+  // buttons). Disabled law: once resolved every queue button renders
+  // disabled (the arms re-check anyway — old cards answer "already
+  // resolved", never a second execution); a revealed card renders Reveal
+  // disabled (idempotence made visible).
+  if (caseRow) {
+    const revealed = caseRow.revealed_at != null;
+    const queueRow = [
+      new ButtonBuilder()
+        .setCustomId(`${CASE_REVEAL_PREFIX}${caseRow.id}`)
+        .setLabel(CASE_REVEAL_LABEL)
+        .setStyle(ButtonStyle.Secondary)
+        .setDisabled(resolved || revealed)
+        .toJSON(),
+      new ButtonBuilder()
+        .setCustomId(`${CASE_RESOLVE_RECOMMENDED_PREFIX}${caseRow.id}`)
+        .setLabel(CASE_RESOLVE_RECOMMENDED_LABEL)
+        .setStyle(ButtonStyle.Primary)
+        .setDisabled(resolved)
+        .toJSON(),
+      new ButtonBuilder()
+        .setCustomId(`${CASE_RESOLVE_MANUAL_PREFIX}${caseRow.id}`)
+        .setLabel(CASE_RESOLVE_MANUAL_LABEL)
+        .setStyle(ButtonStyle.Secondary)
+        .setDisabled(resolved)
+        .toJSON(),
+      new ButtonBuilder()
+        .setCustomId(`${CASE_RESOLVE_NONE_PREFIX}${caseRow.id}`)
+        .setLabel(CASE_RESOLVE_NONE_LABEL)
+        .setStyle(ButtonStyle.Secondary)
+        .setDisabled(resolved)
+        .toJSON(),
+    ];
+    components.push({ type: 1, components: queueRow });
   }
   return {
     components: components.length ? components : null,
     overflow,
     pendingCount: pending.length,
   };
+}
+
+/* ── queue lines + reporter anonymity (#771) ──────────────────────────────── */
+
+/**
+ * The ONE anonymity rule, shipped as one function: while a case is
+ * UNREVEALED the queue shows `**Reporter:** hidden` — the reporter id stays
+ * on the row and is never rendered. The harness's live-run summary twins,
+ * the placeholder, and the interrupted notice honour the same lead (they
+ * call THIS). After the first staff Reveal press the shipped
+ * `**Referred by:** <@staff>` line returns byte-for-byte.
+ *
+ * @param {object} caseRow the automod_cases row
+ * @returns {string}
+ */
+function reporterLeadFor(caseRow) {
+  return caseRow?.revealed_at != null
+    ? `**Referred by:** <@${caseRow.referrer_user_id ?? "?"}>`
+    : AUTOMOD_CARD_REPORTER_HIDDEN;
+}
+
+/** `YYYY-MM-DD HH:MM UTC` — deterministic, test-pinnable, log-copyable. */
+function formatStamp(ms) {
+  const n = Number(ms);
+  if (!Number.isFinite(n)) return "unknown";
+  try {
+    return new Date(n).toISOString().slice(0, 16).replace("T", " ") + " UTC";
+  } catch {
+    return "unknown";
+  }
+}
+
+/** Discord guild snowflake for a community (jump-link builder helper).
+ *  `getCommunityById` returns the camelCase view — read both shapes. */
+function guildIdForCommunity(communityId) {
+  try {
+    const c = getCommunityById(Number(communityId));
+    if (!c || String(c.platform ?? "") !== "discord") return null;
+    return String(c.externalGuildId ?? c.external_guild_id ?? "").trim() || null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The description lines ABOVE the bystander line (#771 §4), derived from
+ * the case row alone:
+ *  - `**Reported message:**` jump link + intake snippet (anchor cases);
+ *  - `**Reported problem:**` the modal's required problem statement;
+ *  - `**Required context:**` when the modal carried one;
+ *  - `**What happened:**` the harness's persisted estimate (complete runs).
+ * Absent facts are OMITTED, never faked — an old card rebuild simply shows
+ * fewer lines.
+ */
+function queueFrontLinesFor(caseRow) {
+  if (!caseRow) return [];
+  const lines = [];
+  if (caseRow.message_id != null) {
+    const jump = messageJumpLink(
+      guildIdForCommunity(caseRow.community_id),
+      caseRow.channel_id,
+      caseRow.message_id,
+    );
+    const snip = String(caseRow.message_snippet ?? "").trim();
+    const shown = snip ? ` — “${sliceSafe(snip, AUTOMOD_CARD_SNIPPET_MAX)}”` : "";
+    lines.push(
+      jump
+        ? `**Reported message:** [jump](${jump})${shown}`
+        : `**Reported message:** \`${caseRow.message_id}\`${shown}`,
+    );
+  }
+  const problem = String(caseRow.note ?? "").trim();
+  if (problem) lines.push(`**Reported problem:** ${sliceSafe(problem, 1000)}`);
+  const context = String(caseRow.required_context ?? "").trim();
+  if (context) lines.push(`**Required context:** ${sliceSafe(context, 1000)}`);
+  const incident = String(caseRow.incident_summary ?? "").trim();
+  if (incident) lines.push(`**What happened:** ${sliceSafe(incident, 1000)}`);
+  return lines;
+}
+
+/**
+ * The lines BELOW the bystander line (#771 §2/§5):
+ *  - `**Window:** N before / M after` — the window the case ACTUALLY uses
+ *    (per-case modal values; legacy NULL rows resolve to the historical
+ *    40/10). Anchor cases only — a user-scan case reads a bounded scan
+ *    instead, and the line would lie.
+ *  - `**Resolved:** <@staff> — <label> · <stamp>` after any case-level
+ *    resolution (who + what is recorded on the card itself).
+ */
+function queueTailLinesFor(caseRow) {
+  if (!caseRow) return [];
+  const lines = [];
+  if (caseRow.message_id != null) {
+    const { before, after } = effectiveReadWindow(caseRow);
+    lines.push(`**Window:** ${before} before / ${after} after`);
+  }
+  if (caseRow.resolved_at != null) {
+    const label =
+      CASE_RESOLUTION_LABELS[String(caseRow.resolution ?? "")] ??
+      String(caseRow.resolution ?? "resolved");
+    lines.push(
+      `**Resolved:** <@${caseRow.resolved_by_user_id ?? "?"}> — ${label} · ${formatStamp(caseRow.resolved_at)}`,
+    );
+  }
+  return lines;
 }
 
 /* ── the payload builders ─────────────────────────────────────────────────── */
@@ -519,7 +687,11 @@ function buildCardPayload({
   rowReadError = null,
   withButtons = true,
 } = {}) {
-  const lines = [summaryText ?? ""].filter(Boolean);
+  // #771 §4 queue shape: reporter line → reported message → problem →
+  // required context → what happened → [seen-not-considered] → window →
+  // resolved. Every line derives from the case row alone, so a rebuild
+  // after a restart renders byte-identically.
+  const lines = [summaryText ?? "", ...queueFrontLinesFor(caseRow)].filter(Boolean);
   const seen = (Array.isArray(notConsidered) ? notConsidered : [])
     .map((id) => String(id ?? "").trim())
     .filter((id) => /^\d{17,20}$/.test(id));
@@ -530,6 +702,7 @@ function buildCardPayload({
       `**Seen, not considered:** ${shown.join(" ")}${extra > 0 ? ` … +${extra} more` : ""}`,
     );
   }
+  lines.push(...queueTailLinesFor(caseRow));
 
   const bodyExtras = [...(rowReadError
     ? [`- **Action rows:** the ledger could not be re-read (${sliceSafe(String(rowReadError), 200)}) — every row still lives in the database.`]
@@ -537,7 +710,7 @@ function buildCardPayload({
     ...(Array.isArray(extraLines) ? extraLines : [])];
   // The overflow line is reserved BEFORE the body truncates — a full field
   // must never chop the line that explains the missing buttons.
-  const { components, overflow } = buildCardButtons(rows);
+  const { components, overflow } = buildCardButtons(rows, caseRow ?? null);
   const overflowSuffix =
     overflow > 0
       ? `\n**More pending rows:** ${overflow} pending row(s) have no buttons on this card — approve or dismiss the earlier ones and the rebuilt card carries them.`
@@ -745,18 +918,20 @@ function buildCardFromCase({ communityId, caseId, botUserId = null, deps = {} } 
 
 /**
  * The summary line a REBUILD carries (no live run behind it). It keeps the
- * harness's referrer-visible family: `**Referred by:** <@staff> — <state>`.
+ * harness's state family — `**Referred by:** <@staff> — <state>` — but the
+ * lead is the #771 anonymity helper: while the case is unrevealed it reads
+ * `**Reporter:** hidden — <state>` and the referrer is never rendered.
  */
 function defaultSummaryFor(caseRow) {
-  const referrer = caseRow.referrer_user_id ? `<@${caseRow.referrer_user_id}>` : "<@?>";
+  const lead = reporterLeadFor(caseRow);
   switch (String(caseRow.status ?? "")) {
     case "failed":
-      return `**Referred by:** ${referrer} — automod run failed: ${caseRow.last_run_error ?? "unknown error"}`;
+      return `${lead} — automod run failed: ${caseRow.last_run_error ?? "unknown error"}`;
     case "recorded":
     case "processing":
-      return `**Referred by:** ${referrer} — the review run has not finished; this card reflects the rows recorded so far.`;
+      return `${lead} — the review run has not finished; this card reflects the rows recorded so far.`;
     default:
-      return `**Referred by:** ${referrer} — review complete.`;
+      return `${lead} — review complete.`;
   }
 }
 
@@ -1116,6 +1291,21 @@ async function handleCardApprove(interaction, ctx) {
         allowedMentions: { parse: [] },
       });
 
+    // #771 §5: a case-level resolution retires the per-row buttons — an
+    // old card answers honestly (its rebuild already disabled/removed
+    // them; this is the belt for a card whose rebuild failed).
+    if (caseRow.resolved_at != null) {
+      await finish(rowArmResolvedLine(caseRow));
+      await refreshCaseCard({
+        interaction,
+        communityId,
+        guildId,
+        caseRow,
+        client: ctx?.supervisor?.discord ?? interaction?.client ?? null,
+      });
+      return;
+    }
+
     // Row already terminal? The double-click / old-card path: show the
     // EXISTING outcome (never an error, never a re-run) and re-render the
     // card from the ledger so the buttons drop off.
@@ -1278,6 +1468,20 @@ async function handleCardDismiss(interaction, ctx) {
         allowedMentions: { parse: [] },
       });
 
+    // #771 §5: case-level resolution retires the per-row buttons (belt —
+    // same law as the Approve arm).
+    if (caseRow.resolved_at != null) {
+      await finish(rowArmResolvedLine(caseRow));
+      await refreshCaseCard({
+        interaction,
+        communityId,
+        guildId,
+        caseRow,
+        client: ctx?.supervisor?.discord ?? interaction?.client ?? null,
+      });
+      return;
+    }
+
     if (row.action === "no_action") {
       await finish(`**Case:** ${caseRef} · \`${row.action}\` → ${REFUSAL_NO_ACTION}`);
       return;
@@ -1365,6 +1569,541 @@ async function handleCardDismiss(interaction, ctx) {
   }
 }
 
+/* ── case-level queue arms (#771 §3/§5) ───────────────────────────────────── */
+
+/** Structured decision-log tag for a case-level resolution (meta entry,
+ *  underscore-prefixed like the other card tags). */
+const QUEUE_RESOLUTION_TOOL = "_queue_resolution";
+
+/** Parse `am:case:<verb>:<caseId>` (the row-id parser's case-level twin). */
+function parseCaseButtonId(customId, prefix) {
+  const id = String(customId ?? "");
+  if (!id.startsWith(prefix)) {
+    return {
+      ok: false,
+      error: `This queue button is malformed (customId \`${sliceSafe(id, 80)}\`) — nothing was run.`,
+    };
+  }
+  const tail = id.slice(prefix.length).trim();
+  const caseId = Number(tail);
+  if (!Number.isInteger(caseId) || caseId < 1) {
+    return {
+      ok: false,
+      error: `This queue button carries an invalid case id (\`${sliceSafe(tail, 40)}\`) — nothing was run.`,
+    };
+  }
+  return { ok: true, caseId };
+}
+
+/**
+ * Shared preamble for the CASE-level arms: raw-button shape belt, staff
+ * gate (any staff member; `requireStaff` owns the denial reply), community
+ * map, and the case cross-community check — the exact law the row-button
+ * preamble enforces, aimed at the case row instead of a ledger row.
+ */
+async function caseArmPreamble(interaction, prefix, what) {
+  if (
+    typeof interaction?.isButton !== "function" ||
+    !interaction.isButton?.() ||
+    typeof interaction?.customId !== "string"
+  ) {
+    await replyEphemeral(interaction, {
+      content: NOT_ON_FLUXER,
+      allowedMentions: { parse: [] },
+    });
+    return { ok: false, silent: true };
+  }
+  if (!(await requireStaff(interaction))) return { ok: false, silent: true };
+  const parsed = parseCaseButtonId(interaction.customId, prefix);
+  if (!parsed.ok) {
+    await replyEphemeral(interaction, {
+      content: parsed.error,
+      allowedMentions: { parse: [] },
+    });
+    return { ok: false, silent: true };
+  }
+  const guildId = interaction.guildId ?? interaction.guild?.id ?? null;
+  const communityId = discordCommunityId(guildId);
+  if (communityId == null) {
+    await replyEphemeral(interaction, {
+      content:
+        `**Server not registered:** this guild (\`${sliceSafe(String(guildId), 32)}\`) has no community row — ` +
+        "the bot cannot map the case it belongs to. Nothing was run.",
+      allowedMentions: { parse: [] },
+    });
+    return { ok: false, silent: true };
+  }
+  const caseRow = getAutomodCaseById(parsed.caseId);
+  if (!caseRow || Number(caseRow.community_id) !== communityId) {
+    await replyEphemeral(interaction, {
+      content:
+        `No auto-mod case #${parsed.caseId} in this community — this queue button cannot ${what} here. Nothing was run.`,
+      allowedMentions: { parse: [] },
+    });
+    return { ok: false, silent: true };
+  }
+  return { ok: true, communityId, guildId, caseRow };
+}
+
+/**
+ * Append one structured `_queue_resolution` entry to the persisted
+ * decision_log (#771 §5: every outcome lands there). Same SQL posture as
+ * `recordCardPostError` — touches ONLY the `decision_log` column, never
+ * throws (the ledger rows remain the operational truth).
+ */
+function appendQueueResolutionEntry(caseId, { resolution, staffUserId, summary }, { db: dbHandle = facadeDb } = {}) {
+  try {
+    const id = Number(caseId);
+    if (!Number.isInteger(id) || id < 1) return;
+    const row = dbHandle.prepare(`SELECT decision_log FROM automod_cases WHERE id=?`).get(id);
+    if (!row) return;
+    let log = [];
+    try {
+      const parsed = JSON.parse(row.decision_log ?? "[]");
+      if (Array.isArray(parsed)) log = parsed;
+    } catch {
+      log = [];
+    }
+    log.push({
+      seq: log.length + 1,
+      tool: QUEUE_RESOLUTION_TOOL,
+      args_summary: `${resolution} by staff:${staffUserId}`,
+      state: "recorded",
+      result_or_error: sliceSafe(String(summary ?? ""), 400),
+    });
+    dbHandle
+      .prepare(`UPDATE automod_cases SET decision_log=? WHERE id=?`)
+      .run(JSON.stringify(log), id);
+  } catch (err) {
+    console.error(
+      `[automod] queue resolution log failed (case #${caseId ?? "?"}):`,
+      err?.message || err,
+    );
+  }
+}
+
+/**
+ * `am:case:reveal:<caseId>` — reporter anonymity is the DEFAULT; this arm
+ * lifts it for ONE case (contract §3): single-winner reveal (first press
+ * wins, every later press notes it is already revealed and audits NOTHING),
+ * the audit trail names WHO revealed WHICH case WHEN (`recordSlashAudit` +
+ * the audit-channel embed — the exact `/automodconfig` mutation idiom), and
+ * the card rebuild renders the returned `**Referred by:**` line with the
+ * Reveal button disabled.
+ *
+ * @param {import("discord.js").ButtonInteraction} interaction
+ * @param {object} [ctx]
+ */
+async function handleCaseReveal(interaction, ctx) {
+  try {
+    const pre = await caseArmPreamble(interaction, CASE_REVEAL_PREFIX, "reveal the reporter");
+    if (!pre.ok) return;
+    const { communityId, guildId, caseRow } = pre;
+    const staffUserId = String(interaction.user?.id ?? "unknown");
+    const caseRef = caseRefOf(caseRow);
+    const client = ctx?.supervisor?.discord ?? interaction?.client ?? null;
+
+    const finish = (message, extraLines = []) =>
+      replyEphemeral(interaction, {
+        content: sliceSafe([message, ...extraLines].filter(Boolean).join("\n"), 3900),
+        allowedMentions: { parse: [] },
+      });
+
+    const alreadyLine = (byUserId, stamp) =>
+      `**Already revealed:** <@${byUserId ?? "?"}> revealed the reporter (${formatStamp(stamp)}) — no duplicate audit row.`;
+
+    if (caseRow.revealed_at != null) {
+      await finish(alreadyLine(caseRow.revealed_by_user_id, caseRow.revealed_at));
+      await refreshCaseCard({ interaction, communityId, guildId, caseRow, client });
+      return;
+    }
+
+    const res = revealAutomodCaseReporter(caseRow.id, staffUserId);
+    if (!res.ok) {
+      console.error(
+        `[automod] case ${caseRef} reveal failed ${idTag({ communityId, guildId, caseId: caseRow.id })}: ${res.error}`,
+      );
+      await finish(res.error);
+      return;
+    }
+    if (!res.revealed) {
+      // Lost a race with a concurrent press: honest note, ZERO new audit.
+      await finish(alreadyLine(res.case.revealed_by_user_id, res.case.revealed_at));
+      await refreshCaseCard({ interaction, communityId, guildId, caseRow, client });
+      return;
+    }
+
+    // WHO revealed WHICH case, on both trails (the #725 mutation idiom).
+    recordSlashAudit({
+      interaction,
+      communityId,
+      action: "automod.reporter_revealed",
+      targetType: "case",
+      targetId: String(caseRow.id),
+      details: {
+        case_number: caseRow.case_number,
+        reporter_user_id: caseRow.referrer_user_id,
+      },
+    });
+    await logConfigChange(getDiscordOutbound(client), guildId, {
+      title: "Automod reporter revealed",
+      command: "case card — Reveal reporter",
+      actor: interaction.user,
+      changes: [
+        `Case ${caseRef}: reporter <@${caseRow.referrer_user_id ?? "?"}> revealed by <@${staffUserId}>.`,
+      ],
+    }).catch(() => {});
+
+    const refreshed = await refreshCaseCard({
+      interaction,
+      communityId,
+      guildId,
+      caseRow,
+      client,
+    });
+    const warnings = [];
+    if (!refreshed.ok) {
+      warnings.push(
+        `**Card:** the case card could not be updated (${refreshed.error}) — the reveal itself is recorded.`,
+      );
+    }
+    await finish(
+      `**Reporter revealed:** <@${caseRow.referrer_user_id ?? "?"}> — case ${caseRef}. This reveal is on the audit trail.`,
+      warnings,
+    );
+  } catch (err) {
+    console.error(
+      "[automod] card reveal handler failed:",
+      `guild=${interaction?.guildId ?? "?"}`,
+      `user=${interaction?.user?.id ?? "?"}`,
+      `customId=${String(interaction?.customId ?? "?").slice(0, 120)}`,
+      err?.message || err,
+    );
+    throw err;
+  }
+}
+
+/** Card-side row gates for the recommended arm (mirrors the Approve arm's
+ *  pre-gates; the executor re-guards again at run time — this only shapes
+ *  the per-action report lines). Returns the refusal line or null. */
+function rowPreGate(communityId, row, settings) {
+  if (row.action === "no_action") return REFUSAL_NO_ACTION;
+  if (!settings.ok) {
+    return `could not read the automod settings — ${settings.error}`;
+  }
+  if (!settings.settings.enabled) return REFUSAL_MASTER_OFF;
+  const mode = settings.settings.modes?.[row.action] ?? "suggest";
+  if (mode === "off") return refusalModeOff(row.action);
+  if (AUTOMOD_BREAKER_ACTIONS.includes(row.action)) {
+    const pause = isAutomodPaused(communityId);
+    if (pause.paused) return refusalPaused(row.action, pause.reason);
+  }
+  return null;
+}
+
+/**
+ * The three case-level resolutions (#771 §5) share this core. The FIRST
+ * valid staff click wins (`resolveAutomodCase`'s single-winner UPDATE — the
+ * loser sees the EXISTING resolution, never an error, runs nothing); after
+ * the claim:
+ *  - `recommended`: every pending non-`no_action` row runs through the
+ *    SHARED executor with the full #729 guard set (card-side pre-gates
+ *    mirror the Approve arm; the executor re-guards + claims atomically).
+ *    PARTIAL failures report PER ACTION — never a false "all done".
+ *  - `manual` / `none`: ZERO bot execution; pending suggestions are marked
+ *    superseded on the ledger, and the outcome lands on the decision_log
+ *    AND the subjects' SAME staff notes (#731 merge law).
+ * Then: decision_log entry, audit row + embed, card rebuild (disabled
+ * buttons + the `**Resolved:**` line), per-action ephemeral report.
+ */
+async function resolveCaseCore(interaction, ctx, resolution, prefix, verbLabel) {
+  const pre = await caseArmPreamble(interaction, prefix, verbLabel);
+  if (!pre.ok) return;
+  const { communityId, guildId, caseRow } = pre;
+  const staffUserId = String(interaction.user?.id ?? "unknown");
+  const caseRef = caseRefOf(caseRow);
+  const ids = { communityId, guildId, caseId: caseRow.id, caseNumber: caseRow.case_number };
+  const client = ctx?.supervisor?.discord ?? interaction?.client ?? null;
+
+  const finish = (message, extraLines = []) =>
+    replyEphemeral(interaction, {
+      content: sliceSafe([message, ...extraLines].filter(Boolean).join("\n"), 3900),
+      allowedMentions: { parse: [] },
+    });
+
+  const existingLine = (row) =>
+    `**Case:** ${caseRef} → **already resolved** — <@${row.resolved_by_user_id ?? "?"}> closed it as ` +
+    `\`${CASE_RESOLUTION_LABELS[String(row.resolution ?? "")] ?? row.resolution}\` (${formatStamp(row.resolved_at)}) — nothing was run.`;
+
+  if (caseRow.resolved_at != null) {
+    await finish(existingLine(caseRow));
+    await refreshCaseCard({ interaction, communityId, guildId, caseRow, client });
+    return;
+  }
+
+  const claim = resolveAutomodCase(caseRow.id, resolution, staffUserId);
+  if (!claim.ok) {
+    console.error(
+      `[automod] case ${caseRef} resolve failed ${idTag(ids)} (${resolution}): ${claim.error}`,
+    );
+    await finish(claim.error);
+    return;
+  }
+  if (!claim.won) {
+    // Double click / race: the FIRST resolution stands; this click ran
+    // nothing (contract: first valid staff click wins).
+    await finish(existingLine(claim.case));
+    await refreshCaseCard({ interaction, communityId, guildId, caseRow, client });
+    return;
+  }
+
+  const fresh = claim.case;
+  const lines = [];
+  const noteWarnings = [];
+  const settings = readSettings(communityId);
+  let rows = [];
+  try {
+    rows = listAutomodActionsForCase(communityId, fresh.id) ?? [];
+  } catch (err) {
+    rows = [];
+    lines.push(
+      `**Action rows:** the ledger could not be re-read (${sliceSafe(String(err?.message ?? err), 200)}) — nothing was executed by this arm.`,
+    );
+  }
+  const pending = rows.filter(
+    (r) => r.state === "suggested" && r.action !== "no_action",
+  );
+
+  if (resolution === "recommended") {
+    if (pending.length === 0 && !lines.length) {
+      lines.push("Nothing was pending — the case is closed without running anything.");
+    }
+    for (const row of pending) {
+      const gate = rowPreGate(communityId, row, settings);
+      if (gate) {
+        lines.push(`\`${row.action}\` → ${gate}`);
+        continue;
+      }
+      const res = await approveSuggestion({
+        actionRowId: row.id,
+        claimant: `staff:${staffUserId}`,
+        deps: { client },
+        referrerUserId: fresh.referrer_user_id ?? null,
+      });
+      const outcome = classifyOutcome(res, getAutomodAction(row.id) ?? row);
+      lines.push(`\`${row.action}\` → **${outcome.label}** — ${outcome.detail}`);
+      if (outcome.terminal && res?.deduped !== true) {
+        const note = findCaseNoteRow({
+          communityId,
+          userId: row.subject_user_id,
+          caseNumber: fresh.case_number,
+          botUserId: interaction?.client?.user?.id ?? client?.user?.id ?? null,
+        });
+        if (!note) {
+          noteWarnings.push(
+            `**Staff note (${row.action}):** no automod note for this subject — the outcome could not be recorded (the row state above is the ledger's truth).`,
+          );
+        } else {
+          const recorded = updateNoteOutcome({
+            communityId,
+            noteNumber: note.note_number,
+            outcomeLine: outcomeLineFor({
+              verb: "approve",
+              staffUserId,
+              state: outcome.state,
+              detail: `case-level resolution — ${outcome.detail}`,
+            }),
+            editedBy: staffUserId,
+          });
+          if (!recorded.ok) {
+            noteWarnings.push(`**Staff note N-${note.note_number}:** ${recorded.error}`);
+          }
+        }
+      }
+    }
+  } else {
+    // manual / none — NO bot execution. Pending suggestions are superseded
+    // on the ledger; the outcome records on the decision_log (below) AND on
+    // the subjects' SAME staff notes.
+    const supersedeNote =
+      resolution === "manual"
+        ? `Superseded — manual action taken by <@${staffUserId}>`
+        : `Superseded — no action taken by <@${staffUserId}>`;
+    let superseded = 0;
+    for (const row of pending) {
+      const res = await dismissSuggestion({
+        actionRowId: row.id,
+        claimant: `staff:${staffUserId}`,
+        note: supersedeNote,
+      });
+      if (res?.ok || res?.deduped) superseded += 1;
+      else {
+        lines.push(
+          `\`${row.action}\` → could not be marked superseded — ${res?.error ?? "no cause recorded"}`,
+        );
+      }
+    }
+    lines.push(
+      pending.length > 0
+        ? `${superseded} pending suggestion(s) marked superseded — no bot execution.`
+        : "Nothing was pending.",
+    );
+    const outcomeLine =
+      resolution === "manual"
+        ? `Outcome: case ${caseRef} resolved as \`manual action taken\` by <@${staffUserId}> — staff handled it; pending suggestions were superseded.`
+        : `Outcome: case ${caseRef} resolved as \`no action taken\` by <@${staffUserId}> — closed without sanction.`;
+    // Subjects whose SAME note carries the outcome: every considered row
+    // subject PLUS the case's named target (a zero-row case can still
+    // carry a harness note for the referred member).
+    const subjects = [
+      ...new Set(
+        [...rows.map((r) => r.subject_user_id), fresh.target_user_id]
+          .map((id) => String(id ?? "").trim())
+          .filter(Boolean),
+      ),
+    ];
+    for (const subject of subjects) {
+      const note = findCaseNoteRow({
+        communityId,
+        userId: subject,
+        caseNumber: fresh.case_number,
+        botUserId: interaction?.client?.user?.id ?? client?.user?.id ?? null,
+      });
+      if (!note) continue; // a subject without an automod note records nothing (not a failure)
+      const recorded = updateNoteOutcome({
+        communityId,
+        noteNumber: note.note_number,
+        outcomeLine,
+        editedBy: staffUserId,
+      });
+      if (!recorded.ok) {
+        noteWarnings.push(`**Staff note N-${note.note_number}:** ${recorded.error}`);
+      }
+    }
+  }
+
+  // The durable records: decision_log entry + audit row + audit embed.
+  appendQueueResolutionEntry(fresh.id, {
+    resolution,
+    staffUserId,
+    summary: lines.join(" | "),
+  });
+  recordSlashAudit({
+    interaction,
+    communityId,
+    action: "automod.case_resolve",
+    targetType: "case",
+    targetId: String(fresh.id),
+    details: { case_number: fresh.case_number, resolution },
+  });
+  await logConfigChange(getDiscordOutbound(client), guildId, {
+    title: "Automod case resolved",
+    command: `case card — ${verbLabel}`,
+    actor: interaction.user,
+    changes: [`Case ${caseRef} resolved as \`${resolution}\` by <@${staffUserId}>.`],
+  }).catch(() => {});
+
+  const refreshed = await refreshCaseCard({
+    interaction,
+    communityId,
+    guildId,
+    caseRow,
+    client,
+  });
+  const warnings = [...noteWarnings];
+  if (!refreshed.ok) {
+    warnings.push(
+      `**Card:** the case card could not be updated (${refreshed.error}) — the resolution above is the database's truth.`,
+    );
+  }
+  await finish(
+    `**Case:** ${caseRef} → **resolved** — \`${resolution}\` by <@${staffUserId}>.`,
+    [...lines, ...warnings],
+  );
+}
+
+/** `am:case:resolve:recommended:<caseId>` — run the pending set. */
+async function handleCaseResolveRecommended(interaction, ctx) {
+  try {
+    await resolveCaseCore(
+      interaction,
+      ctx,
+      "recommended",
+      CASE_RESOLVE_RECOMMENDED_PREFIX,
+      CASE_RESOLVE_RECOMMENDED_LABEL,
+    );
+  } catch (err) {
+    console.error(
+      "[automod] case resolve(recommended) handler failed:",
+      `guild=${interaction?.guildId ?? "?"}`,
+      `user=${interaction?.user?.id ?? "?"}`,
+      `customId=${String(interaction?.customId ?? "?").slice(0, 120)}`,
+      err?.message || err,
+    );
+    throw err;
+  }
+}
+
+/** `am:case:resolve:manual:<caseId>` — staff handled it; nothing runs. */
+async function handleCaseResolveManual(interaction, ctx) {
+  try {
+    await resolveCaseCore(
+      interaction,
+      ctx,
+      "manual",
+      CASE_RESOLVE_MANUAL_PREFIX,
+      CASE_RESOLVE_MANUAL_LABEL,
+    );
+  } catch (err) {
+    console.error(
+      "[automod] case resolve(manual) handler failed:",
+      `guild=${interaction?.guildId ?? "?"}`,
+      `user=${interaction?.user?.id ?? "?"}`,
+      `customId=${String(interaction?.customId ?? "?").slice(0, 120)}`,
+      err?.message || err,
+    );
+    throw err;
+  }
+}
+
+/** `am:case:resolve:none:<caseId>` — close without sanction. */
+async function handleCaseResolveNone(interaction, ctx) {
+  try {
+    await resolveCaseCore(
+      interaction,
+      ctx,
+      "none",
+      CASE_RESOLVE_NONE_PREFIX,
+      CASE_RESOLVE_NONE_LABEL,
+    );
+  } catch (err) {
+    console.error(
+      "[automod] case resolve(none) handler failed:",
+      `guild=${interaction?.guildId ?? "?"}`,
+      `user=${interaction?.user?.id ?? "?"}`,
+      `customId=${String(interaction?.customId ?? "?").slice(0, 120)}`,
+      err?.message || err,
+    );
+    throw err;
+  }
+}
+
+/**
+ * Row-arm guard (#771 §5): once the CASE is resolved, per-row Approve/
+ * Dismiss are retired — an old card answers honestly with the resolution
+ * (the rebuild already disabled/removed those buttons; this is the belt
+ * for a card whose rebuild failed).
+ */
+function rowArmResolvedLine(caseRow) {
+  const label =
+    CASE_RESOLUTION_LABELS[String(caseRow?.resolution ?? "")] ??
+    String(caseRow?.resolution ?? "resolved");
+  return (
+    `**Case resolved:** ${caseRefOf(caseRow)} was closed as \`${label}\` by ` +
+    `<@${caseRow?.resolved_by_user_id ?? "?"}> — per-row Approve/Dismiss are retired. Nothing was run.`
+  );
+}
+
 module.exports = {
   // Colors + caps shared with the harness post family:
   COLORS,
@@ -1391,6 +2130,21 @@ module.exports = {
   parseCardButtonId,
   handleCardApprove,
   handleCardDismiss,
+  // Case-level queue surface (#771): anonymity reader, queue lines, the
+  // reveal + three resolution arms, and the decision-log tag they write.
+  reporterLeadFor,
+  queueFrontLinesFor,
+  queueTailLinesFor,
+  formatStamp,
+  parseCaseButtonId,
+  caseArmPreamble,
+  QUEUE_RESOLUTION_TOOL,
+  appendQueueResolutionEntry,
+  handleCaseReveal,
+  handleCaseResolveRecommended,
+  handleCaseResolveManual,
+  handleCaseResolveNone,
+  rowArmResolvedLine,
   // Copy constants (docs quote them; tests pin them):
   REFUSAL_MASTER_OFF,
   refusalModeOff,

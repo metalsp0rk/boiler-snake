@@ -9,8 +9,9 @@
  *    link format → cross-guild → gone channel → referrer viewability → gone
  *    message);
  *  - happy paths for every shape (message-only / user-only / both / the
- *    context-menu arm), the A-n per-community allocation (staffNotes N-n
- *    precedent) with two communities independent;
+ *    context-menu arm — #771: both arms OPEN THE REFERRAL MODAL and the
+ *    case is written on submit), the A-n per-community allocation
+ *    (staffNotes N-n precedent) with two communities independent;
  *  - the budget is READ, never consumed here (consumeAutomodCase is #728's
  *    accept-time seam) and the breaker PAUSE is never a refusal (contract-
  *    explicit pin);
@@ -526,8 +527,55 @@ function makeMenuInteraction({
       replies.push(payload);
       return payload;
     },
+    // #771: the invoke OPENS THE REFERRAL MODAL — the arm calls
+    // interaction.showModal(builder); the fake records the payload so the
+    // test can submit it like Discord would.
+    showModal: async (modal) => {
+      interaction.shownModal = typeof modal?.toJSON === "function" ? modal.toJSON() : modal;
+    },
   };
   return interaction;
+}
+
+/**
+ * #771 intake flow driver: invoke the menu, then submit the modal it opened
+ * with the given field values (Problem etc.). Returns the SUBMIT fake whose
+ * `replies` carry the ack/refusal; a pre-modal refusal carries its reply on
+ * the invoke interaction instead (shownModal stays unset).
+ */
+async function menuFlow(interaction, fields = {}) {
+  await automod.handlers["Refer to automod"](interaction, {});
+  if (!interaction.shownModal) return interaction;
+  const referModal = require("../src/features/automod/referModal");
+  const submit = makeModalSubmit(interaction, fields);
+  await referModal.handleReferModal(submit, {});
+  return submit;
+}
+
+/** ModalSubmit fake re-using the opener's guild/member/staff legs. */
+function makeModalSubmit(open, fields = {}) {
+  const merged = { problem: "posted slurs", ...fields };
+  const replies = [];
+  return {
+    isModalSubmit: () => true,
+    customId: open.shownModal.custom_id,
+    guildId: open.guildId,
+    guild: open.guild,
+    user: open.user,
+    member: open.member,
+    memberPermissions: open.memberPermissions,
+    fields: {
+      getTextInputValue: (id) => {
+        if (id in merged) return merged[id] ?? "";
+        throw new Error(`unknown modal field: ${id}`);
+      },
+    },
+    replies,
+    reply: async (payload) => {
+      replies.push(typeof payload === "string" ? { content: payload } : payload);
+      return payload;
+    },
+  };
 }
 
 /** Fresh guild + configured community for one menu test (independent A-n). */
@@ -542,31 +590,57 @@ function readyMenuGuild(label) {
 
 const menuContent = (interaction) => String(interaction.replies[0]?.content ?? "");
 
-describe('"Refer to automod" context menu (handleReferContextMenu)', () => {
+describe('"Refer to automod" context menu (#726 intake — #771: modal first)', () => {
   it("resolves the target through options.getMessage('message') — literal pin", async () => {
-    const { guildId, communityId } = readyMenuGuild("menu-resolve");
+    const { guildId } = readyMenuGuild("menu-resolve");
     const interaction = makeMenuInteraction({ guildId });
     await automod.handlers["Refer to automod"](interaction, {});
     assert.deepEqual(interaction.resolved, ["message"]);
-    assert.equal(rowsFor(communityId).length, 1);
+    assert.match(interaction.shownModal.custom_id, /^am:refer:[0-9a-f]{32}$/);
   });
 
-  it("happy path: A-1 row (no note), ack copy, automod.refer audit", async () => {
-    const { guildId, communityId } = readyMenuGuild("menu-happy");
+  it("invoke OPENS THE REFERRAL MODAL (#771: problem + context + window)", async () => {
+    const { guildId, communityId } = readyMenuGuild("menu-modal");
     const interaction = makeMenuInteraction({ guildId });
     await automod.handlers["Refer to automod"](interaction, {});
+    assert.equal(rowsFor(communityId).length, 0, "the invoke alone files NOTHING");
+    const labels = interaction.shownModal.components.map((r) => r.components[0].label);
+    assert.deepEqual(labels, [
+      "Problem — what is wrong?",
+      "Required context (optional)",
+      "Messages before (optional)",
+      "Messages after (optional)",
+    ]);
+    assert.equal(
+      interaction.shownModal.components[0].components[0].required,
+      true,
+      "Problem is the required field",
+    );
+  });
+
+  it("happy path: A-1 row (problem + window on the row), ack copy, automod.refer audit", async () => {
+    const { guildId, communityId } = readyMenuGuild("menu-happy");
+    const interaction = makeMenuInteraction({ guildId });
+    const submit = await menuFlow(interaction, {
+      problem: "repeated slurs at a member",
+      required_context: "check the thread above it",
+      read_before: "250",
+      read_after: "50",
+    });
 
     assert.equal(
-      menuContent(interaction),
+      String(submit.replies[0]?.content ?? ""),
       `Case: **A-1** — recorded.\nRecommendations will post in <#${AMOD_CH}>.`,
     );
-    assert.equal(interaction.replies[0].flags !== undefined, true, "reply is ephemeral");
 
     const row = rowsFor(communityId)[0];
     assert.equal(row.message_id, MSG);
     assert.equal(row.channel_id, SRC_CH);
     assert.equal(row.target_user_id, null);
-    assert.equal(row.note, null, "the menu carries no note");
+    assert.equal(row.note, "repeated slurs at a member", "the modal's problem is the case note");
+    assert.equal(row.required_context, "check the thread above it");
+    assert.equal(row.read_before, 250);
+    assert.equal(row.read_after, 50);
     assert.equal(row.referrer_user_id, REFERRER);
 
     const audit = db
@@ -580,6 +654,16 @@ describe('"Refer to automod" context menu (handleReferContextMenu)', () => {
     assert.equal(details.target_user_id, null);
   });
 
+  it("empty modal fields file a case with the window DEFAULTS (100/20)", async () => {
+    const { guildId, communityId } = readyMenuGuild("menu-defaults");
+    const interaction = makeMenuInteraction({ guildId });
+    const submit = await menuFlow(interaction, { problem: "harassment", required_context: "" });
+    assert.match(String(submit.replies[0]?.content ?? ""), /A-1/);
+    const row = rowsFor(communityId)[0];
+    assert.equal(row.read_before, 100);
+    assert.equal(row.read_after, 20);
+  });
+
   it("staff-role leg (no ManageGuild) is accepted by the staff gate", async () => {
     const { guildId, communityId } = readyMenuGuild("menu-staffrole");
     db.addStaffRole(communityId, "role-726-junior", "junior", "u-admin-726");
@@ -588,8 +672,8 @@ describe('"Refer to automod" context menu (handleReferContextMenu)', () => {
       admin: false,
       staffRoleIds: ["role-726-junior"],
     });
-    await automod.handlers["Refer to automod"](interaction, {});
-    assert.match(menuContent(interaction), /Case: \*\*A-1\*\* — recorded\./);
+    const submit = await menuFlow(interaction);
+    assert.match(String(submit.replies[0]?.content ?? ""), /Case: \*\*A-1\*\* — recorded\./);
     assert.equal(rowsFor(communityId).length, 1);
   });
 
@@ -602,7 +686,7 @@ describe('"Refer to automod" context menu (handleReferContextMenu)', () => {
     assert.deepEqual(interaction.resolved, [], "the staff gate runs BEFORE the target read");
   });
 
-  it("bot-authored target is refused before the service runs", async () => {
+  it("bot-authored target is refused before the modal even opens", async () => {
     const { guildId, communityId } = readyMenuGuild("menu-bot");
     const interaction = makeMenuInteraction({
       guildId,
@@ -610,6 +694,7 @@ describe('"Refer to automod" context menu (handleReferContextMenu)', () => {
     });
     await automod.handlers["Refer to automod"](interaction, {});
     assert.equal(menuContent(interaction), refer.REFUSAL_BOT_TARGET);
+    assert.equal(interaction.shownModal, undefined, "no form for a bot message");
     assert.equal(rowsFor(communityId).length, 0);
   });
 
@@ -632,15 +717,15 @@ describe('"Refer to automod" context menu (handleReferContextMenu)', () => {
     assert.equal(rowsFor(communityId).length, 0);
   });
 
-  it("config gates apply to the menu too (switch off → its cause)", async () => {
+  it("config gates apply AT SUBMIT (#771): switch off → its cause", async () => {
     const guildId = `932${String(++seq).padStart(15, "0")}`;
     const communityId = communityKey(guildId);
     settingsService.setChannel(communityId, AMOD_CH);
     settingsService.setRules(communityId, "Kindness.");
     // enabled stays 0.
     const interaction = makeMenuInteraction({ guildId });
-    await automod.handlers["Refer to automod"](interaction, {});
-    assert.equal(menuContent(interaction), refer.REFUSAL_SWITCH_OFF);
+    const submit = await menuFlow(interaction);
+    assert.equal(String(submit.replies[0]?.content ?? ""), refer.REFUSAL_SWITCH_OFF);
     assert.equal(rowsFor(communityId).length, 0);
   });
 
@@ -650,8 +735,11 @@ describe('"Refer to automod" context menu (handleReferContextMenu)', () => {
       guildId,
       channelState: { [AMOD_CH]: { view: true, send: false }, [SRC_CH]: { view: true } },
     });
-    await automod.handlers["Refer to automod"](interaction, {});
-    assert.equal(menuContent(interaction), refer.refusalChannelUnpostable(AMOD_CH));
+    const submit = await menuFlow(interaction);
+    assert.equal(
+      String(submit.replies[0]?.content ?? ""),
+      refer.refusalChannelUnpostable(AMOD_CH),
+    );
     assert.equal(rowsFor(communityId).length, 0);
   });
 });

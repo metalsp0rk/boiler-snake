@@ -21,7 +21,8 @@ Case flow (locked shape):
 
 ```
 Staff refers a message or a user (/automod refer, or the message context menu;
-optional short explanation from the referrer)
+#771: both open the referral MODAL — problem (required), required context,
+per-case read window)
         → master switch off        → the referral reply names that specific cause
         → rules text + automod channel required before a case runs
         → assemble: guild rules, referral, bounded message window,
@@ -29,9 +30,13 @@ optional short explanation from the referrer)
         → harness runs (own prompt, tools, daily budget — never Gork's queue)
         → only actions whose mode is not `off` are offered to the model
         → commit time: harness enforces one staff note per considered user
-        → case card posts to the automod channel
+        → case card posts to the automod channel (the QUEUE, #771: the reporter
+          is anonymous until staff Reveal them)
              suggest → Approve runs the auto executor · Dismiss records the decline
              auto    → the executor already ran; the card reports the result
+        → case-level resolution, first valid staff click wins:
+          Take recommended action (pending set through the real executor),
+          Manual action taken, or No action taken
 ```
 
 ---
@@ -41,7 +46,8 @@ optional short explanation from the referrer)
 | Rule | Detail |
 |------|--------|
 | Surfaces | `/automod refer` **and** a message context menu |
-| Explanation | A referrer **may** attach a short explanation; it is part of the case |
+| Explanation | **#771 (design-change):** both surfaces open ONE **referral modal** before the case exists — **Problem** (required, goes to the harness, rendered `**Reported problem:**` on the card), **Required context** (optional: what the reviewer needs to see or know), and the per-case **read window** (see [13.5](#135-judgment-inputs)). The original "optional short explanation" slash option is retired; the modal's Problem feeds the same `note` column |
+| Misread law | A non-integer window field **refuses naming the exact field** (nothing is filed); an over-cap value **clamps and the reply says so** — never a silently defaulted intake |
 | No passive scan | The bot does **not** scan ordinary chat. Nothing runs on message content by itself |
 | No member reports | Members cannot file a case. Referral is a staff action |
 
@@ -58,6 +64,8 @@ Three modes **per action**, each `off`, `suggest`, or `auto`. Default **suggest*
 | `auto` | The executor runs it and the card reports the result. **No approve button** |
 
 Suggest-mode Approve is how staff carry out a recommendation without redoing it by hand. Setting a mode to `auto` is the step that removes that decision.
+
+**#771 adds the case level:** beyond per-row Approve/Dismiss, every card carries three mutually exclusive **resolution** buttons (Take recommended action / Manual action taken / No action taken). The **first valid staff click wins**; a losing click runs nothing and shows the existing resolution. `recommended` loops the pending set (never `no_action` — already a recorded decision) through the **same executor** with all guards re-applying, reporting per action; `manual`/`none` execute **nothing in the bot** and supersede the pending rows, recording the outcome on the subjects' SAME staff notes and the case decision log. A resolved case retires every button (disabled on rebuild; the arms re-check anyway).
 
 ---
 
@@ -92,8 +100,8 @@ The staff-note tool is **always on**. It has **no mode flag** and cannot be disa
 | Input | Note |
 |-------|------|
 | Guild's written rules | Required before a case runs |
-| The referral | Including the referrer's optional explanation |
-| Message window | Bounded |
+| The referral | **#771:** the modal's **Problem** (required) and **Required context** (optional), verbatim case input |
+| Message window | Bounded — **#771 (design-change):** the window is **per case**, captured on the referral modal (defaults 100 back / 20 forward, each clamped to 0–500, paginated past Discord's 100-per-fetch cap; a mid-pagination failure refuses the run — never a half-read window). Rows created before #771 keep the historical Gork-owned 40/10 |
 | Warnings | That user's warnings |
 | Staff notes | That user's staff notes |
 
@@ -156,11 +164,11 @@ Numbered to match epic #723. The sections above are the detail; they are not a s
 
 | # | Decision |
 |---|----------|
-| 1 | **Intake is staff referral only** — `/automod refer` + a message context menu, optional short explanation. No passive scan; members cannot file a case. ([13.1](#131-intake--staff-referral-only)) |
+| 1 | **Intake is staff referral only** — `/automod refer` + a message context menu. No passive scan; members cannot file a case. *Amended #771:* both surfaces open one referral MODAL (Problem required + required context + per-case window) before the case exists — the optional short-explanation option is retired. ([13.1](#131-intake--staff-referral-only)) |
 | 2 | **Three modes per action** (`off` / `suggest` / `auto`), default **suggest**; master switch default **off**. `off` = unoffered and unrunnable and never recommended on the card; `suggest` = staff Approve runs the auto executor, Dismiss records the decline; `auto` = executes and the card reports, no approve button. ([13.2](#132-modes--off--suggest--auto-per-action)) |
 | 3 | **Combinable action set:** no action, warning, delete message, open ticket, timeout, kick, ban. No-action = considered and not sanctioned (never bystanders); warning = the formal permanent record via `createWarning`; ticket = existing help tickets, subject included, member-visible text never carries staff-note bodies or staff-only history. ([13.3](#133-action-set)) |
 | 4 | **Staff note tool always on**, no mode flag, cannot be disabled. One note per considered user per case (no-action, suggestion, refusal, or execution); context-only participants get no note and no action tool call; enforced **at commit time**, not by prompt alone. ([13.4](#134-staff-note-tool--always-on)) |
-| 5 | **Judgment inputs:** guild rules, the referral, a bounded message window, that user's warnings, that user's staff notes. Lookup tools for another user the model is actually considering. ([13.5](#135-judgment-inputs)) |
+| 5 | **Judgment inputs:** guild rules, the referral, a bounded message window, that user's warnings, that user's staff notes. Lookup tools for another user the model is actually considering. *Amended #771:* the window is per case (modal-captured, 100/20 defaults, 0–500 clamps; legacy rows keep 40/10) and the referral carries the modal's Problem + Required context. ([13.5](#135-judgment-inputs)) |
 | 6 | **Staff as subjects:** recommendations against staff are allowed; warn, delete, ticket, timeout, kick, and ban **refuse** to execute against a staff role or anyone the bot's role cannot moderate; the staff note records the consideration and the refusal. ([13.6](#136-staff-as-subjects-and-execution-guards)) |
 | 7 | **Separate from Gork:** own feature, prompt, tools, and daily budget; shared provider env (`AI_API_KEY`, `AI_BASE_URL`, `AI_MODEL`); a case never increments Gork's budget or enters Gork's queue. ([13.7](#137-harness--separate-from-gork)) |
 | 8 | **Discord only** for this milestone; Fluxer is explicit no-parity in the docs. ([13.8](#138-platform--discord-only)) |
@@ -173,3 +181,18 @@ Numbered to match epic #723. The sections above are the detail; they are not a s
 The dependency order the decisions force — it is context for the milestone, not a checklist; the work is the milestone's issues.
 
 Settings and the pure mode/note rules can land first. Referral, context assembly, and the harness come next. The case card comes before any sanction tool. No-action and staff notes come before warn / delete / ticket / timeout / kick / ban. The circuit breaker lands before `auto` kick, ban, or timeout is usable. Live verification stays open until the dated Discord record exists.
+
+---
+
+### 13.13 Moderation queue (#771)
+
+The automod channel is an explicit **queue**: one card per reported message with the anchor jump link + intake snippet, the Problem, the Required context, the harness's closing **"What happened"** estimate (the model's final text, persisted per case — a failed run leaves the line out rather than faking one), and the effective window (`**Window:** N before / M after`).
+
+| Rule | Detail |
+|------|--------|
+| Anonymity by default | The queue never renders the reporter while `revealed_at IS NULL` — cards, the reviewing placeholder, and the interrupted notice all lead `**Reporter:** hidden`. The shipped `**Referred by:** <@staff>` line returns only after a staff **Reveal reporter** press |
+| Reveal | Single-winner (first press stamps WHO/WHICH/WHEN on `recordSlashAudit` + the audit-channel embed); re-presses note it is already revealed and audit NOTHING; the rebuild renders Reveal disabled |
+| Resolution | Three case buttons, first valid click wins (`am:case:resolve:{recommended|manual|none}`); loser sees the existing resolution and runs NOTHING. `recommended` = pending set through the real executor with per-action honesty; `manual`/`none` = zero bot execution, pending rows superseded, outcome on the subjects' SAME notes + a `_queue_resolution` decision-log entry |
+| After resolution | Every queue and row button renders disabled; the row arms answer **Case resolved:** as the belt for cards whose rebuild failed |
+| Queue channel | `/set-moderation-queue set|clear` (admin) is a THIN alias over the same automod-channel setting `/automodconfig channel` writes — one queue, one source of truth; its own audit verbs (`automod.queue_set`/`automod.queue_clear`) name which surface a guild used |
+| Modal lifetime | Pending referral forms are in-memory with a 10-minute TTL and a token in the modal customId; a submit after restart or expiry answers the honest **Modal expired:** refusal — intake never half-reads |

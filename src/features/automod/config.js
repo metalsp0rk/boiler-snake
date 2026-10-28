@@ -109,13 +109,20 @@ function everyoneCanView(raw, channelId) {
   }
 }
 
-async function handleChannelSet(commandCtx) {
+/**
+ * ONE set-arm body for BOTH surfaces (#771 §6: `/set-moderation-queue set`
+ * is a thin alias over `/automodconfig channel set` — one queue, one source
+ * of truth). They differ only in the audit verb, the embed label, and the
+ * reply head; the store write, the @everyone probe, and the warning copy
+ * are shared by construction.
+ */
+async function setChannelCore(commandCtx, { auditAction, embedTitle, commandLabel, head }) {
   const channel = commandCtx.options.getChannel("channel", true);
   const result = service.setChannel(commandCtx.communityId, channel.id);
   if (!result.ok) return replyError(commandCtx, result.error);
 
-  auditMutation(commandCtx, "automod.channel_set", { channel_id: channel.id });
-  await auditEmbed(commandCtx, "Automod channel set", "/automodconfig channel set", [
+  auditMutation(commandCtx, auditAction, { channel_id: channel.id });
+  await auditEmbed(commandCtx, embedTitle, commandLabel, [
     `Case cards: <#${channel.id}> (${channel.id})`,
   ]);
 
@@ -130,28 +137,67 @@ async function handleChannelSet(commandCtx) {
         : "\n**Note:** I could not read this channel's overwrites — verify `@everyone` cannot view it.";
 
   await commandCtx.reply({
-    content:
-      `**Automod channel set:** <#${channel.id}>.\n` +
-      `Case cards post here once the feature is enabled.` +
-      warning,
+    content: head(channel.id) + warning,
     sensitive: true,
   });
 }
 
-async function handleChannelClear(commandCtx) {
+async function clearChannelCore(commandCtx, { auditAction, embedTitle, commandLabel, content }) {
   const result = service.clearChannel(commandCtx.communityId);
   if (!result.ok) return replyError(commandCtx, result.error);
 
-  auditMutation(commandCtx, "automod.channel_clear");
-  await auditEmbed(commandCtx, "Automod channel cleared", "/automodconfig channel clear", [
+  auditMutation(commandCtx, auditAction);
+  await auditEmbed(commandCtx, embedTitle, commandLabel, [
     "Case-card channel unset — referrals refuse until it is set again.",
   ]);
 
-  await commandCtx.reply({
+  await commandCtx.reply({ content, sensitive: true });
+}
+
+async function handleChannelSet(commandCtx) {
+  return setChannelCore(commandCtx, {
+    auditAction: "automod.channel_set",
+    embedTitle: "Automod channel set",
+    commandLabel: "/automodconfig channel set",
+    head: (id) =>
+      `**Automod channel set:** <#${id}>.\n` +
+      "Case cards post here once the feature is enabled.",
+  });
+}
+
+async function handleChannelClear(commandCtx) {
+  return clearChannelCore(commandCtx, {
+    auditAction: "automod.channel_clear",
+    embedTitle: "Automod channel cleared",
+    commandLabel: "/automodconfig channel clear",
     content:
       "**Automod channel cleared.** Cases will refuse naming the missing channel " +
       "until `/automodconfig channel set` runs again — the master switch was left as it was.",
-    sensitive: true,
+  });
+}
+
+// ── /set-moderation-queue set|clear (#771 §6 — alias surface) ──────────────
+
+async function handleQueueSet(commandCtx) {
+  return setChannelCore(commandCtx, {
+    auditAction: "automod.queue_set",
+    embedTitle: "Moderation queue channel set",
+    commandLabel: "/set-moderation-queue set",
+    head: (id) =>
+      `**Moderation queue set:** <#${id}>.\n` +
+      "Automod case cards post here — the same queue `/automodconfig channel` sets.",
+  });
+}
+
+async function handleQueueClear(commandCtx) {
+  return clearChannelCore(commandCtx, {
+    auditAction: "automod.queue_clear",
+    embedTitle: "Moderation queue channel cleared",
+    commandLabel: "/set-moderation-queue clear",
+    content:
+      "**Moderation queue cleared.** Cases will refuse naming the missing channel " +
+      "until `/set-moderation-queue set` (or `/automodconfig channel set`) runs " +
+      "again — the master switch was left as it was.",
   });
 }
 
@@ -460,6 +506,9 @@ async function handleSafetyResume(commandCtx) {
 module.exports = {
   handleChannelSet,
   handleChannelClear,
+  // #771 §6 — /set-moderation-queue alias arms (same core, own audit verbs).
+  handleQueueSet,
+  handleQueueClear,
   handleRulesSet,
   handleRulesClear,
   handleRulesModal,

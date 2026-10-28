@@ -1445,7 +1445,7 @@ cases (#726). Discord-only; Fluxer is explicit no-parity
 **Usage**:
 ```bash
 /automod status    # enabled, channel, rules, 7 modes, timeout cap, budget remaining, breaker
-/automod refer message:<full message link> user:<member> [note:<context>]   # record A-n case
+/automod refer message:<full message link> user:<member>   # opens the referral modal → records A-n case
 ```
 
 **Response** (ephemeral): `**Enabled:**`, `**Channel:**`, `**Rules:**`
@@ -1456,25 +1456,42 @@ as always-on — no mode by design), `**Timeout cap:**`,
 
 #### /automod refer
 
-Records a **staff referral** as an automod case (`A-1`, `A-2`, … per guild) —
-intake only, no execution. At least one of `message` / `user` is required.
-`message` must be the **full message link** (right-click the message →
-*Copy link*, or use the *Refer to automod* context menu below); bare message
-ids are refused. `user` is the subject — the referring staffer is never
-recorded as a subject and no staff note is written from intake. `note`
-(optional, max **1000** characters) is context stored on the case for the
-harness (#728), which recommends actions against recorded cases.
+Opens the **referral modal** for a **staff referral** — intake only, no
+execution. At least one of `message` / `user` is required. `message` must be
+the **full message link** (right-click the message → *Copy link*, or use the
+*Refer to automod* context menu below); bare message ids are refused. `user`
+is the subject — the referring staffer is never recorded as a subject and no
+staff note is written from intake.
 
-A referral can only record a case while automod can actually work: the master
-switch is on, `automodchannel` is set and postable, `rules` is set, and the
-daily budget is neither blocked (`-1`) nor exhausted — each refusal names its
-specific cause and records nothing (full copy table in
+**#771:** with a target given, the invoke opens a modal — the case is written
+on SUBMIT, never before (the retired `note:` option's column is filled by the
+modal's required **Problem** field):
+
+| Modal field | Rule |
+|-------------|------|
+| **Problem — what is wrong?** | **Required** (max 1000). Goes to the harness; rendered `**Reported problem:**` on the card. |
+| **Required context (optional)** | What the reviewer needs to see or know. Verbatim case input; rendered `**Required context:**`. |
+| **Messages before (optional)** | Messages to read back from the anchor — default **100**, cap **500**. |
+| **Messages after (optional)** | Messages to read forward — default **20**, cap **500**. |
+
+Never a silent misread: a non-integer window field **refuses naming the exact
+field**; an over-cap value **clamps and the ack says so**. The form lives 10
+minutes — submitting after a restart or expiry answers `**Modal expired:**`
+with nothing filed.
+
+A referral can only record a case (i.e. the SUBMIT can) while automod can
+actually work: the master switch is on, the queue channel is set and postable,
+`rules` is set, and the daily budget is neither blocked (`-1`) nor exhausted —
+each refusal names its specific cause and records nothing (full copy table in
 [Staff referral intake and refusals](../automod.md#staff-referral-intake-and-refusals)).
 Success replies `Case: **A-n** — recorded.` plus the promise that
 recommendations will post in the case-card channel — no recommendation is
 produced at intake. Recommendations land as the interactive **case card**
 (#730): one post per case whose Approve/Dismiss buttons execute pending
 actions through the shared executor — see [Case card](../automod.md#case-card).
+The automod channel is an explicit **queue** (#771): the reporter stays
+anonymous until a staff Reveal press, and the card carries three case-level
+resolutions — see [Moderation queue](../automod.md#moderation-queue-771).
 Staff-gated (Manage Server or any staff role); ephemeral.
 
 ### `/automodconfig` - Auto-moderation configuration (admin)
@@ -1510,15 +1527,32 @@ Manage Server in the picker AND in the handler. Every mutation records an
 
 Discord **context-menu** command — no slash. Open via **right-click (long-press)
 → Apps → Refer to automod** on a message: the context-menu twin of
-`/automod refer` (#726). Records the right-clicked message as an automod case
-(`A-n`); the target message IS the referral — there is no note option and no
-separately named user. Same intake battery and refusal copy as the slash
-command (see
+`/automod refer` (#726). The right-clicked message IS the referral — no link
+to paste, no separately named user. Since #771 the invoke opens the **same
+referral modal** the slash command opens (problem / required context / read
+window); the intake battery and the case write run on SUBMIT. Same refusal
+copy as the slash command (see
 [Auto-moderation](../automod.md#staff-referral-intake-and-refusals)); the
 platform already guarantees the guild and the invoker's view of the channel,
-and bot/system messages are additionally refused
+and bot/system messages are additionally refused BEFORE the modal even opens
 (`Cannot refer a bot or system message to automod — nothing was recorded.`).
 Discord-only — Fluxer is explicit no-parity. See [Auto-moderation](../automod.md).
+
+### `/set-moderation-queue` - Moderation queue channel (admin)
+
+**Usage**:
+```bash
+/set-moderation-queue set channel:#mod-queue   # warns if @everyone can view (never rewrites)
+/set-moderation-queue clear
+```
+
+Points the **moderation queue** — the channel where automod case cards post —
+at a text channel (#771). A **thin alias** over the same `automod_channel_id`
+setting `/automodconfig channel` writes: one queue, one source of truth (last
+writer wins). Own audit verbs (`automod.queue_set` / `automod.queue_clear`) so
+the trail shows which surface a guild used. Manage Server in the picker AND
+the handler; Discord-only (Fluxer answers the standard not-yet line). See
+[Auto-moderation](../automod.md#set-moderation-queue-admin-the-queue-alias-771).
 
 ---
 
@@ -1601,6 +1635,7 @@ Discord-only — Fluxer is explicit no-parity. See [Auto-moderation](../automod.
 | `/automod refer` (#726) | Staff gate | Yes |
 | `Refer to automod` (message **context menu**, right-click → Apps, #726) | Staff gate (staff-tier picker: Manage Server default + `staff_roles` overwrites after `/staff syncpermissions`) | Yes |
 | `/automodconfig …` (#725) | ManageGuild (picker AND handler) | Yes |
+| `/set-moderation-queue set\|clear` (#771) | ManageGuild (picker AND handler) | Yes |
 | `/staff role add\|remove\|setlevel` | ManageGuild | Yes |
 | `/staff syncpermissions` | ManageGuild | Yes |
 | `/setcommandchannel add\|remove\|list` | ManageGuild ¹ | Yes |
@@ -1687,7 +1722,7 @@ STAFF GATE (Manage Server OR any staff role):
 /gork keyword|role|context|cooldown|rules|search|ste|enable|ban|unban|bans|memory|budget|log|logchannel|summarize-budget|status
 /gork summarize (from|to|last)       → conversation rundown (10-min guild cooldown)
 /automod status                      → Auto-mod config + budget + breaker (staff, #725)
-/automod refer message|user [note]   → Refer into automod as case A-n (staff, #726)
+/automod refer message|user          → Referral modal → case A-n (staff, #726 · modal intake #771)
 /honeypot channel|banrole
 /eventreminder setchannel
 /eventreminder edit|clear|sync       → creator OR Manage Server (create retired → /event)

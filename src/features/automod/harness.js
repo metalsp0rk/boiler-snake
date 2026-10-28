@@ -148,6 +148,7 @@ const {
   AUTOMOD_NOTE_ACTION_ENTRY_MAX,
   AUTOMOD_NOTE_MIN_NARRATIVE,
   AUTOMOD_NOTE_PLANNED_LABEL,
+  AUTOMOD_INCIDENT_SUMMARY_MAX,
 } = require("./constants");
 
 /** The boot-sweep cause, pinned by the sweep test (#728 contract copy). */
@@ -223,7 +224,8 @@ function writeRunMetadata(dbHandle, caseId, meta, t) {
     .prepare(
       `UPDATE automod_cases
           SET status=?, updated_at=?, last_model=?, last_duration_ms=?,
-              last_tool_names=?, decision_log=?, last_run_error=?
+              last_tool_names=?, decision_log=?, last_run_error=?,
+              incident_summary=?
         WHERE id=?`,
     )
     .run(
@@ -234,6 +236,11 @@ function writeRunMetadata(dbHandle, caseId, meta, t) {
       meta.toolNames ? JSON.stringify(meta.toolNames) : null,
       meta.decisionLog ? JSON.stringify(meta.decisionLog) : null,
       meta.lastRunError ?? null,
+      // #771 §4: the model's closing plain-text estimate ("What happened"
+      // on the card). One run per case, so the run writes it whole — a
+      // run without final text leaves NULL (the card line is OMITTED,
+      // never faked).
+      meta.incidentSummary ?? null,
       caseId,
     );
 }
@@ -255,6 +262,12 @@ function writeRunMetadata(dbHandle, caseId, meta, t) {
  * @returns {object} a channel.send-able payload
  */
 function buildReviewPlaceholderPayload(caseRow) {
+  // #771 §3: the placeholder is part of the card's life — while the case
+  // is unrevealed it must not name the reporter either.
+  const referralLine =
+    caseRow.revealed_at != null
+      ? `Referred by <@${caseRow.referrer_user_id}>`
+      : "Reporter hidden until staff reveal them";
   return {
     allowedMentions: { parse: [] },
     embeds: [
@@ -263,7 +276,7 @@ function buildReviewPlaceholderPayload(caseRow) {
         description:
           "The judge is reading the referral, the message window, and the records. The decision posts on this message when the run finishes.",
         fields: [
-          { name: "Referral", value: sliceSafe(`Referred by <@${caseRow.referrer_user_id}>`, EMBED_FIELD_MAX) },
+          { name: "Referral", value: sliceSafe(referralLine, EMBED_FIELD_MAX) },
         ],
         color: COLORS.review,
       },
@@ -279,13 +292,18 @@ function buildReviewPlaceholderPayload(caseRow) {
 
 /** The boot-sweep notice (minimal; the case's real state is the row). */
 function buildInterruptedPayload(caseRow) {
+  // #771 §3: same anonymity law as the placeholder and the card.
+  const lead =
+    caseRow.revealed_at != null
+      ? `Referred by <@${caseRow.referrer_user_id}>`
+      : "**Reporter:** hidden";
   return {
     allowedMentions: { parse: [] },
     embeds: [
       {
         title: `Automod — case A-${caseRow.case_number} — interrupted`,
         description: sliceSafe(
-          `Referred by <@${caseRow.referrer_user_id}> — the review run was interrupted by a restart. The case was marked **failed** (${INTERRUPTED_ERROR}); a staff member can handle it manually.`,
+          `${lead} — the review run was interrupted by a restart. The case was marked **failed** (${INTERRUPTED_ERROR}); a staff member can handle it manually.`,
           4000,
         ),
         color: COLORS.failed,
@@ -1153,7 +1171,9 @@ async function runCaseInner({ communityId, guildId, caseId, deps, nowMs }) {
     status,
     runError = null,
     model = null,
-    summaryText,
+    summaryText = null,
+    summaryTail = null,
+    incidentSummary = null,
     toolNames = [],
     decisionLog = [],
     rounds = 0,
@@ -1177,10 +1197,23 @@ async function runCaseInner({ communityId, guildId, caseId, deps, nowMs }) {
         toolNames,
         decisionLog: persistedLog,
         lastRunError: runError,
+        incidentSummary:
+          incidentSummary == null || String(incidentSummary).trim() === ""
+            ? null
+            : sliceSafe(String(incidentSummary).trim(), AUTOMOD_INCIDENT_SUMMARY_MAX),
       }, d.now());
     } catch (err) {
       // The outcome is already decided; a metadata failure is loud, not fatal.
       logFail("run metadata persist", ids, err);
+    }
+    // Fresh row AFTER the metadata write: the card renders the persisted
+    // truth — reveal state, incident summary, window — not the stale
+    // claim-time row (a reveal that landed mid-run must show).
+    let finishedRow = caseRow;
+    try {
+      finishedRow = d.getCase(caseIdNum) ?? caseRow;
+    } catch {
+      /* the claim-time row is the honest fallback */
     }
     let rows = [];
     let rowReadError = null;
@@ -1195,16 +1228,23 @@ async function runCaseInner({ communityId, guildId, caseId, deps, nowMs }) {
     const notConsidered = (Array.isArray(participants) ? participants : [])
       .map((id) => String(id ?? "").trim())
       .filter((id) => id && !subjectIds.has(id));
+    // #771 §3: the live-run summary line honours the SAME anonymity rule —
+    // the lead comes from card.reporterLeadFor on the FRESH row (a reveal
+    // that landed mid-run shows; an unrevealed case never names the
+    // reporter). Callers pass only the state-specific TAIL.
+    const lead = card.reporterLeadFor(finishedRow);
     await deliver(
       card.buildCardPayload({
-        caseRow,
+        caseRow: finishedRow,
         rows,
         meta: { model, durationMs, rounds, toolNames },
         summaryText:
           summaryText ??
-          (status === "failed"
-            ? `**Referred by:** <@${referrerUserId}> — automod run failed: ${runError ?? "unknown error"}`
-            : `**Referred by:** <@${referrerUserId}> — review complete.`),
+          (summaryTail != null
+            ? `${lead} — ${summaryTail}`
+            : status === "failed"
+              ? `${lead} — automod run failed: ${runError ?? "unknown error"}`
+              : `${lead} — review complete.`),
         failed: status === "failed",
         notConsidered,
         noteRefs,
@@ -1242,7 +1282,7 @@ async function runCaseInner({ communityId, guildId, caseId, deps, nowMs }) {
     await finishRun({
       status: "failed",
       runError: built.error,
-      summaryText: `**Referred by:** <@${referrerUserId}> — automod could not build the case context: ${built.error}`,
+      summaryTail: `automod could not build the case context: ${built.error}`,
       model: cfg.model,
     });
     return { ok: false, state: "failed", caseRef, error: built.error };
@@ -1348,17 +1388,22 @@ async function runCaseInner({ communityId, guildId, caseId, deps, nowMs }) {
   // commit's non-ledger lines, and the window participants (the card shows
   // bystanders the judge saw but did not consider; the ledger rows own the
   // considered side, subtracted at finish).
-  let summaryText;
+  // The summary TAIL (the lead is the #771 anonymity-aware reporter line
+  // built in finishRun). Contract naming: the referrer sees the provider's
+  // specific failure.
+  let summaryTail;
   if (status === "failed") {
-    // Contract naming: the referrer sees the provider's specific failure.
-    summaryText = `**Referred by:** <@${referrerUserId}> — provider error: ${formatProviderCause(res)}`;
+    summaryTail = `provider error: ${formatProviderCause(res)}`;
   } else if (runError) {
-    summaryText =
-      `**Referred by:** <@${referrerUserId}> — partial decision: the run hit the ${runError}. ` +
+    summaryTail =
+      `partial decision: the run hit the ${runError}. ` +
       "What it had recorded committed; nothing further ran.";
-  } else {
-    summaryText = `**Referred by:** <@${referrerUserId}> — review complete.`;
   }
+  // #771 §4: the model finishes with a plain decision summary — that text
+  // IS the card's "What happened" estimate. A failed run keeps nothing
+  // (no half-truths); the default summary stays "review complete." on
+  // silence.
+  const incidentSummary = status === "failed" ? null : optionalText(res?.content);
 
   const noteRefs = {};
   for (const n of commit.noteResults) {
@@ -1371,7 +1416,8 @@ async function runCaseInner({ communityId, guildId, caseId, deps, nowMs }) {
     status,
     runError,
     model: cfg.model,
-    summaryText,
+    ...(summaryTail ? { summaryTail } : {}),
+    incidentSummary,
     toolNames: dispatcher.toolNames,
     decisionLog: dispatcher.decisionLog,
     rounds: Number.isFinite(Number(res?.rounds)) ? Number(res.rounds) : toolCalls,
