@@ -9,6 +9,7 @@ RUN apt-get update \
     python3 \
     make \
     g++ \
+    unzip \
     ca-certificates \
     fonts-liberation \
     libasound2 \
