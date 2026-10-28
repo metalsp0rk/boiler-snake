@@ -560,6 +560,9 @@ function createGuild(opts = {}) {
   /** Channels produced by guild.channels.create() (assertion buffer). */
   const createdChannels = [];
   const bans = [];
+  // #737: guild.members.kick() collector (automod kick tool via the
+  // platform outbound's kickMember helper) — same buffer law as bans.
+  const kicks = [];
   const voiceStates = new Map();
   let roleSeq = 1;
 
@@ -586,6 +589,10 @@ function createGuild(opts = {}) {
       },
       ban: async (userId, banOpts) => {
         bans.push({ userId, ...banOpts });
+        return { userId };
+      },
+      kick: async (userId, kickOpts) => {
+        kicks.push({ userId, ...kickOpts });
         return { userId };
       },
     },
@@ -666,6 +673,7 @@ function createGuild(opts = {}) {
       cache: voiceStates,
     },
     _bans: bans,
+    _kicks: kicks,
     addMember(member) {
       membersById.set(member.id, member);
       return member;

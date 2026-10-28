@@ -244,10 +244,12 @@ const ACTION_TOOL_SPECS = Object.freeze({
   kick: Object.freeze({
     description:
       "Kick the user from this server. Serious, considered escalation — " +
-      "their history belongs in a staff note alongside it.",
+      "their history belongs in a staff note alongside it. `reason` is " +
+      "required: it is the Discord audit-log reason for the kick.",
     extra: Object.freeze({
-      reason: reasonProp("Why the user is being removed from the server"),
+      reason: reasonProp("Why the user is being removed (rides the Discord audit log)"),
     }),
+    required: Object.freeze(["user_id", "reason"]),
   }),
   ban: Object.freeze({
     description:
@@ -624,6 +626,17 @@ function createToolDispatcher({
           );
         }
         params.durationSeconds = Math.floor(seconds);
+      }
+      // #737: the KICK reason is REQUIRED — it is the Discord audit-log
+      // reason for the removal AND the text stored on the action row (the
+      // row's `params.reason`, rendered by the card and the note). Above
+      // the slot check like every param law (#728/#732/#736 family).
+      if (name === "kick" && !reason) {
+        return refuse(
+          name,
+          args,
+          "`kick` needs `reason` — it rides the Discord audit log as the removal reason and is stored on the action row. A removal without a stated, defensible reason is not recordable — write the rule broken, or call nothing.",
+        );
       }
       // #734: the delete tool's subject is the MESSAGES' author (author law
       // below); every other action's subject is the model's user_id as ever.

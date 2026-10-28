@@ -1,8 +1,8 @@
 # Auto-moderation (epic #723)
 
 !!! abstract "Ship state — this page tracks the epic"
-    **Shipped now:** the guild settings and their Manage-Guild commands — `/automod status` and `/automodconfig` (channel, rules, master switch, per-action modes, timeout cap, daily case budget, breaker state + `safety resume`) (#725) — plus **staff referral intake**: `/automod refer` and the **Refer to automod** message context menu, which record a case (**A-n**) and ack where recommendations will post (#726), the **case-context collector** + lookup tools the judge reads (#727 — no user-facing surface of its own; see [Case context](#case-context)), the **LLM harness**: the case runner that judges a recorded case, records intent through mode-gated tools, and commits every action through the executor (#728 — see [Harness](#harness)), the **case card**: the interactive one-post-per-case outcome post whose Approve/Dismiss buttons execute suggested actions straight from the ledger (#730 — see [Case card](#case-card)), the **staff-note reconciler**: one note per considered subject (narrative or harness-filled), dropped notes for non-subjects, outcomes merged into the same note (#731 — see [Staff notes](#staff-notes)), and the **warning tool**: `warn` records a real formal warning through the shipped warnings system — member-facing reason, the guild's own warn-DM and expiry settings, the case note linked, evidence defaulted (#733 — see [Warning tool](#warning-tool-733)), and the **delete-message tool**: `delete_message` removes specific messages of this case — case allow-list, one user per call, Manage Messages pre-flight, honest per-id results (#734 — see [Delete-message tool](#delete-message-tool-734)) — and the **ticket tool**: `ticket` opens the case's help ticket **with the subject in it** through the shipped ticket system — member-visible opening enforced in code, the subject's own ticket rate limit, honest causes on every refusal (#735 — see [Ticket tool](#ticket-tool-735)), and the **timeout tool**: `timeout` with the executor-owned [60 s, cap] clamp proven on the row, a required reason that becomes the Discord timeout reason, the card showing the applied duration, and the circuit-breaker refusal wired for both paths (#736 — see [Timeout tool](#timeout-tool-736)).
-    **Landing in sibling issues:** the remaining action tools' surfaces (#737–#738), plus the circuit breaker trip logic (#739). The intake ack never claims a recommendation was produced — the **harness posts its outcome separately**, after the ack. The mode gate itself (off/suggest/auto, guards, atomic claims) is already shipped in the executor (#729) — a suggest-mode decision is recorded as a pending ledger row and surfaces on the case card for staff approval.
+    **Shipped now:** the guild settings and their Manage-Guild commands — `/automod status` and `/automodconfig` (channel, rules, master switch, per-action modes, timeout cap, daily case budget, breaker state + `safety resume`) (#725) — plus **staff referral intake**: `/automod refer` and the **Refer to automod** message context menu, which record a case (**A-n**) and ack where recommendations will post (#726), the **case-context collector** + lookup tools the judge reads (#727 — no user-facing surface of its own; see [Case context](#case-context)), the **LLM harness**: the case runner that judges a recorded case, records intent through mode-gated tools, and commits every action through the executor (#728 — see [Harness](#harness)), the **case card**: the interactive one-post-per-case outcome post whose Approve/Dismiss buttons execute suggested actions straight from the ledger (#730 — see [Case card](#case-card)), the **staff-note reconciler**: one note per considered subject (narrative or harness-filled), dropped notes for non-subjects, outcomes merged into the same note (#731 — see [Staff notes](#staff-notes)), and the **warning tool**: `warn` records a real formal warning through the shipped warnings system — member-facing reason, the guild's own warn-DM and expiry settings, the case note linked, evidence defaulted (#733 — see [Warning tool](#warning-tool-733)), and the **delete-message tool**: `delete_message` removes specific messages of this case — case allow-list, one user per call, Manage Messages pre-flight, honest per-id results (#734 — see [Delete-message tool](#delete-message-tool-734)) — and the **ticket tool**: `ticket` opens the case's help ticket **with the subject in it** through the shipped ticket system — member-visible opening enforced in code, the subject's own ticket rate limit, honest causes on every refusal (#735 — see [Ticket tool](#ticket-tool-735)), and the **timeout tool**: `timeout` with the executor-owned [60 s, cap] clamp proven on the row, a required reason that becomes the Discord timeout reason, the card showing the applied duration, and the circuit-breaker refusal wired for both paths (#736 — see [Timeout tool](#timeout-tool-736)), and the **kick tool**: `kick` with a required reason that rides the Discord audit log through the platform outbound helper, the removal quoted on the card before staff approve, and the staff note surviving the removal it documents (#737 — see [Kick tool](#kick-tool-737)).
+    **Landing in sibling issues:** the remaining action tool's surface (#738), plus the circuit breaker trip logic (#739). The intake ack never claims a recommendation was produced — the **harness posts its outcome separately**, after the ack. The mode gate itself (off/suggest/auto, guards, atomic claims) is already shipped in the executor (#729) — a suggest-mode decision is recorded as a pending ledger row and surfaces on the case card for staff approval.
 
 Auto-moderation is a staff-referred judgment pipeline: a staff member refers a message or a user, a separate LLM harness recommends staff actions against the guild's written rules, and each action type is gated `off` / `suggest` / `auto` by the guild. **Recommendations are the default** — enabling the master switch never starts kicking or banning by itself.
 
@@ -991,6 +991,70 @@ the ids — nobody is timed out on air.
 
 **Fluxer: explicit no-parity** (epic decision 8). The timeout tool is
 part of the Discord-only pipeline; it adds no Fluxer surface.
+
+## Kick tool (#737)
+
+Remove a member from the server — mode-gated
+(`/automodconfig mode action:kick`), default **suggest**. Discord only:
+the removal rides the platform outbound's `kickMember` helper (added
+beside `banMember` — the model tool loop never calls discord.js), and
+the Fluxer outbound deliberately gained **no** kick surface (epic
+decision 8: explicit no-parity).
+
+**The call.** `kick` requires a one-line `reason` — it is stored on the
+action row AND becomes the **Discord audit-log reason** of the removal,
+case-tagged: `raid coordinator, second wave (automod case #12)`. The
+dispatcher refuses a bare call above the `(action, user)` slot check,
+and the refusal teaches the law:
+
+```text
+`kick` needs `reason` — it rides the Discord audit log as the removal reason and is stored on the action row. A removal without a stated, defensible reason is not recordable — write the rule broken, or call nothing.
+```
+
+A legacy/direct row recorded without one still executes on the generic
+case-tagged audit line (`Auto-mod kick (case #12)`) — the belt never
+dead-ends it; the requirement lives at dispatch.
+
+**The card quotes the removal.** A suggested kick shows staff exactly
+what the audit log will carry before anyone approves it:
+
+```text
+`kick` — **pending approval** — a staff decision is due — Approve removes the member from this server with the reason below on the audit log; Dismiss leaves them. Reason: "raid coordinator, second wave".
+```
+
+Approve removes; Dismiss leaves the member. Auto removes immediately and
+reports the result:
+
+```text
+Kicked <@user>.
+```
+
+**Specific Discord causes, never a dead end.** Every failure — unknown
+member (10007), hierarchy (50013), missing permissions — refuses the
+row with the outbound's cause verbatim and states the outcome:
+
+```text
+kickMember: user 123 in community 4 failed: Missing Permissions — nobody was kicked.
+```
+
+Staff-role subjects and subjects the bot's role is not above refuse
+through the shipped decision-6 guards (the recommendation still stands
+on the card and in the staff note). While the [circuit
+breaker](#circuit-breaker-gate-shipped-trip-in-739) is paused the
+executor refuses kick runs for BOTH auto and Approve — the outbound is
+never reached.
+
+**The note outlives the member.** The staff note is written by the
+commit pre-pass BEFORE actions run, and the outcome merges into that
+SAME row afterwards: a successful removal never costs the audit trail
+(contract law: the note is written even when the kick succeeds and the
+member has left — pinned end-to-end).
+
+**Idempotent Approve.** The claim-before-run law makes a double click
+impossible to stack: the second click returns the existing result and
+the outbound kick runs exactly once. A failed attempt is still ONE
+attempt — the row records it refused, which is what the #739 breaker
+will count.
 
 ## Daily case budget
 

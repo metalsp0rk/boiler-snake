@@ -764,6 +764,34 @@ function createDiscordOutbound(client) {
     },
 
     /**
+     * Kick a member from the guild (epic #723 #737: the automod kick tool
+     * rides this helper — the harness never calls discord.js from the tool
+     * loop). Discord-only by contract: the Fluxer outbound has no kick
+     * surface and none is added here. Same shape and error law as
+     * `banMember`: the Discord cause (hierarchy 50013, unknown member
+     * 10007, missing permissions) rides through verbatim.
+     * @param {number} communityId
+     * @param {string} userId
+     * @param {string} reason
+     * @returns {Promise<{ ok: true }|{ ok: false, error: string, code?: string }>}
+     */
+    async kickMember(communityId, userId, reason) {
+      assertCommunityId(communityId);
+      try {
+        const found = await lookupGuild(client, communityId, "kickMember");
+        if (found.error) return { ok: false, error: found.error };
+        await found.guild.members.kick(String(userId), { reason: String(reason ?? "") });
+        return { ok: true };
+      } catch (err) {
+        return {
+          ok: false,
+          error: `kickMember: user ${userId} in community ${communityId} failed: ${causeOf(err)}`,
+          code: codeOf(err),
+        };
+      }
+    },
+
+    /**
      * History page for activity backfill and gork read_history.
      * @param {string} channelId
      * @param {{ before?: string, after?: string, limit: number }} query

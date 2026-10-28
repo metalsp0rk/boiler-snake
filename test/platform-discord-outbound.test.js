@@ -100,6 +100,7 @@ describe("platform/discord/outbound", () => {
       "createChannel",
       "setOverwrites",
       "banMember",
+      "kickMember",
       "fetchMessages",
       "fetchMessage",
     ]) {
@@ -513,6 +514,33 @@ describe("platform/discord/outbound", () => {
       const res = await outbound.banMember(communityId, IDS.member, "honeypot");
       assert.deepEqual(res, { ok: true });
       assert.deepEqual(guild._bans, [{ userId: IDS.member, reason: "honeypot" }]);
+    });
+
+    // #737: the automod kick tool rides this helper (beside banMember).
+    it("kickMember records the kick with reason", async () => {
+      const res = await outbound.kickMember(communityId, IDS.member, "automod case #1");
+      assert.deepEqual(res, { ok: true });
+      assert.deepEqual(guild._kicks, [{ userId: IDS.member, reason: "automod case #1" }]);
+    });
+
+    it("kickMember surfaces the Discord cause verbatim on failure", async () => {
+      // Hierarchy/permission failures ride through with code — the
+      // executor's kick handler quotes the cause to staff. The world is
+      // shared (before-hook), so the real collector is restored after.
+      const realKick = guild.members.kick;
+      guild.members.kick = async () => {
+        const err = new Error("Missing Permissions");
+        err.code = 50013;
+        throw err;
+      };
+      try {
+        const res = await outbound.kickMember(communityId, IDS.member, "raid");
+        assert.equal(res.ok, false);
+        assert.match(res.error, /kickMember: user .* failed: Missing Permissions/);
+        assert.equal(String(res.code), "50013", "adapterUtils.codeOf normalizes to a string");
+      } finally {
+        guild.members.kick = realKick;
+      }
     });
 
     it("a missing guild surfaces a specific not-available error", async () => {

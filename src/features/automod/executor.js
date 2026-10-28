@@ -159,6 +159,11 @@ const { warnDmEnabled, buildWarnDmPayload } = require("../warnings/helpers");
 // exported functions — no interaction context is dragged in.
 const { openTicketChannel } = require("../tickets/helpers");
 const { formatStaffRoleAccessNote } = require("../tickets/overwrites");
+// The platform outbound layer's kick helper (#737): the automod kick tool
+// rides `kickMember` beside `banMember` — the model tool loop never touches
+// discord.js, and the executor's `createKick` seam wraps this one pipeline
+// (tests script the seam, production reaches the cached outbound).
+const { getDiscordOutbound } = require("../../platform/discord/outbound");
 const { findCaseNoteRow } = require("./caseNote");
 const {
   AUTOMOD_ACTIONS,
@@ -473,6 +478,15 @@ function buildDefaultDeps(deps = {}) {
       guildOf(guildId).members.fetch(String(userId)),
     createBan: async (guildId, userId, { reason }) =>
       guildOf(guildId).bans.create(String(userId), { reason }),
+    // #737: the kick rides the platform outbound's kickMember helper (the
+    // cached Discord outbound over the same client). {ok:false, error, code}
+    // comes back from the outbound — the handler reports the cause verbatim.
+    createKick: async (communityId, userId, { reason }) =>
+      getDiscordOutbound(requireClient(deps)).kickMember(
+        communityId,
+        userId,
+        reason,
+      ),
     // ── #733 warn-tool seams ───────────────────────────────────────────────
     // Guild display name for the warning DM (cache read; a plain no-guild
     // "this server" fallback — this read must never kill the DM attempt).
@@ -1249,14 +1263,30 @@ function buildActionHandler(act, {
 
     case "kick":
       return async () => {
-        const member = await resolved.fetchMember(guildId, subject);
-        if (!member) {
+        // #737: the kick rides the platform outbound's `kickMember` helper
+        // (beside `banMember`) through the createKick seam — the tool loop
+        // never calls discord.js directly. The STATED reason is the audit-log
+        // reason (the dispatcher requires it; a legacy/direct row without one
+        // falls back to the generic case-tag line — belt, never a dead end).
+        // Every Discord failure (unknown member 10007, hierarchy 50013,
+        // missing permissions) refuses with the outbound's specific cause.
+        const stated = String(params.reason ?? "").trim();
+        const discordReason = stated
+          ? `${stated} (automod ${caseTag})`
+          : auditReason;
+        const kicked = await resolved.createKick(row.community_id, subject, {
+          reason: discordReason,
+        });
+        if (!kicked?.ok) {
           return {
             ok: false,
-            error: `Member ${subject} was not found in guild ${guildId} — nobody was kicked.`,
+            error:
+              (kicked?.error
+                ? String(kicked.error)
+                : `Kick of <@${subject}> failed with no cause recorded.`) +
+              " — nobody was kicked.",
           };
         }
-        await member.kick(auditReason);
         return { ok: true, result: `Kicked <@${subject}>.` };
       };
 
