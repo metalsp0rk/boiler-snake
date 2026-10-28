@@ -46,9 +46,12 @@
  * defaults ride the REAL ticket system through dedicated seams (#735 — see
  * the ticket handler's member-visible law): the rate-slot pair over
  * `claimTicketCreateSlot`/`releaseTicketCreateSlot` and `openCaseTicket`
- * over the real `openTicketChannel`. The circuit breaker gate (#739) will
- * add its `isAutomodPaused` check inside runClaimedAction — one choke
- * point, both auto and approve already flow through it.
+ * over the real `openTicketChannel`. CIRCUIT BREAKER (#739, shipped): the
+ * refusal gate (isAutomodPaused, #736) AND the trip law live in
+ * runClaimedAction — the one choke point auto and Approve share. An AUTO
+ * gated run that REACHES its action handler counts as an attempt (the
+ * mutation was tried, whatever Discord answered); past the cap the pause
+ * persists, the window resets, and the trip posts to the automod channel.
  *
  * THE WARN TOOL (#733, epic #723) — member-facing law lives HERE:
  *  - `params.reason` is the MEMBER-FACING reason: it is the formal record's
@@ -146,6 +149,7 @@ const {
   getAutomodAction,
   parseAutomodActionParams,
   isAutomodPaused,
+  setAutomodPause,
 } = require("../../db");
 // READ-ONLY imports of the shipped warnings feature (#733): the same member
 // DM gate and the same standard DM framing `/warn add` uses — no parallel
@@ -172,6 +176,8 @@ const {
   AUTOMOD_TIMEOUT_CAP_MAX,
   AUTOMOD_DEFAULT_TIMEOUT_CAP,
   AUTOMOD_TICKET_NOTE_OVERLAP_MIN,
+  AUTOMOD_BREAKER_WINDOW_MS,
+  AUTOMOD_BREAKER_MAX_ATTEMPTS,
   automodModeColumn,
   normalizeAutomodMode,
 } = require("./constants");
@@ -194,6 +200,56 @@ const MUTATING_ACTIONS = Object.freeze([
  *  (`runClaimedAction`); suggestions still RECORD (#739: the card keeps
  *  showing them, Approve answers with the pause refusal). */
 const BREAKER_GATED_ACTIONS = Object.freeze(["timeout", "kick", "ban"]);
+
+/* ── Circuit breaker TRIP (#739, epic #723; honeypot #440 precedent) ────────
+ * The gate (#736) refuses while the pause is set; this is the TRIP: auto
+ * attempts of the escalating three counted per community in a rolling
+ * window, OVER the cap the PERSISTED pause fires. ATTEMPT LAW (honeypot
+ * parity, contract verbatim "include failed attempts"): an auto gated run
+ * that REACHES its action handler is an attempt — executed, Discord-error
+ * refused, or thrown all count the same; policy refusals ABOVE the handler
+ * (mode-off, the breaker gate itself, subject guards, param pre-flight)
+ * never attempted a mutation and never count; suggest-mode rows are out
+ * whole (unapproved proposals are not attempts — and an approved run was
+ * a human decision, not the runaway auto path the breaker guards).
+ * The WINDOW is in-memory exactly like honeypot's `banAttempts` map: the
+ * pause is what persists (restart never re-arms), the window is the
+ * storm detector — cleared when it trips, so a resume is not instantly
+ * re-tripped by the storm the admin just acknowledged. */
+
+/** communityId → number[] attempt stamps inside the rolling window. */
+const breakerWindows = new Map();
+
+/** Record one auto gated attempt; returns the count inside the window.
+ *  Exported for tests (window seeding) — production counts at the choke
+ *  point (`tripBreakerIfNeeded`), never from callers. */
+function noteBreakerAttempt(communityId, nowMs = now()) {
+  const kept = (breakerWindows.get(communityId) || []).filter(
+    (t) => nowMs - t < AUTOMOD_BREAKER_WINDOW_MS,
+  );
+  kept.push(nowMs);
+  breakerWindows.set(communityId, kept);
+  return kept.length;
+}
+
+/** Forget the window (trip-time reset; also a test seam). */
+function clearBreakerWindow(communityId) {
+  breakerWindows.delete(communityId);
+}
+
+/** The trip notice posted to the automod channel (docs quote the shape;
+ *  bold-label law #471 H2-13). */
+function breakerTripText({ count, windowMinutes, cap, lastAction }) {
+  return (
+    `**Safety paused:** the auto-moderation circuit breaker tripped — ` +
+    `**${count}** auto kick/ban/timeout attempts in the last ` +
+    `**${windowMinutes} minutes** (cap ${cap}). \`kick\`, \`ban\`, and ` +
+    "`timeout` stay dark for auto AND Approve until an admin runs " +
+    "`/automodconfig safety resume` (confirm:true). Warn, delete, ticket, " +
+    "and staff notes keep running. " +
+    (lastAction ? `**Last attempt:** \`${lastAction}\`.` : "")
+  );
+}
 
 // ── Logging (AGENTS.md rule 2: ids enough to reproduce from logs alone) ────
 
@@ -562,12 +618,34 @@ function buildDefaultDeps(deps = {}) {
         openedByStaffId: openedByStaffId ? String(openedByStaffId) : null,
       });
     },
-    // ── #736 breaker gate seam ─────────────────────────────────────────────
-    // The persisted safety pause over the real repo read (#725 columns; the
-    // TRIP that writes them is #739, the `safety resume` CLEAR is shipped).
-    // The gate calls it for kick/ban/timeout only; tests script the state
-    // here without touching the database.
+    // ── #736/#739 breaker seams ────────────────────────────────────────────
+    // The persisted pause state over the real repo read, its TRIP write
+    // (both shipped now: gate #736, trip #739), and the trip notice post.
+    // The gate calls isAutomodPaused for kick/ban/timeout only; tests
+    // script the state without touching the database.
     isAutomodPaused: (communityId) => isAutomodPaused(communityId),
+    // The trip's PERSISTED pause — a restart must not silently re-arm the
+    // escalating three, so this write is the law; failure is loud-log only
+    // (the in-memory window has already reset; the next storm re-trips).
+    pauseAutomod: (communityId, { reason = null, pausedAt } = {}) =>
+      setAutomodPause(communityId, { reason, pausedAt }),
+    // The trip notice to the guild's automod channel. A post failure is a
+    // WARN line, never a lost pause (persistence first, then the shout).
+    postBreakerTrip: async (communityId, content) => {
+      const channelId = getGuildSettings(communityId)?.automod_channel_id;
+      if (!channelId) {
+        throw new Error("no automod channel is configured — the trip notice has nowhere to post");
+      }
+      const client = requireClient(deps);
+      if (!client?.channels?.fetch) {
+        throw new Error("no Discord client — the trip notice cannot post");
+      }
+      const channel = await client.channels.fetch(String(channelId));
+      if (!channel?.send) {
+        throw new Error(`channel ${channelId} did not resolve to a sendable channel`);
+      }
+      return channel.send({ content });
+    },
   };
 
   // Shallow merge: explicit seams win over the defaults.
@@ -882,6 +960,88 @@ async function dismissSuggestion({
 
 // ── Claimed-row execution: guards → clamp → handler → record ───────────────
 
+/**
+ * #739 attempt accounting + trip — called at the choke point after an
+ * action handler RAN (success, refusal, or throw all mean the mutation was
+ * attempted). Auto gated rows only; never throws (a breaker bookkeeping
+ * failure must never change the run's outcome — it logs loudly instead).
+ * Returns the trip info when it tripped, else null.
+ */
+async function tripBreakerIfNeeded({ row, resolved, ids, nowMs }) {
+  try {
+    if (!BREAKER_GATED_ACTIONS.includes(row.action) || row.mode !== "auto") {
+      return null;
+    }
+    const count = noteBreakerAttempt(row.community_id, nowMs);
+    if (count <= AUTOMOD_BREAKER_MAX_ATTEMPTS) return null;
+    // Storm already tripped? The pause is the control — never overwrite an
+    // existing pause reason (it names the trip that happened, not a later
+    // straggler row).
+    const pause = resolved.isAutomodPaused(row.community_id);
+    if (pause?.paused) return null;
+    const windowMinutes = Math.round(AUTOMOD_BREAKER_WINDOW_MS / 60000);
+    const reason =
+      `${count} auto kick/ban/timeout attempts in the last ` +
+      `${windowMinutes} minutes (cap ${AUTOMOD_BREAKER_MAX_ATTEMPTS})`;
+    clearBreakerWindow(row.community_id); // honeypot law: the pause is the control now
+    try {
+      resolved.pauseAutomod(row.community_id, { reason, pausedAt: nowMs });
+    } catch (err) {
+      console.error(
+        `[automod] COULD NOT PERSIST the breaker pause (community ${row.community_id} ` +
+          `guild ${row.guild_id} user ${row.subject_user_id} case ${row.case_id ?? "?"} ` +
+          `action ${row.action}): ${err?.message || err} — a restart WILL re-arm the escalating three!`,
+      );
+    }
+    console.error(
+      `[automod] CIRCUIT BREAKER tripped ${idTag({
+        communityId: row.community_id,
+        guildId: row.guild_id,
+        subjectUserId: row.subject_user_id,
+        caseId: row.case_id,
+        action: row.action,
+        actionRowId: row.id,
+      })}: ${reason} — kick/ban/timeout dark until /automodconfig safety resume`,
+    );
+    try {
+      await resolved.postBreakerTrip(
+        row.community_id,
+        breakerTripText({
+          count,
+          windowMinutes,
+          cap: AUTOMOD_BREAKER_MAX_ATTEMPTS,
+          lastAction: row.action,
+        }),
+      );
+    } catch (err) {
+      console.warn(
+        `[automod] breaker trip post failed (community ${row.community_id} ` +
+          `case ${row.case_id ?? "?"}): ${err?.message || err} — the pause stands regardless`,
+      );
+    }
+    return { tripped: true, count, reason };
+  } catch (err) {
+    // Bookkeeping must never alter a run's outcome — but it never vanishes
+    // either (rule 2: ids enough to reproduce from logs alone).
+    console.error(
+      `[automod] breaker bookkeeping failed ${idTag({
+        communityId: ids?.communityId,
+        guildId: ids?.guildId,
+        subjectUserId: ids?.subjectUserId,
+        caseId: ids?.caseId,
+        action: ids?.action,
+        actionRowId: ids?.actionRowId,
+      })}: ${err?.message || err}`,
+    );
+    return null;
+  }
+}
+
+/**
+ * The single gated choke point shared by auto commit and Approve clicks:
+ * re-reads the mode (off is unrunnable), applies the subject guards, then
+ * runs the action handler exactly once on the claimed row.
+ */
 async function runClaimedAction(row, {
   deps,
   referrerUserId = null,
@@ -903,9 +1063,6 @@ async function runClaimedAction(row, {
   const baseParams = parseAutomodActionParams(row).params ?? {};
   let params = { ...baseParams };
 
-  // #739 inserts the circuit-breaker gate here (isAutomodPaused is already
-  // on the db facade) — auto and Approve share this choke point.
-
   // Off is UNRUNNABLE at commit time, not just at call time (locked
   // decision 2): the mode may have changed since the suggestion landed, so
   // every claimed run re-reads it — including the approval path.
@@ -926,8 +1083,9 @@ async function runClaimedAction(row, {
   // auto commit and Approve clicks share this choke point (the card's
   // pre-gate answers the clicker early; this is the source of truth).
   // Warn / delete / ticket / no_action / staff notes keep running — the
-  // pause covers the escalating three only (epic #723; #739 owns the TRIP,
-  // the `safety resume` clear ships with #725).
+  // pause covers the escalating three only (epic #723; the TRIP is shipped
+  // in #739 via tripBreakerIfNeeded below, the `safety resume` clear ships
+  // with #725).
   if (BREAKER_GATED_ACTIONS.includes(act)) {
     const pause = resolved.isAutomodPaused(row.community_id);
     if (pause?.paused) {
@@ -993,15 +1151,24 @@ async function runClaimedAction(row, {
   const handler =
     resolved.actions?.[act] ??
     buildActionHandler(act, { resolved, row, params, referrerUserId, queuedNoteNarrative });
-  let outcome;
+  let outcome = null;
+  let handlerError = null;
   try {
     // Injected handlers (deps.actions.<action>, e.g. #735's ticket tool)
     // receive { row, params, deps } — defaults ignore the argument.
     outcome = await handler({ row, params, deps: resolved });
   } catch (err) {
+    handlerError = err;
+  }
+  // #739 ATTEMPT ACCOUNTING: reaching the handler means the mutation was
+  // TRIED — success, Discord-error refusal, and crash all count (honeypot's
+  // "count attempts" law); every refusal ABOVE this point never attempted
+  // anything and never counts. Auto gated rows only (see the trip fn).
+  await tripBreakerIfNeeded({ row, resolved, ids, nowMs });
+  if (handlerError) {
     return finalize(row, {
       state: "failed",
-      error: `The \`${act}\` action could not run: ${err?.message || err}`,
+      error: `The \`${act}\` action could not run: ${handlerError?.message || handlerError}`,
       ids,
       nowMs,
       params,
@@ -1533,4 +1700,9 @@ module.exports = {
   // normalization the scrub compares in.
   ticketReasonDuplicatesNote,
   normalizeNarrativeText,
+  // Breaker (#739): the in-memory window seams (seed/inspect/reset for
+  // tests — production counts only at the choke point) + the trip copy.
+  noteBreakerAttempt,
+  clearBreakerWindow,
+  breakerTripText,
 };

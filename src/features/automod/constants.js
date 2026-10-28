@@ -192,6 +192,21 @@ const AUTOMOD_NOTE_PLANNED_LABEL = "planned";
 /** Max message ids per `delete_message` call (counted AFTER dedupe). */
 const AUTOMOD_DELETE_MAX_MESSAGES = 10;
 
+/* ── Circuit breaker TRIP (#739, epic #723) ─────────────────────────────────
+ * Honeypot's mass-ban safety valve (#440) verbatim in shape: attempts of the
+ * escalating three (kick/ban/timeout) are counted per community in a rolling
+ * window; OVER the cap the PERSISTED pause trips (restart never re-arms —
+ * `/automodconfig safety resume` is the only way back). The WINDOW is
+ * in-memory exactly like honeypot's (`clearBanWindow` on trip): a resume is
+ * not instantly re-tripped by the storm it just acknowledged. */
+
+/** Rolling attempt window, milliseconds (honeypot parity: 5 minutes). */
+const AUTOMOD_BREAKER_WINDOW_MS = 5 * 60 * 1000;
+
+/** Attempts allowed inside the window; the breaker trips OVER this count
+ *  (honeypot's `attempts > BAN_WINDOW_MAX` law, epic #723's cap of 5). */
+const AUTOMOD_BREAKER_MAX_ATTEMPTS = 5;
+
 /* ── Ticket tool (#735, epic #723) ──────────────────────────────────────────
  * The `ticket` action opens the case's help ticket WITH the subject in it
  * through the shipped ticket system. The ticket opening text is MEMBER-
@@ -288,4 +303,8 @@ module.exports = {
   AUTOMOD_CARD_TICKET_SUGGESTED_HEAD,
   AUTOMOD_CARD_TICKET_PROPOSED_LABEL,
   AUTOMOD_TICKET_NOTE_OVERLAP_MIN,
+  // Circuit breaker TRIP (#739): the rolling window + attempt cap for the
+  // escalating three (docs quote both).
+  AUTOMOD_BREAKER_WINDOW_MS,
+  AUTOMOD_BREAKER_MAX_ATTEMPTS,
 };

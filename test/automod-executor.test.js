@@ -775,6 +775,171 @@ describe("ban tool — required reason rides the audit log through the outbound 
   });
 });
 
+// ── #739: the circuit breaker TRIP — auto attempts in a rolling window ─────
+
+describe("circuit breaker trip — auto gated attempts count, past the cap the pause fires", () => {
+  /** Run `n` auto kicks on one community; returns the outcomes. */
+  async function kickStorm(cid, n, overrides = {}) {
+    const outcomes = [];
+    for (let i = 0; i < n; i += 1) {
+      const { promise } = run(cid, "kick", {
+        recorderOverrides: overrides,
+        exec: { caseId: null, params: { reason: "raid burst" } },
+      });
+      outcomes.push(await promise);
+    }
+    return outcomes;
+  }
+
+  it("the 6th auto kick trips: persisted pause names the count, the trip posts, the 7th stays dark - issue #739", async () => {
+    const cid = freshCommunity();
+    setMode(cid, "kick", "auto");
+    const posts = [];
+    const overrides = {
+      deps: { postBreakerTrip: async (_cid, content) => { posts.push(content); return { id: "t" }; } },
+    };
+    try {
+      const outcomes = await kickStorm(cid, 6, overrides);
+      assert.equal(outcomes.filter((o) => o.ok).length, 6, "attempts 1–6 all RAN (the trip stops what comes AFTER)");
+      const pause = db.isAutomodPaused(cid);
+      assert.equal(pause.paused, true, "past the cap the pause FIRES and persists");
+      assert.match(pause.reason, /^6 auto kick\/ban\/timeout attempts in the last 5 minutes \(cap 5\)$/);
+
+      assert.equal(posts.length, 1, "the trip posts to the automod channel once");
+      assert.match(posts[0], /\*\*Safety paused:\*\* the auto-moderation circuit breaker tripped/);
+      assert.match(posts[0], /\*\*6\*\* auto kick\/ban\/timeout attempts in the last \*\*5 minutes\*\* \(cap 5\)/);
+      assert.match(posts[0], /\/automodconfig safety resume` \(confirm:true\)/);
+      assert.match(posts[0], /\*\*Last attempt:\*\* `kick`\./);
+
+      // The 7th: refused at the GATE (never reaches the handler — so it
+      // never counts, never mutates).
+      const { calls, promise } = run(cid, "kick", {
+        exec: { caseId: null, params: { reason: "raid burst" } },
+      });
+      const seventh = await promise;
+      assert.equal(seventh.ok, false);
+      assert.match(seventh.error, /\*\*Safety paused:\*\* the auto-moderation circuit breaker is tripped/);
+      assert.match(seventh.error, /\*\*Pause reason:\*\* 6 auto kick\/ban\/timeout attempts/);
+      assert.ok(!calls.includes("kick"), "the gated kick never reaches the outbound");
+    } finally {
+      db.clearAutomodPause(cid);
+      executor.clearBreakerWindow(cid);
+    }
+  });
+
+  it("FAILED attempts count (honeypot law): six Discord-error kicks trip the breaker - issue #739", async () => {
+    const cid = freshCommunity();
+    setMode(cid, "kick", "auto");
+    try {
+      const outcomes = await kickStorm(cid, 6, {
+        kickError: "kickMember: user x failed: Missing Permissions",
+        kickCode: "50013",
+      });
+      assert.ok(outcomes.every((o) => o.ok === false), "every kick failed at Discord");
+      const pause = db.isAutomodPaused(cid);
+      assert.equal(pause.paused, true, "a Discord error IS an attempt — the breaker sees the storm");
+      assert.match(pause.reason, /^6 auto kick\/ban\/timeout attempts/);
+    } finally {
+      db.clearAutomodPause(cid);
+      executor.clearBreakerWindow(cid);
+    }
+  });
+
+  it("policy refusals are NOT attempts: six pre-flight timeouts never trip - issue #739", async () => {
+    const cid = freshCommunity();
+    setMode(cid, "timeout", "auto");
+    try {
+      for (let i = 0; i < 6; i += 1) {
+        const { promise } = run(cid, "timeout", { exec: { caseId: null, params: {} } });
+        const res = await promise;
+        assert.equal(res.ok, false, "missing durationSeconds refuses at the param pre-flight");
+      }
+      assert.equal(db.isAutomodPaused(cid).paused, false,
+        "nothing ever attempted a mutation — nothing counts");
+    } finally {
+      executor.clearBreakerWindow(cid);
+    }
+  });
+
+  it("suggest-mode is out of the count; an approved run is a human decision, not an auto attempt - issue #739", async () => {
+    const cid = freshCommunity();
+    setMode(cid, "kick", "suggest");
+    try {
+      // Six SUGGESTIONS: recorded only, no handler, no count.
+      const rows = [];
+      for (let i = 0; i < 6; i += 1) {
+        const { promise } = run(cid, "kick", {
+          exec: { caseId: null, subjectUserId: `${830000000000000000 + i}`, params: { reason: "raid" } },
+        });
+        const res = await promise;
+        assert.equal(res.ok, true);
+        rows.push(res.actionRowId);
+      }
+      assert.equal(db.isAutomodPaused(cid).paused, false, "unapproved proposals are not attempts");
+
+      // Approve ONE (a staff decision — the handler runs but the row is
+      // mode=suggest: NOT an auto attempt), then exactly five AUTO kicks
+      // (= cap, not over).
+      const approved = await executor.approveSuggestion({
+        actionRowId: rows[0], claimant: "staff-1", deps: makeRecorder().deps,
+      });
+      assert.equal(approved.ok, true);
+      setMode(cid, "kick", "auto");
+      const outcomes = await kickStorm(cid, 5);
+      assert.equal(outcomes.filter((o) => o.ok).length, 5);
+      assert.equal(db.isAutomodPaused(cid).paused, false, "five auto attempts = the cap, not over it");
+    } finally {
+      db.clearAutomodPause(cid);
+      executor.clearBreakerWindow(cid);
+    }
+  });
+
+  it("the window is ROLLING: six-minute-old attempts are history - issue #739", async () => {
+    const cid = freshCommunity();
+    setMode(cid, "kick", "auto");
+    try {
+      const old = Date.now() - 6 * 60 * 1000;
+      for (let i = 0; i < 5; i += 1) executor.noteBreakerAttempt(cid, old);
+      const { promise } = run(cid, "kick", { exec: { caseId: null, params: { reason: "raid" } } });
+      const res = await promise;
+      assert.equal(res.ok, true);
+      assert.equal(db.isAutomodPaused(cid).paused, false,
+        "the stale stamps prune out — the fresh attempt alone sits well under the cap");
+    } finally {
+      executor.clearBreakerWindow(cid);
+    }
+  });
+
+  it("a failed trip POST never costs the persisted pause - issue #739", async () => {
+    const cid = freshCommunity();
+    setMode(cid, "kick", "auto");
+    try {
+      const outcomes = await kickStorm(cid, 6, {
+        deps: {
+          postBreakerTrip: async () => {
+            throw new Error("no automod channel is configured — the trip notice has nowhere to post");
+          },
+        },
+      });
+      assert.equal(outcomes.at(-1).ok, true, "the tripping run itself still succeeds honestly");
+      assert.equal(db.isAutomodPaused(cid).paused, true,
+        "persistence first, the shout second — a dead post never re-arms the storm");
+    } finally {
+      db.clearAutomodPause(cid);
+      executor.clearBreakerWindow(cid);
+    }
+  });
+
+  it("the trip copy is the docs copy (pure) - issue #739", () => {
+    assert.equal(
+      executor.breakerTripText({ count: 6, windowMinutes: 5, cap: 5, lastAction: "kick" }),
+      "**Safety paused:** the auto-moderation circuit breaker tripped — **6** auto kick/ban/timeout attempts in the last **5 minutes** (cap 5). " +
+      "`kick`, `ban`, and `timeout` stay dark for auto AND Approve until an admin runs `/automodconfig safety resume` (confirm:true). " +
+      "Warn, delete, ticket, and staff notes keep running. **Last attempt:** `kick`.",
+    );
+  });
+});
+
 // ── Claim / commit shape ─────────────────────────────────────────────────────
 
 describe("claim-before-commit — mutations run EXACTLY once", () => {
