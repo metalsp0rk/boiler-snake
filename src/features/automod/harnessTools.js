@@ -31,9 +31,13 @@
  *       model a cause and the loop continues — the gork decision-47 posture).
  *     - Enforcement lives here, not in the prompt alone (locked decision 4):
  *       * one staff note per user per case (a second call is refused),
- *       * notes require an explicitly CONSIDERED user — consideration is a
- *         recorded action for that user (including `no_action`); a note for
- *         anyone else is refused naming the bystander rule,
+ *       * a note call QUEUES the note for COMMIT RECONCILIATION (#731): the
+ *         note lands only for users with recorded action intent (including
+ *         `no_action`); the commit-time reconciler writes notes for subjects,
+ *         DROPS notes for users with no intent (zero rows, card names it) and
+ *         harness-fills narratives the model omitted. Call order therefore
+ *         does not matter — but param validation and the per-user dedupe DO
+ *         run here, at call time,
  *       * one call per (action, user) per run (mirrors the executor's
  *         unique case slot),
  *       * an `off` action cannot run even if a model hallucinates the call.
@@ -213,10 +217,12 @@ const ALWAYS_ON_SCHEMAS = Object.freeze([
   toolDef(
     TOOL_NAMES.staffNote,
     "Write the staff note — the human record of your consideration of one " +
-      "user in this case. ALWAYS available. A staff note is required for " +
-      "every user you consider, and you must consider a user first (an " +
-      "action call for them, including no_action). One note per user per " +
-      "case. Bystanders get no note.",
+      "user in this case. ALWAYS available. Write one for every user you " +
+      "select an action for (`no_action` included) — any order: the note is " +
+      "reconciled at commit against your recorded actions. A note for a user " +
+      "you never selected is DROPPED at commit (bystanders get no note), and " +
+      "a subject with no note gets one written from the structured decision. " +
+      "One note per user per case.",
     Object.freeze({
       user_id: userIdProp("consideration record"),
       content: Object.freeze({
@@ -394,7 +400,11 @@ function createToolDispatcher({ communityId, guildId, caseRow, modes = {}, subje
       return cap(JSON.stringify(result), AUTOMOD_TOOL_RESULT_MAX_CHARS);
     }
 
-    // ── STAFF NOTE tool: always present, enforced here (decision 4) ───────
+    // ── STAFF NOTE tool: always present; QUEUED for commit reconciliation ─
+    // #731 law: call order does not matter — the note lands only if the user
+    // has recorded action intent by COMMIT (the reconciler in harness.js owns
+    // writing, dropping, and harness-filling). Call time keeps the mechanical
+    // checks: params, the cap, and one note per user per case.
     if (name === TOOL_NAMES.staffNote) {
       const userId = optionalText(args.user_id);
       if (!userId) {
@@ -407,22 +417,16 @@ function createToolDispatcher({ communityId, guildId, caseRow, modes = {}, subje
       if (content.length > MAX_NOTE_CONTENT) {
         return refuse(name, args, `Staff note content is ${content.length} characters — the cap is ${MAX_NOTE_CONTENT}. Shorten it.`);
       }
-      if (!considered.has(userId)) {
-        return refuse(
-          name,
-          args,
-          `write_staff_note refused for <@${userId}>: they are not a considered user in this case yet. Consider them first — record ` +
-            "`no_action` (or the action you choose) for that user, then write the note. Users who merely appear in the window are " +
-            "bystanders: no note, no action (locked decision 4).",
-        );
-      }
       if (notedUsers.has(userId)) {
         return refuse(name, args, `write_staff_note refused for <@${userId}>: one staff note per user per case — a note for them is already recorded this run.`);
       }
       notedUsers.add(userId);
       noteIntents.push({ userId, content });
-      const message = `Staff note recorded for <@${userId}> — the human record of this consideration (applied at commit).`;
-      log(name, args, "recorded", message);
+      const message =
+        `Staff note queued for <@${userId}> for commit reconciliation. It is written only if you also record an action ` +
+        "for that user (`no_action` included) before the run commits — a note for a user you never selected is dropped, " +
+        "and a selected user without a note gets one written from the structured decision.";
+      log(name, args, "queued", message);
       return message;
     }
 

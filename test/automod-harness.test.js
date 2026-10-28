@@ -10,8 +10,10 @@
  *    `consumeAutomodCase` fires EXACTLY ONCE at provider acceptance — an
  *    unaccepted call (HTTP error, throwing seam, no key) consumes NOTHING;
  *  - zero mutation during tool rounds; COMMIT after the loop through the
- *    real executor (actions → notes → the #731 reconcileNotes hook); the
- *    round cap STILL commits and finishes `complete` naming
+ *    real executor, then the whole #731 staff-note story through the
+ *    commit-time reconciler hook (actions → reconcileNotes, which owns
+ *    writing / dropping / harness-filling); the round cap STILL commits and
+ *    finishes `complete` naming
  *    "tool-round cap (12) reached" in last_run_error;
  *  - the referrer-visible lines carry the specific cause —
  *    `**Referred by:** <@id> — provider error: …`, never "something failed"
@@ -349,6 +351,11 @@ test("accepted run: lifecycle, zero-mutation rounds, commit via the real executo
   assert.equal(notes[0].author_id, BOT, "the note author is the bot (client user id)");
   assert.match(notes[0].content, /weighed the referral/);
   assert.match(notes[0].content, new RegExp(`\\(automod case A-${caseRow.case_number}\\)$`));
+  // #731 note shape: the body lists what was performed/pending/refused and
+  // carries the evidence link — the note is written by the reconciler.
+  assert.match(notes[0].content, /\*\*Actions:\*\*\n {2}- `warn` — pending approval — reason: "targeted harassment"/);
+  assert.match(notes[0].content, new RegExp(`\\*\\*Evidence:\\*\\* <https://discord\\.com/channels/${GUILD}/${SRC_CH}/${MSG}>`));
+  assert.doesNotMatch(notes[0].content, /harness-filled/, "the model's narrative rides — no marker");
 
   // commit order is ACTIONS → NOTES (documented for #730/#731)
   const warnLine = res.commit.lines.findIndex((l) => l.startsWith("- `warn`"));
@@ -611,9 +618,9 @@ test("auto-mode timeout: the harness passes the duration UNCLAMPED; the executor
   assert.match(decisionField(w.edits[0]), /`timeout` — \*\*executed\*\*/);
 });
 
-// ── 7. note enforcement + the #731 reconciler hook ──────────────────────────
+// ── 7. note reconciliation + the #731 reconciler hook ───────────────────────
 
-test("bystander notes are refused; the #731 reconciler hook runs after notes and cannot break the commit - issue #728", async () => {
+test("queued bystander notes drop at commit; the #731 reconciler hook replaces the note story and cannot break the commit - issue #728/#731", async () => {
   const { cid, caseRow, w } = await seededCommunity("recon");
   let hookArgs = null;
   const round1 = {
@@ -631,27 +638,52 @@ test("bystander notes are refused; the #731 reconciler hook runs after notes and
     caseId: caseRow.id,
     deps: w.deps({
       chat,
+      // Overriding the seam REPLACES the whole note story — the honest test
+      // wrapper delegates to the shipped default and adds its own audit line.
       reconcileNotes: async (args) => {
         hookArgs = args;
-        return { lines: ["- reconciler: consideration audited"] };
+        const real = await harness.reconcileCaseNotes(args);
+        return {
+          ...real,
+          lines: [...real.lines, "- reconciler: consideration audited"],
+          extraLines: [...real.extraLines, "- reconciler: consideration audited"],
+        };
       },
     }),
   });
 
-  // The bystander refusal came back as a TOOL RESULT (the model can react),
-  // while the considered subject's note recorded normally:
-  assert.match(round1.out[0], /not a considered user/);
-  assert.match(round1.out[2], /^Staff note recorded for <@852000000000000012>/);
-  assert.match(decisionField(w.edits[0]), /reconciler: consideration audited/);
+  // The bystander note call is QUEUED at call time (order-independent), and
+  // the COMMIT reconciler drops it — while the considered subject's note
+  // records normally:
+  assert.match(round1.out[0], /^Staff note queued for <@852000000000000013>/);
+  assert.match(round1.out[2], /^Staff note queued for <@852000000000000012>/);
+  const decision = decisionField(w.edits[0]);
+  assert.match(decision, /reconciler: consideration audited/);
+  // #731 honest card line — the drop is visible, never a silent discard:
+  assert.ok(
+    decision.includes(`**Staff note dropped:** <@${BYS}>`) &&
+      decision.includes("the model recorded no action (not considered), so no staff note was written"),
+    `drop line on the card: ${decision}`,
+  );
 
   assert.equal(db.listStaffNotes(cid, BYS).length, 0, "bystanders get NO note (decision 4)");
   assert.equal(db.listStaffNotes(cid, SUB).length, 1);
+  assert.match(db.listStaffNotes(cid, SUB)[0].content, /weighed it; no sanction/);
 
-  assert.ok(hookArgs, "commitRunIntents calls the #731 hook after notes");
+  assert.ok(hookArgs, "commitRunIntents calls the #731 reconciler hook after the actions");
   assert.deepEqual(hookArgs.consideredUserIds, [SUB]);
-  assert.deepEqual(hookArgs.notedUserIds, [SUB]);
+  assert.deepEqual(hookArgs.notedUserIds, [BYS, SUB], "notedUserIds = every QUEUED note (drop is the reconciler's call)");
+  assert.equal(hookArgs.actionIntents.length, 1, "the reconciler receives the action intents");
+  assert.equal(hookArgs.actionResults.length, 1, "…and the executor results");
   assert.equal(hookArgs.caseRow.id, caseRow.id);
   assert.equal(res.state, "complete");
+
+  // A decision log entry exists for the DROPPED note too — the run's record
+  // stays honest even though the row was never written:
+  const log = JSON.parse(db.getAutomodCaseById(caseRow.id).decision_log);
+  const noteEntries = log.filter((e) => e.tool === "write_staff_note");
+  assert.equal(noteEntries.length, 2, "both queued note calls are logged");
+  assert.ok(noteEntries.every((e) => e.state === "queued"));
 
   // A BROKEN reconciler is a partial-failure line on a SECOND case — never a
   // dead run (its own failure never cancels the commit that already landed):

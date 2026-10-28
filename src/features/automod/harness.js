@@ -42,11 +42,16 @@
  *     `executeAutomodAction({... caseId, referrerUserId, claimant:
  *     "harness" })` — the executor already applies the mode gate, staff/
  *     hierarchy guards, the atomic claim, and the timeout clamp; the
- *     harness clamps nothing itself. Recorded staff-note intents then write
- *     through the REAL `createStaffNote` (author = the bot acting for the
- *     harness; content = the model's note + a case A-n reference; the
- *     dispatcher already guaranteed only-considered users, one note each).
- *     `deps.reconcileNotes` is #731's completeness hook (no-op today).
+ *     harness clamps nothing itself. The STAFF-NOTE story (#731) is owned by
+ *     the commit-time RECONCILER (`reconcileCaseNotes`, the default behind
+ *     `deps.reconcileNotes` — the hook stays overridable): every user with
+ *     action intent ends with EXACTLY ONE note written through the real
+ *     `createStaffNote` (author = the bot acting for the harness) — the
+ *     model's narrative when it wrote one, the harness-filled marker body
+ *     when it did not — each body carrying case A-n, the action list with
+ *     the commit states (auto mode's executed/refused already in the note at
+ *     birth), and the evidence link. A note queued for a user WITHOUT intent
+ *     is DROPPED (zero rows) and the card carries the honest dropped line.
  *  8. Outcome post (#730): the placeholder is EDITED (or a fresh post lands
  *     when the placeholder never did) into the interactive CASE CARD —
  *     per-subject outcome sections built from a FRESH re-read of the action
@@ -116,6 +121,13 @@ const {
   AUTOMOD_ACTIONS,
   AUTOMOD_MAX_TOOL_ROUNDS,
   AUTOMOD_RUN_TIMEOUT_MS,
+  AUTOMOD_NOTE_HARNESS_FILLED,
+  AUTOMOD_NOTE_DROPPED_LABEL,
+  AUTOMOD_NOTE_ACTIONS_HEADER,
+  AUTOMOD_NOTE_EVIDENCE_LABEL,
+  AUTOMOD_NOTE_TRUNCATION_MARKER,
+  AUTOMOD_NOTE_ACTION_ENTRY_MAX,
+  AUTOMOD_NOTE_MIN_NARRATIVE,
 } = require("./constants");
 
 /** The boot-sweep cause, pinned by the sweep test (#728 contract copy). */
@@ -334,9 +346,11 @@ function makeRunDeps({ client = null } = {}) {
       }
       return message.edit(payload);
     },
-    /** #731's staff-note completeness reconciler plugs in HERE (see
-     *  commitRunIntents). Default: absent → no-op. */
-    reconcileNotes: null,
+    /** The #731 staff-note completeness reconciler (see commitRunIntents):
+     *  ONE note per considered subject (narrative or harness-filled), note
+     *  calls without intent dropped with a card line. Tests override or wrap
+     *  this seam; a broken reconciler can never break the commit. */
+    reconcileNotes: (args) => reconcileCaseNotes(args),
   };
 }
 
@@ -344,6 +358,250 @@ function makeRunDeps({ client = null } = {}) {
 function buildRunDeps(over = {}) {
   const base = makeRunDeps({ client: over?.client ?? null });
   return { ...base, ...over };
+}
+
+/* ── staff-note layer (#731, epic #723) — the one-note law ─────────────────
+ * Every user the model selects with ANY action tool (no_action included)
+ * ends the commit with EXACTLY ONE automod staff note, written through the
+ * real `createStaffNote` (author = the bot). Body law (#731): case A-n,
+ * what was weighed (the model's narrative, or the harness-filled marker
+ * when the model omitted it), what was performed / left pending / refused
+ * (the action list with the commit states — auto mode's executed/refused
+ * result is in the note AT BIRTH), and the evidence message link when the
+ * case has one — all inside the 2000-char cap (the narrative truncates with
+ * an explicit marker; the case never fails for it). A note the model queued
+ * for a user WITHOUT action intent is DROPPED (zero rows) and the card says
+ * why. Staff Approve/Dismiss later UPDATE this same row (`card.updateNoteOutcome`)
+ * — never a second automod note for the same case+user. */
+
+/** The note-write actor: the bot acting for the harness (the repository
+ *  stores the id verbatim; the staff surfaces render the bot user). */
+function noteAuthorId(d) {
+  return optionalText(d.botUserId) ?? "automod";
+}
+
+/** The discovery suffix `card.findCaseNoteRow` scans for — ONE definition. */
+function automodNoteSuffix(caseRow) {
+  return ` (automod case A-${caseRow?.case_number ?? "?"})`;
+}
+
+/** The referred message's jump link — the note's evidence line when present. */
+function evidenceLink(guildId, caseRow) {
+  const gid = optionalText(guildId);
+  const cid = optionalText(caseRow?.channel_id);
+  const mid = optionalText(caseRow?.message_id);
+  return gid && cid && mid
+    ? `https://discord.com/channels/${gid}/${cid}/${mid}`
+    : null;
+}
+
+/** Note-side state words — deliberately the SAME words the case card renders
+ *  (card.js `renderRowLine`), so the note and the card never disagree. */
+function noteStateLabel(intent, out) {
+  if (intent?.action === "no_action") return "recorded decision";
+  const state = out?.state ?? (out?.ok ? "executed" : "failed");
+  if (state === "recorded_suggestion") return "pending approval";
+  if (state === "suggested") return "pending approval";
+  if (state === "approved" || out?.inFlight) return "in flight";
+  if (state === "dismissed") return "dismissed";
+  return String(state);
+}
+
+/** One `**Actions:**` line: action, commit state, the reason the model gave,
+ *  and the executor's verbatim result/error when it carried one. Capped by
+ *  AUTOMOD_NOTE_ACTION_ENTRY_MAX — the note never drowns the narrative. */
+function noteActionEntry({ intent, out }) {
+  const pieces = [
+    `  - \`${intent?.action ?? "?"}\` — ${noteStateLabel(intent, out)}`,
+    optionalText(out?.result) ? `— ${sliceSafe(String(out.result), 140)}` : "",
+    optionalText(out?.error) ? `— ${sliceSafe(String(out.error), 140)}` : "",
+  ];
+  const why = optionalText(intent?.params?.reason ?? intent?.params?.rationale);
+  if (why) pieces.push(`— reason: "${sliceSafe(why, 120)}"`);
+  return sliceSafe(pieces.filter(Boolean).join(" "), AUTOMOD_NOTE_ACTION_ENTRY_MAX - 16);
+}
+
+/**
+ * Assemble one automod note body, capped so it ALWAYS fits
+ * MAX_NOTE_CONTENT (the repository throws above the cap — the note is
+ * written, never the case failed): the actions block keeps its shape, the
+ * narrative truncates with the explicit #731 marker when squeezed.
+ *
+ * Grammar (card.updateNoteOutcome replays it): narrative first, then the
+ * `**Actions:**` block, then the evidence line, then the discovery suffix —
+ * the staff-outcome section is appended AFTER all of it on a staff decision.
+ */
+function assembleAutomodNoteBody({
+  narrative = "",
+  harnessFilled = false,
+  entryLines = [],
+  evidenceUrl = null,
+  suffix = "",
+} = {}) {
+  const budget = MAX_NOTE_CONTENT - suffix.length;
+  const blocks = (list) =>
+    [
+      list.length ? `${AUTOMOD_NOTE_ACTIONS_HEADER}\n${list.join("\n")}` : "",
+      evidenceUrl ? `${AUTOMOD_NOTE_EVIDENCE_LABEL} <${evidenceUrl}>` : "",
+    ]
+      .filter(Boolean)
+      .join("\n\n");
+  // The actions/evidence blocks may never crowd the narrative out entirely:
+  // drop tail entries (with an honest marker line) until the floor is kept.
+  const floor = Math.max(
+    AUTOMOD_NOTE_MIN_NARRATIVE,
+    harnessFilled ? AUTOMOD_NOTE_HARNESS_FILLED.length : 0,
+  );
+  const full = Array.isArray(entryLines) ? entryLines.filter(Boolean) : [];
+  let entries = full;
+  while (entries.length > 0 && blocks(entries).length + 2 > budget - floor) {
+    entries = entries.slice(0, -1);
+  }
+  if (entries.length > 0 && entries.length < full.length) {
+    entries = [...entries, "  - …[remaining actions truncated]"];
+    if (blocks(entries).length + 2 > budget - floor) entries = entries.slice(0, -1);
+  }
+  let skeleton = blocks(entries);
+  if (skeleton.length + 2 > budget - Math.min(40, floor)) {
+    skeleton = sliceSafe(skeleton, Math.max(1, budget - Math.min(40, floor) - 15)) + "…[truncated]";
+  }
+  const baseText = harnessFilled ? AUTOMOD_NOTE_HARNESS_FILLED : String(narrative ?? "").trim();
+  const room = budget - (skeleton ? skeleton.length + 2 : 0);
+  let narrativeText;
+  if (baseText.length <= room) {
+    narrativeText = baseText;
+  } else {
+    const keep = Math.max(1, room - AUTOMOD_NOTE_TRUNCATION_MARKER.length - 1);
+    narrativeText = sliceSafe(baseText, keep) + AUTOMOD_NOTE_TRUNCATION_MARKER;
+  }
+  // Belt (rule 5 in miniature): even a squeezed-to-nothing body still writes
+  // SOMETHING honest rather than throwing the subject's note away.
+  narrativeText = narrativeText || sliceSafe(AUTOMOD_NOTE_HARNESS_FILLED, Math.max(1, room));
+  let body = [narrativeText, skeleton].filter(Boolean).join("\n\n");
+  if (body.length > budget) body = sliceSafe(body, Math.max(1, budget - 13)) + "…[truncated]";
+  return body + suffix;
+}
+
+/**
+ * THE #731 RECONCILER — the commit-time enforcement of the one-note law
+ * (the contract: "prompt text is not enough"). Plugged in as the default
+ * behind `deps.reconcileNotes`; commitRunIntents guards it, so a throwing
+ * reconciler degrades to a partial-failure card line, never a dead commit.
+ *
+ * Law it enforces:
+ *  - considered (ANY action intent, no_action included) → exactly ONE note;
+ *    narrative from the queued note when the model wrote one, else the
+ *    harness-filled marker body ("model omitted the narrative");
+ *  - queued note WITHOUT intent (a window speaker, the referrer who only
+ *    filed, a lookup target) → DROPPED: zero staff_notes rows and one
+ *    honest `**Staff note dropped:**` card line naming the user;
+ *  - several actions for one subject → ONE note whose body lists each;
+ *  - never DMs the note, never touches ticket/DM copy (that copy law lives
+ *    in the note body itself + #735's scrub).
+ *
+ * @param {object} args the commitRunIntents hook shape: { communityId,
+ *   guildId, caseRow, ids, consideredUserIds, notedUserIds, noteIntents,
+ *   actionIntents, actionResults, deps }
+ * @returns {Promise<{ lines: string[], extraLines: string[],
+ *                     noteResults: Array<{ ok: boolean, userId: string,
+ *                     row?: object, error?: string, dropped?: boolean }> }>}
+ */
+async function reconcileCaseNotes({
+  communityId,
+  guildId = null,
+  caseRow,
+  consideredUserIds = [],
+  notedUserIds = [],
+  noteIntents = [],
+  actionIntents = [],
+  actionResults = [],
+  deps = {},
+} = {}) {
+  const lines = [];
+  const extraLines = [];
+  const noteResults = [];
+  const suffix = automodNoteSuffix(caseRow);
+  const evidence = evidenceLink(guildId, caseRow);
+
+  // Subject → its action results, FIRST-SEEN order (one note per subject,
+  // body lists every action against them — contract 3c).
+  const bySubject = new Map();
+  const subjectOrder = [];
+  for (const r of Array.isArray(actionResults) ? actionResults : []) {
+    const subject = String(r?.intent?.subjectUserId ?? "").trim();
+    if (!subject) continue;
+    if (!bySubject.has(subject)) {
+      bySubject.set(subject, []);
+      subjectOrder.push(subject);
+    }
+    bySubject.get(subject).push(r);
+  }
+
+  const queued = new Map();
+  for (const n of Array.isArray(noteIntents) ? noteIntents : []) {
+    const userId = String(n?.userId ?? "").trim();
+    if (userId && !queued.has(userId)) queued.set(userId, n);
+  }
+
+  const writeNote = (userId, { narrative, harnessFilled }) => {
+    const entryLines = (bySubject.get(userId) ?? []).map(noteActionEntry);
+    const content = assembleAutomodNoteBody({
+      narrative,
+      harnessFilled,
+      entryLines,
+      evidenceUrl: evidence,
+      suffix,
+    });
+    const row = deps.createNote({
+      communityId,
+      userId,
+      authorId: noteAuthorId(deps),
+      content,
+    });
+    noteResults.push({ ok: true, userId, row });
+    lines.push(
+      `- staff note → <@${userId}>: recorded (N-${row?.note_number ?? "?"})${harnessFilled ? " — harness-filled" : ""}.`,
+    );
+  };
+
+  for (const userId of subjectOrder) {
+    const note = queued.get(userId);
+    try {
+      writeNote(userId, {
+        narrative: note?.content ?? "",
+        harnessFilled: !note,
+      });
+    } catch (err) {
+      const cause = sliceSafe(err?.message || String(err), 200);
+      console.error(
+        `[automod] harness staff-note commit failed (community ${communityId} user ${userId} ` +
+        `case ${caseRow?.case_number != null ? `A-${caseRow.case_number}` : `#${caseRow?.id ?? "?"}`}): ${cause}`,
+      );
+      noteResults.push({ ok: false, userId, error: cause });
+      lines.push(`- staff note → <@${userId}>: **could not record** — ${cause}`);
+      extraLines.push(`- **Staff note:** could not record for <@${userId}> — ${cause}`);
+    }
+  }
+
+  // Queued notes for users with NO action intent: dropped, never written
+  // (decision 4 — filing a referral, speaking in the window, or being a
+  // lookup target is not consideration).
+  const considered = new Set(
+    (Array.isArray(consideredUserIds) ? consideredUserIds : [])
+      .map((id) => String(id ?? "").trim())
+      .filter(Boolean),
+  );
+  for (const userId of [...queued.keys()]) {
+    if (bySubject.has(userId) || considered.has(userId)) continue;
+    const report =
+      `- ${AUTOMOD_NOTE_DROPPED_LABEL} <@${userId}> — the note tool named them but the model recorded no action ` +
+      "(not considered), so no staff note was written (locked decision 4).";
+    lines.push(report);
+    extraLines.push(report);
+    noteResults.push({ ok: true, userId, dropped: true });
+  }
+
+  return { lines, extraLines, noteResults, consideredUserIds, notedUserIds };
 }
 
 /* ── commit ──────────────────────────────────────────────────────────────── */
@@ -364,9 +622,11 @@ function formatActionLine(intent, out) {
 }
 
 /**
- * Run every recorded intent through the executor + the real note writer.
- * Order (documented for #730/#731): ACTIONS first (the executor's own
- * claims/dedupe own those rows), then NOTES, then the reconciler hook.
+ * Run every recorded intent through the executor, then the whole #731
+ * staff-note story through the reconciler hook (default `reconcileCaseNotes`
+ * — the only note writer at commit). Order (documented for #730/#731):
+ * ACTIONS first (the executor's own claims/dedupe own those rows), NOTES
+ * second (the reconciler owns writing, dropping, and harness-filling).
  * Partial failures report partial results (AGENTS.md rule 5) — one dead
  * intent never cancels the rest.
  */
@@ -402,49 +662,32 @@ async function commitRunIntents({ d, cid, gid, caseRow, referrerUserId, dispatch
     lines.push(formatActionLine(intent, out));
   }
 
-  const suffix = ` (automod case A-${caseRow.case_number})`;
-  for (const note of dispatcher.noteIntents) {
-    try {
-      const body = sliceSafe(note.content, Math.max(1, MAX_NOTE_CONTENT - suffix.length));
-      const row = d.createNote({
-        communityId: cid,
-        userId: note.userId,
-        // Actor = the bot acting for the harness (the repository stores the
-        // id verbatim; the staff surfaces render the bot user).
-        authorId: optionalText(d.botUserId) ?? "automod",
-        content: `${body}${suffix}`,
-      });
-      noteResults.push({ ok: true, userId: note.userId, row });
-      lines.push(`- staff note → <@${note.userId}>: recorded (N-${row?.note_number ?? "?"}).`);
-    } catch (err) {
-      logFail("staff-note commit", { ...ids, userId: note.userId }, err);
-      noteResults.push({ ok: false, userId: note.userId, error: err?.message || String(err) });
-      lines.push(`- staff note → <@${note.userId}>: **could not record** — ${sliceSafe(err?.message || String(err), 200)}`);
-      extraLines.push(
-        `- **Staff note:** could not record for <@${note.userId}> — ${sliceSafe(err?.message || String(err), 200)}`,
-      );
-    }
-  }
-
-  // #731 HOOK POINT — the staff-note completeness reconciler (every
-  // considered user ends with a note; the considered set is exactly
-  // dispatcher.consideredUserIds(), the action rows already record
-  // consideration independently). Absent today → no-op; guarded so a
-  // broken reconciler can never break the commit.
+  // ── STAFF NOTES (#731): the whole note story runs through the reconciler —
+  // the default is `reconcileCaseNotes` above (one note per considered
+  // subject, narrative or harness-filled; queued notes without intent are
+  // dropped with an honest card line). Overriding `deps.reconcileNotes`
+  // replaces the whole story (wrap the default to keep writing — see
+  // test/automod-harness.test.js). `lines` report to the commit result;
+  // `extraLines` are the non-ledger lines the CASE CARD must carry.
+  // Guarded (rule 5): a dead reconciler degrades to one partial-failure
+  // line — the committed actions above stay.
   if (typeof d.reconcileNotes === "function") {
     try {
       const extra = await d.reconcileNotes({
         communityId: cid,
         guildId: gid,
         caseRow,
+        ids,
         consideredUserIds: dispatcher.consideredUserIds(),
         notedUserIds: dispatcher.noteIntents.map((n) => n.userId),
+        noteIntents: dispatcher.noteIntents,
+        actionIntents: dispatcher.actionIntents,
+        actionResults,
         deps: d,
       });
-      if (Array.isArray(extra?.lines)) {
-        lines.push(...extra.lines);
-        extraLines.push(...extra.lines);
-      }
+      if (Array.isArray(extra?.lines)) lines.push(...extra.lines);
+      if (Array.isArray(extra?.extraLines)) extraLines.push(...extra.extraLines);
+      if (Array.isArray(extra?.noteResults)) noteResults.push(...extra.noteResults);
     } catch (err) {
       logFail("note reconciliation", ids, err);
       const line = `- note reconciliation: **failed** — ${sliceSafe(err?.message || String(err), 200)}`;
@@ -827,7 +1070,9 @@ async function runCaseInner({ communityId, guildId, caseId, deps, nowMs }) {
 
   const noteRefs = {};
   for (const n of commit.noteResults) {
-    if (n.ok) noteRefs[String(n.userId)] = n.row?.note_number ?? null;
+    // `dropped` (#731): a queued note without intent wrote NO row — the
+    // user is not a card subject, only the extraLines carry the drop.
+    if (n.ok && !n.dropped) noteRefs[String(n.userId)] = n.row?.note_number ?? null;
   }
 
   await finishRun({
@@ -960,4 +1205,13 @@ module.exports = {
   formatProviderCause,
   formatActionLine,
   commitRunIntents,
+  // Staff-note layer (#731 — the reconciler IS the default
+  // `deps.reconcileNotes`; tests wrap or replace the seam, and the pure
+  // pieces are pinned directly):
+  reconcileCaseNotes,
+  assembleAutomodNoteBody,
+  noteActionEntry,
+  noteStateLabel,
+  evidenceLink,
+  automodNoteSuffix,
 };

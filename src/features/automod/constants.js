@@ -131,6 +131,45 @@ const AUTOMOD_DECISION_LOG_MAX_ENTRIES = 128;
  *  full record page; keep one tool result bounded like Gork's read caps). */
 const AUTOMOD_TOOL_RESULT_MAX_CHARS = 4000;
 
+/* ── Staff notes for considered users (#731, epic #723) ────────────────────
+ * The one-note-per-considered-subject law: every user the model selects with
+ * ANY action tool (no_action included) ends with exactly ONE staff note for
+ * the case — the model's narrative when it wrote one, a harness-filled body
+ * when it did not, an outcome UPDATE on the SAME row when staff decide. A
+ * note call for a user with no action intent is DROPPED at commit (zero rows)
+ * and the case card says so. The strings below are the shipped copy:
+ * docs/automod.md quotes them verbatim — grep before renaming. */
+
+/** Body marker on a note the harness wrote because the model recorded an
+ *  action but omitted the narrative (issue #731: "marked as harness-filled"). */
+const AUTOMOD_NOTE_HARNESS_FILLED =
+  "**Narrative:** harness-filled — the model recorded no narrative for this user; this note is rebuilt from the structured decision.";
+
+/** Decision-field label for a note call dropped at commit: the tool named a
+ *  user with no action intent, so NO staff_notes row was written (#731). */
+const AUTOMOD_NOTE_DROPPED_LABEL = "**Staff note dropped:**";
+
+/** Section header of the outcome section a staff decision writes into the
+ *  subject's SAME automod note (one header per note — re-decisions merge). */
+const AUTOMOD_NOTE_OUTCOME_HEADER = "**Outcome:**";
+
+/** Section header listing what the judge did for this subject at commit. */
+const AUTOMOD_NOTE_ACTIONS_HEADER = "**Actions:**";
+
+/** Label preceding the evidence message link inside an automod note. */
+const AUTOMOD_NOTE_EVIDENCE_LABEL = "**Evidence:**";
+
+/** Appended to narrative text the 2000-char note cap forced us to cut —
+ *  truncation is EXPLICIT, never silent (#731 note-shape law). */
+const AUTOMOD_NOTE_TRUNCATION_MARKER = "…[narrative truncated to fit the note cap]";
+
+/** Per-entry cap on an action line inside the note's **Actions:** section. */
+const AUTOMOD_NOTE_ACTION_ENTRY_MAX = 200;
+
+/** Floor the assembler always keeps for the narrative when the actions
+ *  section would otherwise crowd it out of the 2000-char cap. */
+const AUTOMOD_NOTE_MIN_NARRATIVE = 160;
+
 /** Slash command builders use these for their option choices. */
 const MODE_CHOICES = AUTOMOD_MODES.map((m) => ({ name: m, value: m }));
 const ACTION_CHOICES = AUTOMOD_ACTIONS.map((a) => ({ name: a, value: a }));
@@ -176,4 +215,13 @@ module.exports = {
   AUTOMOD_RUN_TIMEOUT_MS,
   AUTOMOD_DECISION_LOG_MAX_ENTRIES,
   AUTOMOD_TOOL_RESULT_MAX_CHARS,
+  // Staff notes (#731): the one-note law's shipped copy + assembly caps.
+  AUTOMOD_NOTE_HARNESS_FILLED,
+  AUTOMOD_NOTE_DROPPED_LABEL,
+  AUTOMOD_NOTE_OUTCOME_HEADER,
+  AUTOMOD_NOTE_ACTIONS_HEADER,
+  AUTOMOD_NOTE_EVIDENCE_LABEL,
+  AUTOMOD_NOTE_TRUNCATION_MARKER,
+  AUTOMOD_NOTE_ACTION_ENTRY_MAX,
+  AUTOMOD_NOTE_MIN_NARRATIVE,
 };

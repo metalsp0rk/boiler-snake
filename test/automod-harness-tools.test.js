@@ -11,9 +11,12 @@
  *    isolation included); action tools RECORD INTENT — zero mutation during
  *    the round loop; the staff-note tool records a note INTENT, nothing hits
  *    the database;
- *  - mechanical enforcement lives HERE, not in the prompt: a note requires a
- *    CONSIDERED user (consideration = a recorded action for them, including
- *    `no_action`), exactly one note per user per case, one call per
+ *  - mechanical enforcement lives HERE, not in the prompt: #731's law split
+ *    across the seams — the dispatcher validates params, enforces the note
+ *    cap, and allows exactly one note per user per case, QUEUING each note
+ *    for commit reconciliation (call order does not matter); the commit-time
+ *    reconciler (harness.js) decides write-vs-drop against the recorded
+ *    action intents; exactly one note per user per case, one call per
  *    (action, user);
  *  - every failure comes back as a tool-result string — the dispatcher never
  *    throws;
@@ -249,33 +252,24 @@ test("read tools run through the lookups and disclose guild isolation - issue #7
   assert.deepEqual(states, ["read_ok", "read_ok", "read_error"]);
 });
 
-// ── staff-note enforcement (locked decision 4) ──────────────────────────────
+// ── staff-note queueing (locked decision 4 + #731 reconciliation law) ───────
 
-test("notes require a considered user, allow exactly one per user, and never write during rounds - issue #728", async () => {
+test("notes queue for commit reconciliation: any order, one per user, cap enforced, zero writes during rounds - issue #728/#731", async () => {
   const d = dispatcherFor();
   const before = Number(db.db.prepare(`SELECT COUNT(*) AS n FROM staff_notes`).get().n);
 
+  // #731: call ORDER does not matter — a note queued before any action is
+  // accepted now; the commit-time reconciler writes it only if the user has
+  // action intent by commit (a note for a never-selected user is dropped).
   const tooSoon = await d.executeTool(TOOL_NAMES.staffNote, {
     user_id: SUB,
     content: "weighed the message; a formal warning fits",
   });
-  assert.match(tooSoon, /not a considered user in this case yet/);
-  assert.match(tooSoon, /bystanders/i);
-
-  // Consideration is mechanical: any recorded action — no_action included.
-  await d.executeTool("no_action", { user_id: BYS, rationale: "came close, rules do not reach them" });
-  const bystanderNote = await d.executeTool(TOOL_NAMES.staffNote, {
-    user_id: BYS,
-    content: "close call; documented",
-  });
-  assert.match(bystanderNote, /^Staff note recorded for <@851000000000000013>/);
+  assert.match(tooSoon, /^Staff note queued for <@851000000000000012> for commit reconciliation/);
+  assert.match(tooSoon, /written only if you also record an action/);
+  assert.equal(d.decisionLog.at(-1).state, "queued", "the decision log marks the queue honestly");
 
   await d.executeTool("warn", { user_id: SUB, reason: "harassment" });
-  const first = await d.executeTool(TOOL_NAMES.staffNote, {
-    user_id: SUB,
-    content: "weighed the referral and the window; formal warning fits",
-  });
-  assert.match(first, /^Staff note recorded for <@851000000000000012>/);
 
   const second = await d.executeTool(TOOL_NAMES.staffNote, {
     user_id: SUB,
@@ -283,16 +277,25 @@ test("notes require a considered user, allow exactly one per user, and never wri
   });
   assert.match(second, /one staff note per user per case/);
 
+  const bystanderNote = await d.executeTool(TOOL_NAMES.staffNote, {
+    user_id: BYS,
+    content: "window author the model never selected",
+  });
+  assert.match(bystanderNote, /^Staff note queued for <@851000000000000013>/,
+    "no call-time considered check — the drop decision belongs to the commit reconciler");
+
   const tooLong = await d.executeTool(TOOL_NAMES.staffNote, {
     user_id: SUB,
     content: "x".repeat(MAX_NOTE_CONTENT + 1),
   });
-  assert.match(tooLong, new RegExp(`Staff note content is ${MAX_NOTE_CONTENT + 1} characters — the cap is`));
+  assert.match(tooLong, new RegExp(`Staff note content is ${MAX_NOTE_CONTENT + 1} characters — the cap is`),
+    "the cap check runs BEFORE the per-user dedupe");
 
   assert.deepEqual(
     d.noteIntents.map((n) => n.userId),
-    [BYS, SUB],
+    [SUB, BYS],
   );
+  assert.deepEqual(d.consideredUserIds(), [SUB], "consideration is still only recorded ACTIONS");
   assert.equal(
     Number(db.db.prepare(`SELECT COUNT(*) AS n FROM staff_notes`).get().n),
     before,

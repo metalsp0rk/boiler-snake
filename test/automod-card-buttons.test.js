@@ -11,8 +11,9 @@
  *    the row suggested;
  *  - the executor owns claims: a double click returns **already handled**
  *    with the existing outcome and NEVER re-runs the mutation;
- *  - a terminal click appends the outcome line to the subject's harness
- *    staff note; a missing note is a reported warning, not a dead end;
+ *  - a terminal click records the outcome on the subject's harness staff
+ *    note — the SAME note row, updated (#731), never a second note; a
+ *    missing note is a reported warning, not a dead end;
  *  - the card after every decision rebuilds from FRESH rows (edit in place,
  *    buttons drop off); a card that cannot post/edit follows the send-failure
  *    law: the ephemeral says so, the log names it, and the case row carries
@@ -39,6 +40,7 @@ const {
   NOT_ON_FLUXER,
   CARD_APPROVE_PREFIX,
   CARD_DISMISS_PREFIX,
+  AUTOMOD_NOTE_OUTCOME_HEADER,
 } = require("../src/features/automod/constants");
 
 // The guild maps to a REAL community: discordCommunityId(guildId) must
@@ -210,13 +212,15 @@ function captureConsole() {
   return { lines, restore: () => { console.error = orig; } };
 }
 
-// ── 1. Approve happy path (real executor, real warning, note append) ─────────
+// ── 1. Approve happy path (real executor, real warning, note UPDATED) ────────
 
-test("Approve runs the shared executor: warning recorded, note appended, card rebuilt from fresh rows - issue #730", async () => {
+test("Approve runs the shared executor: warning recorded, the SAME note updated, card rebuilt from fresh rows - issue #730/#731", async () => {
   const w = makeWorld();
   const subj = nextSubject();
   const caseRow = seededCase(subj);
   const row = suggestRow(caseRow, "warn", subj);
+  const noteBefore = db.listStaffNotes(CID, subj)[0];
+  assert.ok(noteBefore, "the fixture note exists");
 
   const it = buttonInteraction(w, { customId: `${CARD_APPROVE_PREFIX}${row.id}` });
   await card.handleCardApprove(it, w.ctx);
@@ -226,8 +230,14 @@ test("Approve runs the shared executor: warning recorded, note appended, card re
   assert.match(final.result_text, /Formal warning W-\d+ recorded/);
   assert.equal(db.countWarnings(CID, subj), 1, "the real warning landed");
 
-  // Note append: the subject's harness note carries the outcome line.
-  const note = db.listStaffNotes(CID, subj)[0];
+  // #731: the outcome UPDATES the same harness note row — never a second note.
+  const notes = db.listStaffNotes(CID, subj);
+  assert.equal(notes.length, 1, "one note — the update never inserts a second row");
+  const note = notes[0];
+  assert.equal(note.id, noteBefore.id, "the SAME row id was updated");
+  assert.equal(note.edited_by, STAFF, "edited_by is the clicking staff id");
+  assert.ok(Number.isInteger(note.edited_at), "edited_at is stamped");
+  assert.ok(note.content.includes(`\n\n${AUTOMOD_NOTE_OUTCOME_HEADER}\n`), "one outcome section");
   assert.match(
     note.content,
     new RegExp(`\\nOutcome: approved by <@${STAFF}> — executed: Formal warning W-\\d+ recorded`),
@@ -266,10 +276,16 @@ test("double click: the second click says already handled and the mutation count
   assert.equal(db.countWarnings(CID, subj), 1, "one warning — the claim did its job");
   assert.equal(w.cardMessage.edits.length, 2, "the stale card was refreshed, not left lying");
 
-  // And the outcome was appended to the note EXACTLY once (first click only).
+  // And the outcome was recorded on the note EXACTLY once (first click only):
+  // the terminal-state re-click never duplicates the outcome section.
   const note = db.listStaffNotes(CID, subj)[0];
   const outcomeLines = note.content.split("\n").filter((l) => l.startsWith("Outcome:"));
   assert.equal(outcomeLines.length, 1);
+  assert.equal(
+    note.content.split(`\n\n${AUTOMOD_NOTE_OUTCOME_HEADER}\n`).length - 1,
+    1,
+    "exactly ONE outcome section after a double click",
+  );
 });
 
 // ── 2. pre-gates: specific refusals, ZERO mutation ────────────────────────────
@@ -403,7 +419,7 @@ test("no_action rows refuse both arms: already a recorded decision - issue #730"
 
 // ── 4. Dismiss ────────────────────────────────────────────────────────────────
 
-test("Dismiss declines without running anything and appends the dismissal to the note - issue #730", async () => {
+test("Dismiss declines without running anything and records the dismissal on the note - issue #730/#731", async () => {
   const w = makeWorld();
   const subj = nextSubject();
   const caseRow = seededCase(subj);
@@ -442,7 +458,7 @@ test("approve without a staff note: the action still runs, the missing append is
   assert.equal(db.getAutomodAction(row.id).state, "executed", "the sanction ran anyway");
   assert.match(
     it.replies[0].content,
-    /\*\*Staff note:\*\* no automod note for this subject — the outcome was not appended \(the card was updated anyway\)\./,
+    /\*\*Staff note:\*\* no automod note for this subject — the outcome could not be recorded \(the card was updated anyway\)\./,
   );
   assert.equal(w.cardMessage.edits.length, 1, "the card still updated");
 });
