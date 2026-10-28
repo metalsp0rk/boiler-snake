@@ -12,6 +12,9 @@ on:
 permissions:
   contents: read
 
+env:
+  PUPPETEER_SKIP_DOWNLOAD: "1"
+
 # G2-5 (#450): the e2e mock Discord is HOST-GLOBAL (port 3100, shared data
 # dir, deterministic namespace ids) and every job lands on the single
 # self-hosted runner. A per-ref group let a PR run and a push-to-main run

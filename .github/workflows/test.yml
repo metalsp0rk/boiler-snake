@@ -9,6 +9,10 @@ on:
 permissions:
   contents: read
 
+# The unit legs do not launch a browser. The visual job overrides this.
+env:
+  PUPPETEER_SKIP_DOWNLOAD: "1"
+
 # Newest push to a given PR/branch wins; never pile up stale test runs.
 # Safe to cancel here: this workflow only runs tests (no deploy/publish side effects).
 concurrency:
@@ -35,6 +39,8 @@ jobs:
           node-version: ${{ matrix.node-version }}
           cache: npm
       - run: npm ci
+      - name: Build forge console assets
+        run: npm run assets:build
       # #620 ambient-DB canary: every db-aware test must bind a PRIVATE temp
       # DB (loadDb/createIntegrationEnv/createE2eEnv — test/README.md #6).
       # Block the default path (project-root xpbot.sqlite) with a DIRECTORY:
@@ -58,6 +64,34 @@ jobs:
       - name: Ambient-DB canary cleanup
         if: always()
         run: rm -rf xpbot.sqlite
+
+  # #710: puppeteer screenshots of the forge shell + dashboard fixtures.
+  # Its own leg so the coverage gate does not need Chrome. Baselines live in
+  # test/visual/baselines; a pixel diff fails the job.
+  visual:
+    runs-on: [self-hosted, linux, X64]
+    timeout-minutes: 15
+    env:
+      PUPPETEER_SKIP_DOWNLOAD: "0"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # actions/checkout@v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # actions/setup-node@v7.1.0
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Forge visual regression
+        run: npm run test:visual
+      - name: Upload visual diffs
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # actions/upload-artifact@v7.0.2
+        with:
+          name: forge-visual-diff
+          path: |
+            test/visual/diff
+            test/visual/actual
+            test/visual/csp-evidence.json
+          retention-days: 5
 
   # Build the VitePress site on every PR (audit issue #203): docs.yml only
   # builds on push to main, so dead links previously surfaced at deploy time.

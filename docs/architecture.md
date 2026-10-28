@@ -99,8 +99,9 @@ src/
 │   ├── routes/              # dashboard, users, tickets, moderation, settings, sessions, system, events, …
 │   ├── views/               # Server-rendered pages per console area
 │   ├── data/                # Data-access layer for views (guild/ticket/dashboard data)
+│   ├── assets/              # Forge source (Vite input): tokens, primitives, Shoelace entry
 │   ├── middleware/          # auth guards, audit mirror, rate limiting
-│   └── public/              # Static assets (app.js, styles.css, vendored Chart.js)
+│   └── public/              # Legacy shell assets (app.js, styles.css, vendored Chart.js)
 └── (compat shims)           # auditLog.js, roles.js, decay.js, … → features
 
 xpbot.sqlite
@@ -153,6 +154,8 @@ const supervisor = { discord, fluxer, clientForCommunity };  // N endpoints, one
 ```
 
 The **web** feature's `start()` wires the Discord seams (`setBotGuildsProvider`, audit client binding) and calls `startWebServer()` — the public HTTP console. It is **dark by default**: nothing listens unless `PUBLIC_HTTP_PORT` (or the legacy `TICKET_HTTP_PORT` alias) is set. See [web-admin.md](./web-admin.md).
+
+Forged Instrument (#709) adds a Vite asset build beside that server. `npm run assets:build` writes gitignored `dist/web` and `dist/forge-stamp.json` from `src/web/assets` (tokens, self-hosted Inter and JetBrains Mono, Shoelace 2.20.1). The same static middleware serves the result at `/static/forge/*`. `/static/app.js` and `/static/styles.css` stay the legacy shell until a page migrates — a page is one shell or the other. When public HTTP is enabled, `npm start` and `startWebServer()` refuse to listen if the stamp is missing or stale, so the console never comes up half-styled. `npm run assets:dev` is the local preview. Screenshot baselines for the new shell and dashboard fixtures live under `test/visual/` (`npm run test:visual`).
 
 ### Process guards (`core/lifecycle.js`)
 

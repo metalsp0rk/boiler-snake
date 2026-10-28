@@ -53,6 +53,9 @@ Thumbs.db
 ############################
 dist/
 coverage/
+test/visual/actual/
+test/visual/diff/
+test/visual/csp-evidence.json
 
 ###
 

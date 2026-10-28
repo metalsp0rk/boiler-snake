@@ -11,6 +11,9 @@ on:
 permissions:
   contents: read
 
+env:
+  PUPPETEER_SKIP_DOWNLOAD: "1"
+
 # Manual smoke runs: never auto-cancel an in-flight one (it is usually the
 # subject of debugging); concurrent dispatches on the same ref queue.
 concurrency:

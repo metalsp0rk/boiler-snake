@@ -15,6 +15,9 @@ permissions:
   pages: write
   id-token: write
 
+env:
+  PUPPETEER_SKIP_DOWNLOAD: "1"
+
 concurrency:
   group: pages
   cancel-in-progress: true
