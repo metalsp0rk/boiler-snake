@@ -476,8 +476,19 @@ function buildDefaultDeps(deps = {}) {
     },
     fetchMember: async (guildId, userId) =>
       guildOf(guildId).members.fetch(String(userId)),
-    createBan: async (guildId, userId, { reason }) =>
-      guildOf(guildId).bans.create(String(userId), { reason }),
+    // #738: the ban rides the platform outbound's banMember helper (the
+    // cached Discord outbound over the same client) — the raw
+    // guild.bans.create path is REPLACED: the outbound returns
+    // {ok:false, error, code} instead of throwing, so the specific Discord
+    // cause reaches the row verbatim (and no delete_message_days is ever
+    // passed — decision 9). Same (communityId, userId, {reason}) shape as
+    // createKick.
+    createBan: async (communityId, userId, { reason }) =>
+      getDiscordOutbound(requireClient(deps)).banMember(
+        communityId,
+        userId,
+        reason,
+      ),
     // #737: the kick rides the platform outbound's kickMember helper (the
     // cached Discord outbound over the same client). {ok:false, error, code}
     // comes back from the outbound — the handler reports the cause verbatim.
@@ -1292,9 +1303,32 @@ function buildActionHandler(act, {
 
     case "ban":
       return async () => {
-        // No delete-message window on purpose: banning is not a bulk-delete
-        // tool (epic #723 decision 9) — the delete tool removes specifics.
-        await resolved.createBan(guildId, subject, { reason: auditReason });
+        // #738: the ban rides the platform outbound's `banMember` helper
+        // through the createBan seam — it RETURNS {ok:false, error} rather
+        // than throwing, and the handler maps every Discord cause (unknown
+        // member 10007, hierarchy 50013, missing permissions) to a refused
+        // row quoting the cause verbatim. No delete-message window on
+        // purpose: banning is not a bulk-delete tool (epic #723 decision 9)
+        // — the delete tool removes specifics. The STATED reason is the
+        // Discord audit-log reason (the dispatcher requires it; a legacy
+        // row without one rides the generic case-tag belt line).
+        const stated = String(params.reason ?? "").trim();
+        const discordReason = stated
+          ? `${stated} (automod ${caseTag})`
+          : auditReason;
+        const banned = await resolved.createBan(row.community_id, subject, {
+          reason: discordReason,
+        });
+        if (!banned?.ok) {
+          return {
+            ok: false,
+            error:
+              (banned?.error
+                ? String(banned.error)
+                : `Ban of <@${subject}> failed with no cause recorded.`) +
+              " — nobody was banned.",
+          };
+        }
         return { ok: true, result: `Banned <@${subject}>.` };
       };
 

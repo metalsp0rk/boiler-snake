@@ -346,6 +346,26 @@ test("kick without `reason` refuses with the audit-log law and keeps the slot - 
   assert.deepEqual(d.actionIntents.at(-1).params, { reason: "raid leader, second wave" });
 });
 
+// ── #738: ban — required reason at dispatch ────────────────────────────────
+
+test("the ban schema makes `reason` REQUIRED — it rides the Discord audit log - issue #738", () => {
+  const ban = buildActionSchemas(modes()).find((t) => t.function.name === "ban");
+  assert.deepEqual(ban.function.parameters.required, ["user_id", "reason"]);
+  assert.match(ban.function.description, /`reason` is required/);
+});
+
+test("ban without `reason` refuses with the audit-log law and keeps the slot - issue #738", async () => {
+  const d = dispatcherFor();
+  const refused = await d.executeTool("ban", { user_id: SUB });
+  assert.match(refused, /^`ban` needs `reason` — it rides the Discord audit log/);
+  assert.match(refused, /not recordable/);
+  assert.deepEqual(d.actionIntents, [], "a refused call records nothing");
+
+  const ok = await d.executeTool("ban", { user_id: SUB, reason: "doxxing coordinator" });
+  assert.match(ok, /^Recorded: ban/, "the refusal must not burn the (action,user) slot");
+  assert.deepEqual(d.actionIntents.at(-1).params, { reason: "doxxing coordinator" });
+});
+
 // ── #734: delete tool dispatch law ─────────────────────────────────────────
 
 test("delete_message defaults to the referred message; user-only cases must name ids - issue #734", async () => {

@@ -254,10 +254,13 @@ const ACTION_TOOL_SPECS = Object.freeze({
   ban: Object.freeze({
     description:
       "Ban the user from this server. The most serious sanction; never " +
-      "used to bulk-delete history (the delete tool removes specifics).",
+      "used to bulk-delete history (the delete tool removes specifics). " +
+      "`reason` is required: it is the Discord audit-log reason for the " +
+      "ban.",
     extra: Object.freeze({
-      reason: reasonProp("Why the user is being banned"),
+      reason: reasonProp("Why the user is being banned (rides the Discord audit log)"),
     }),
+    required: Object.freeze(["user_id", "reason"]),
   }),
 });
 
@@ -627,15 +630,22 @@ function createToolDispatcher({
         }
         params.durationSeconds = Math.floor(seconds);
       }
-      // #737: the KICK reason is REQUIRED — it is the Discord audit-log
-      // reason for the removal AND the text stored on the action row (the
-      // row's `params.reason`, rendered by the card and the note). Above
-      // the slot check like every param law (#728/#732/#736 family).
+      // #737/#738: the KICK/BAN reason is REQUIRED — it is the Discord
+      // audit-log reason for the removal AND the text stored on the action
+      // row (the row's `params.reason`, rendered by the card and the note).
+      // Above the slot check like every param law (#728/#732/#736 family).
       if (name === "kick" && !reason) {
         return refuse(
           name,
           args,
           "`kick` needs `reason` — it rides the Discord audit log as the removal reason and is stored on the action row. A removal without a stated, defensible reason is not recordable — write the rule broken, or call nothing.",
+        );
+      }
+      if (name === "ban" && !reason) {
+        return refuse(
+          name,
+          args,
+          "`ban` needs `reason` — it rides the Discord audit log as the ban reason and is stored on the action row. A ban without a stated, defensible reason is not recordable — write the rule broken, or call nothing.",
         );
       }
       // #734: the delete tool's subject is the MESSAGES' author (author law
