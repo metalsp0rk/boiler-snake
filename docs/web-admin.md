@@ -111,7 +111,8 @@ return 404. Pages:
 cache only — a page never waits on Discord. Cache misses show the raw id (as
 hover-text/label), and a quiet background fetcher resolves those misses right
 after; reloading the page usually fills the names in. A member who **left the
-guild** keeps their raw id permanently — that's honest, not a bug.
+guild** keeps their raw id permanently — that's honest, not a bug. Those ids
+are set in JetBrains Mono, including a short id that renders as code.
 
 ## Type-ahead & friendly identifiers
 

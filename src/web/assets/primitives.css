@@ -59,9 +59,12 @@ body {
   text-decoration: none;
 }
 
+/* .user-id covers both the profile link and the short-id <code>. The UA
+   monospace is a different face on each OS and grows the line by a pixel. */
 .bs-id,
 .bs-metric,
-.lookup-id {
+.lookup-id,
+.user-id {
   font-family: var(--bs-font-mono);
   font-variant-numeric: tabular-nums;
 }

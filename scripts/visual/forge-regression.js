@@ -13,10 +13,9 @@
  * Chart.js paints. A passing run is the CSP evidence: Shoelace renders
  * in shadow DOM via adoptedStyleSheets under that exact policy.
  *
- * Dashboard baselines are the Bookworm visual image (scripts/visual/Dockerfile).
- * Host Chrome matches the shell byte for byte and disagrees with that image
- * by a few pixels of dashboard row height. Do not refresh dashboard baselines
- * with VISUAL_UPDATE=1 on the host — copy them out of a green image run.
+ * Record baselines with VISUAL_UPDATE=1. Raw ids use self-hosted JetBrains
+ * Mono. The right-arrow and the less-than-or-equal sign are self-hosted
+ * Inter glyphs, so host Chrome and the Bookworm image share these shots.
  */
 
 const fs = require("fs");
