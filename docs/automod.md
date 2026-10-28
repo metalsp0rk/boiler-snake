@@ -1,8 +1,8 @@
 # Auto-moderation (epic #723)
 
 !!! abstract "Ship state — this page tracks the epic"
-    **Shipped now:** the guild settings and their Manage-Guild commands — `/automod status` and `/automodconfig` (channel, rules, master switch, per-action modes, timeout cap, daily case budget, breaker state + `safety resume`) (#725) — plus **staff referral intake**: `/automod refer` and the **Refer to automod** message context menu, which record a case (**A-n**) and ack where recommendations will post (#726), the **case-context collector** + lookup tools the judge reads (#727 — no user-facing surface of its own; see [Case context](#case-context)), the **LLM harness**: the case runner that judges a recorded case, records intent through mode-gated tools, and commits every action through the executor (#728 — see [Harness](#harness)), and the **case card**: the interactive one-post-per-case outcome post whose Approve/Dismiss buttons execute suggested actions straight from the ledger (#730 — see [Case card](#case-card)).
-    **Landing in sibling issues:** the individual action tools' surfaces (#731–#738), plus the circuit breaker trip logic (#739). The intake ack never claims a recommendation was produced — the **harness posts its outcome separately**, after the ack. The mode gate itself (off/suggest/auto, guards, atomic claims) is already shipped in the executor (#729) — a suggest-mode decision is recorded as a pending ledger row and surfaces on the case card for staff approval.
+    **Shipped now:** the guild settings and their Manage-Guild commands — `/automod status` and `/automodconfig` (channel, rules, master switch, per-action modes, timeout cap, daily case budget, breaker state + `safety resume`) (#725) — plus **staff referral intake**: `/automod refer` and the **Refer to automod** message context menu, which record a case (**A-n**) and ack where recommendations will post (#726), the **case-context collector** + lookup tools the judge reads (#727 — no user-facing surface of its own; see [Case context](#case-context)), the **LLM harness**: the case runner that judges a recorded case, records intent through mode-gated tools, and commits every action through the executor (#728 — see [Harness](#harness)), and the **case card**: the interactive one-post-per-case outcome post whose Approve/Dismiss buttons execute suggested actions straight from the ledger (#730 — see [Case card](#case-card)), and the **staff-note reconciler**: one note per considered subject (narrative or harness-filled), dropped notes for non-subjects, outcomes merged into the same note (#731 — see [Staff notes](#staff-notes)).
+    **Landing in sibling issues:** the individual action tools' surfaces (#732–#738), plus the circuit breaker trip logic (#739). The intake ack never claims a recommendation was produced — the **harness posts its outcome separately**, after the ack. The mode gate itself (off/suggest/auto, guards, atomic claims) is already shipped in the executor (#729) — a suggest-mode decision is recorded as a pending ledger row and surfaces on the case card for staff approval.
 
 Auto-moderation is a staff-referred judgment pipeline: a staff member refers a message or a user, a separate LLM harness recommends staff actions against the guild's written rules, and each action type is gated `off` / `suggest` / `auto` by the guild. **Recommendations are the default** — enabling the master switch never starts kicking or banning by itself.
 
@@ -353,9 +353,11 @@ unchanged — it still only says where recommendations will post.
    every recorded action goes through the executor (`executeAutomodAction`
    with `claimant: "harness"`) — the executor owns the mode gate, staff /
    hierarchy guards, atomic claims, and the timeout clamp; the harness
-   clamps nothing itself. Recorded staff notes then write through the real
-   `createStaffNote` (author = the bot acting for the harness, content =
-   the model's note + an `A-n` case reference).
+   clamps nothing itself. Then the **staff-note reconciler** (#731,
+   [Staff notes](#staff-notes)) writes through the real `createStaffNote`
+   (author = the bot's user id): exactly one note per considered subject,
+   narrative or harness-filled, and queued note calls for users with no
+   action intent are DROPPED — zero rows plus one honest card line.
 7. The outcome **edits the placeholder** (or posts fresh when the
    placeholder never landed) into the interactive **case card** (#730,
    [Case card](#case-card)): the Decision field renders from a FRESH re-read
@@ -373,12 +375,13 @@ unchanged — it still only says where recommendations will post.
    line, `_card_post_error` records a card that never posted) — never model
    calls.
 
-**Enforcement in the tool layer** (locked decision 4 — not prompt-only): a
-staff note is required for every user considered, and consideration is
-mechanical — a user becomes considered by a recorded action for them
-(including `no_action`); a note for anyone else is refused naming the
-**bystander rule**, and a second note for the same user is refused
-(one per user per case). Action tools dedupe per (action, user) per run,
+**Enforcement in the tool layer** (locked decision 4 — not prompt-only):
+consideration is mechanical — a user becomes considered by a RECORDED ACTION
+for them (including `no_action`). The note tool is order-independent: a call
+at any point is validated (`user_id`, non-empty `content`) and QUEUED — one
+per user per run — with the tool result naming the commit-time law;
+reconciliation at COMMIT decides what is actually written (see
+[Staff notes](#staff-notes)). Action tools dedupe per (action, user) per run,
 `off` actions cannot run even if hallucinated, and `timeout` durations pass
 through UNCLAMPED (the executor clamps and the row records the duration
 actually used).
@@ -494,15 +497,24 @@ same outcome and refreshes the card.
 and runs nothing — so it needs NO master/mode/breaker gates: even a paused or
 mis-set guild must be able to say no.
 
-**Staff-note outcome.** A terminal click appends one line to the subject's
-harness note (the note whose content carries the `(automod case A-n)`
-suffix AND the bot as author — a human note quoting the case is never
-touched): `` `Outcome: approved by <@staff> — executed: <result>` ``,
-`` `— refused: <cause>` ``, `` `— failed: <cause>` ``, or
-`` `Outcome: dismissed by <@staff> — the suggested action was not run.` ``
-The 2000-char note cap owns the length (a
-line that cannot fit is REPORTED, never truncated into mush), and a missing
-note is a reported warning with the card still updated — never a dead end.
+**Staff-note outcome (#731).** A terminal click updates the subject's SAME
+automod note — never a second one (discovery: the `(automod case A-n)`
+content suffix AND the bot as author; a human note quoting the case is never
+touched). The note gains/maintains one `**Outcome:**` section whose entries
+merge under a cap that always keeps the newest decision:
+
+```text
+Outcome: approved by <@staff> — executed: <result>
+Outcome: approved by <@staff> — refused: <cause>
+Outcome: dismissed by <@staff> — the suggested action was not run.
+```
+
+The identical line never duplicates (a re-click leaves the note byte-identical,
+no edit stamp); the narrative is cut only with the explicit
+`…[narrative truncated to fit the note cap]` marker; and a note that vanished
+or was erased is a reported warning with the card still updated — never a
+dead end. Auto mode writes its outcome into the note at birth (the note is
+created already carrying `executed` / `refused` state).
 
 **Rebuild law.** Card updates render ONLY from a fresh read of
 `automod_case_actions` for the case — never from the old embed. An hour-old
@@ -522,6 +534,57 @@ above are the ledger's truth.` The ledger rows stay the operational truth.
 components; the Fluxer dispatcher has no component/customId path at all, so
 `am:card:*` is structurally unreachable there (the arms keep a shape belt
 answering the shipped Discord-only sentence anyway).
+
+## Staff notes (locked decision 4)
+
+Every case leaves its human record in the existing
+[staff notes](staff-notes.md) system — no parallel table, no new commands, no
+special delete path (`/note delete`'s confirm step stays the ONLY way to
+remove one). Reconciliation runs at COMMIT (enforcement, not prompt hope):
+
+**Who gets exactly one note:**
+
+- Any user the model selected with ANY action tool, **including `no_action`**
+  — whether the mode then suggests, executes, refuses, or waits for Approve.
+  A REFUSED recommendation (staff-role subject, hierarchy) is still a
+  considered record.
+- Outcomes of Approve/Dismiss/auto land in that SAME note via the
+  `**Outcome:**` section ([Case card](#case-card)) — never a second note.
+
+**Who never gets one:**
+
+- A context-window speaker the model did not act on — even when the model
+  called the note tool for them. The queued note is dropped at commit:
+  zero `staff_notes` rows, and the card's Decision field carries the honest
+  line:
+
+  ```text
+  - **Staff note dropped:** <@user> — the note tool named them but the model recorded no action (not considered), so no staff note was written (locked decision 4).
+  ```
+
+- The referrer who only filed — filing is not consideration (a queued note
+  for them is dropped the same way).
+- `read_warnings` / `read_staff_notes` lookups are zero-write.
+
+**The note body** (`createStaffNote`, author = the bot's user id, normal
+**N-n** numbering):
+
+- The model's narrative when it wrote one; otherwise the marker
+  `**Narrative:** harness-filled — the model recorded no narrative for this user; this note is rebuilt from the structured decision.`
+- `**Actions:**` lines listing each recorded action for that user with its
+  outcome — several actions against one user still share ONE note.
+- `**Evidence:** <message link>` when the case carries an anchor message.
+- The discovery suffix `(automod case A-n)` at the end — together with the
+  bot author it is how the card and later decisions find THIS case's note;
+  a human note merely quoting the case number is never matched.
+- Always inside the 2000-char cap with EXPLICIT truncation
+  (`…[narrative truncated to fit the note cap]`) and a narrative floor —
+  a long story still produces the note; a case never fails because of one.
+
+**Never:** the note is never DM'd and its text never enters ticket openings or
+warning DMs (member-visible copy is scrubbed by design — the ticket tool
+issue restates the rule). Notes and warning history stay in staff-channel
+scope.
 
 ## Modes (locked decision 2)
 

@@ -16,8 +16,8 @@
  *  - rebuilds reflect CURRENT row states (an old card after a restart
  *    shows what the ledger says, buttons only for rows still suggested);
  *  - `recordCardPostError` leaves the structured `_card_post_error` record
- *    (the card was never claimed posted), and the note outcome append owns
- *    the 2000-char cap honestly.
+ *    (the card was never claimed posted), and the #731 note-outcome UPDATE
+ *    owns the 2000-char cap honestly (same note row, one outcome section).
  *
  * Real SQLite; no Discord needed at this layer (the button arms live in
  * automod-card-buttons.test.js, the harness integration in
@@ -38,6 +38,8 @@ const {
   CARD_DISMISS_PREFIX,
   AUTOMOD_CARD_MAX_BUTTON_ROWS,
   AUTOMOD_CARD_NOT_CONSIDERED_MAX,
+  AUTOMOD_NOTE_OUTCOME_HEADER,
+  AUTOMOD_NOTE_TRUNCATION_MARKER,
 } = require("../src/features/automod/constants");
 
 const GUILD = "962000000000000001";
@@ -398,8 +400,8 @@ test("findCaseNoteRow: replays the harness suffix, skips foreign authors - issue
   );
 });
 
-test("appendNoteOutcome: appends the outcome line; cap and erased note are reported, never mushed - issue #730", () => {
-  const { cid, caseRow } = seededCase("append");
+test("updateNoteOutcome: UPDATES the same note row with one outcome section — merge, idempotence, cap truncation, erased note - issue #730/#731", () => {
+  const { cid, caseRow } = seededCase("update");
   const suffix = `(automod case A-${caseRow.case_number})`;
   const note = db.createStaffNote({
     communityId: cid,
@@ -407,6 +409,7 @@ test("appendNoteOutcome: appends the outcome line; cap and erased note are repor
     authorId: BOT,
     content: `weighed the referral ${suffix}`,
   });
+  const originalId = note.id;
 
   const line = card.outcomeLineFor({
     verb: "approve",
@@ -416,20 +419,60 @@ test("appendNoteOutcome: appends the outcome line; cap and erased note are repor
   });
   assert.equal(line, `Outcome: approved by <@${REF}> — executed: Formal warning W-1 recorded.`);
 
-  const appended = card.appendNoteOutcome({
+  const recorded = card.updateNoteOutcome({
     communityId: cid,
     noteNumber: note.note_number,
     outcomeLine: line,
     editedBy: REF,
   });
-  assert.equal(appended.ok, true, appended.error);
+  assert.equal(recorded.ok, true, recorded.error);
+  assert.equal(recorded.noteNumber, note.note_number, "the SAME note row — never a second one");
   const fresh = db.getStaffNote(cid, note.note_number);
-  assert.match(fresh.content, new RegExp(`\\nOutcome: approved by <@${REF}> — executed:`));
+  assert.equal(fresh.id, originalId, "same row id — the note is updated in place");
+  assert.equal(fresh.edited_by, REF, "edited_by is the clicking staff id");
+  assert.ok(Number.isInteger(fresh.edited_at), "edited_at is stamped");
+  const escapedHeader = AUTOMOD_NOTE_OUTCOME_HEADER.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  assert.match(fresh.content, new RegExp(`\\n\\n${escapedHeader}\\n`),
+    "one outcome section after the base body");
+  assert.match(
+    fresh.content,
+    new RegExp(`weighed the referral \\(automod case A-${caseRow.case_number}\\)\\n\\n\\*\\*Outcome:\\*\\*\\nOutcome: approved by <@${REF}> — executed:`),
+    "base body keeps the discovery suffix; the entry rides under the section header",
+  );
 
   const dismissed = card.outcomeLineFor({ verb: "dismiss", staffUserId: REF });
   assert.equal(dismissed, `Outcome: dismissed by <@${REF}> — the suggested action was not run.`);
 
-  // Cap: a note at 2000 chars cannot receive the line — reported, not truncated.
+  // MERGE: a further decision adds ONE entry under the SINGLE header.
+  const second = card.updateNoteOutcome({
+    communityId: cid,
+    noteNumber: note.note_number,
+    outcomeLine: dismissed,
+    editedBy: REF,
+  });
+  assert.equal(second.ok, true, second.error);
+  const merged = db.getStaffNote(cid, note.note_number).content;
+  assert.equal(merged.split(`\n\n${AUTOMOD_NOTE_OUTCOME_HEADER}\n`).length - 1, 1, "exactly ONE outcome section");
+  assert.ok(merged.includes(line) && merged.includes(dismissed), "both decisions listed");
+
+  // IDEMPOTENCE: the identical line re-fired never duplicates and never
+  // re-stamps the edit (a re-click after the terminal state changes nothing).
+  const before = db.getStaffNote(cid, note.note_number);
+  const repeat = card.updateNoteOutcome({
+    communityId: cid,
+    noteNumber: note.note_number,
+    outcomeLine: dismissed,
+    editedBy: "999999999999999999",
+  });
+  assert.equal(repeat.ok, true, repeat.error);
+  assert.equal(repeat.unchanged, true);
+  const after = db.getStaffNote(cid, note.note_number);
+  assert.equal(after.content, before.content, "content untouched by the repeat");
+  assert.equal(after.edited_by, before.edited_by, "no phantom editor on a no-op");
+  assert.equal(after.content.split("Outcome: dismissed by").length - 1, 1, "the outcome appears once");
+
+  // Cap: a 2000-char body still RECEIVES the outcome — the base body
+  // truncates with the explicit marker, the note is rewritten, never failed.
   const fat = db.createStaffNote({
     communityId: cid,
     userId: SUB,
@@ -438,18 +481,22 @@ test("appendNoteOutcome: appends the outcome line; cap and erased note are repor
   });
   db.db
     .prepare(`UPDATE staff_notes SET content=? WHERE community_id=? AND note_number=?`)
-    .run("y".repeat(db.MAX_NOTE_CONTENT), cid, fat.note_number);
-  const blocked = card.appendNoteOutcome({
+    .run("y".repeat(db.MAX_NOTE_CONTENT - suffix.length) + suffix, cid, fat.note_number);
+  const squeezed = card.updateNoteOutcome({
     communityId: cid,
     noteNumber: fat.note_number,
     outcomeLine: "Outcome: approved by <@r> — executed: done.",
     editedBy: REF,
   });
-  assert.equal(blocked.ok, false);
-  assert.match(blocked.error, /2000-character cap/);
+  assert.equal(squeezed.ok, true, squeezed.error);
+  const fatFresh = db.getStaffNote(cid, fat.note_number);
+  assert.ok(fatFresh.content.length <= db.MAX_NOTE_CONTENT, "the 2000-char cap holds after the rewrite");
+  assert.match(fatFresh.content, new RegExp(AUTOMOD_NOTE_TRUNCATION_MARKER.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")),
+    "truncation is EXPLICIT, never silent");
+  assert.ok(fatFresh.content.includes("Outcome: approved by <@r> — executed: done."), "the outcome stays whole");
 
   // Erased/vanished note → specific failure.
-  const gone = card.appendNoteOutcome({
+  const gone = card.updateNoteOutcome({
     communityId: cid,
     noteNumber: 424242,
     outcomeLine: "whatever",

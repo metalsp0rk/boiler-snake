@@ -38,7 +38,8 @@
  * and returns the EXISTING outcome ("already handled", never an error,
  * never a second mutation). Dismiss: staff gate, `dismissSuggestion`, zero
  * Discord calls ever. Both arms then update the card (rebuild from fresh
- * rows) and append the outcome to the subject's staff note; a missing or
+ * rows) and record the outcome on the subject's SAME staff note (#731 law:
+ * update the note the harness wrote, never write a second one); a missing or
  * foreign note is a warning line on the clicker's reply — the card still
  * updates (AGENTS.md rule 5).
  *
@@ -61,7 +62,7 @@
  * `/automod` command arms).
  */
 
-const { ActionRowBuilder, ButtonBuilder, ButtonStyle } = require("discord.js");
+const { ButtonBuilder, ButtonStyle } = require("discord.js");
 const { sliceSafe, snippet } = require("../../core/text");
 const { replyEphemeral } = require("../../core/interaction");
 const { requireStaff } = require("../../core/permissions");
@@ -85,6 +86,8 @@ const {
   AUTOMOD_CARD_MAX_BUTTON_ROWS,
   AUTOMOD_CARD_NOT_CONSIDERED_MAX,
   AUTOMOD_BREAKER_ACTIONS,
+  AUTOMOD_NOTE_OUTCOME_HEADER,
+  AUTOMOD_NOTE_TRUNCATION_MARKER,
 } = require("./constants");
 const { readSettings } = require("./settings");
 const { approveSuggestion, dismissSuggestion } = require("./executor");
@@ -577,7 +580,7 @@ function defaultSummaryFor(caseRow) {
   }
 }
 
-/* ── staff-note ref + outcome append ──────────────────────────────────────── */
+/* ── staff-note ref + outcome UPDATE (#731 law: same note, updated) ───────── */
 
 /**
  * The harness writes ONE note per considered user per case with the
@@ -604,7 +607,7 @@ function findCaseNoteRow({ communityId, userId, caseNumber, botUserId = null, de
       const author = note.author_id == null ? null : String(note.author_id);
       if (author != null && author !== "automod" &&
           (botUserId == null || author !== String(botUserId))) {
-        continue; // foreign author — never append into a human's note
+        continue; // foreign author — never write into a human's note
       }
       return note; // listStaffNotes is newest-first: the live harness note wins
     }
@@ -618,39 +621,94 @@ function findCaseNoteRow({ communityId, userId, caseNumber, botUserId = null, de
 }
 
 /**
- * Append the outcome line to the subject's case note. The body is re-read
- * FRESH (never the scanned copy — it may be stale by the click), and the
- * 2000-char note cap owns the length: an outcome that cannot fit is
- * reported, never silently dropped or truncated into mush.
+ * Record a staff decision on the subject's automod note — by UPDATING THE
+ * SAME NOTE ROW's body (#731: "same note, updated, not a second note").
+ * Body grammar: the run's base body (narrative / harness-filled + the
+ * actions block + evidence, ending in the `(automod case A-n)` discovery
+ * suffix) plus ONE trailing `**Outcome:**` section whose entry lines are the
+ * per-decision `outcomeLineFor` results. Rebuilds MERGE, never stack: a
+ * repeated identical line is a no-op, a further decision on the same subject
+ * (multi-action case) adds one entry UNDER the single existing header — so a
+ * re-click after the terminal state can never duplicate the outcome section.
  *
- * @returns {{ ok: true, noteNumber: number } | { ok: false, error: string }}
+ * Cap law: the rewrite stays within MAX_NOTE_CONTENT by truncating the BASE
+ * body's tail with the explicit #731 marker — the outcome section stays
+ * honest and the click NEVER fails for a cap squeeze. edited_at / edited_by
+ * land through the real `updateStaffNote(communityId, noteNumber, { content,
+ * editedBy })` — the clicking staff id is the editor.
+ *
+ * @param {object} input
+ * @param {number} input.communityId
+ * @param {number} input.noteNumber
+ * @param {string} input.outcomeLine one `outcomeLineFor` result
+ * @param {string} input.editedBy the clicking staff id (edited_by)
+ * @param {object} [input.deps] ({ getNote, updateNote })
+ * @returns {{ ok: true, noteNumber: number, unchanged?: boolean }
+ *          | { ok: false, error: string }}
  */
-function appendNoteOutcome({ communityId, noteNumber, outcomeLine, editedBy, deps = {} }) {
+function updateNoteOutcome({ communityId, noteNumber, outcomeLine, editedBy, deps = {} }) {
   try {
     const existing = (deps.getNote ?? getStaffNote)(communityId, noteNumber);
     if (!existing || existing.deleted_at != null) {
-      return { ok: false, error: "the note is gone or was erased — the outcome was not appended" };
+      return { ok: false, error: "the note is gone or was erased — the outcome was not recorded on it" };
     }
-    const room = MAX_NOTE_CONTENT - String(existing.content ?? "").length - 1; // 1 = the newline
-    const line = String(outcomeLine ?? "");
-    if (room < Math.min(line.length, 40)) {
-      return {
-        ok: false,
-        error: `the note is at the ${MAX_NOTE_CONTENT}-character cap — the outcome line did not fit and was not appended`,
-      };
+    const content = String(existing.content ?? "");
+    const marker = `\n\n${AUTOMOD_NOTE_OUTCOME_HEADER}\n`;
+    const at = content.lastIndexOf(marker);
+    const base = at === -1 ? content : content.slice(0, at);
+    const priorEntries =
+      at === -1
+        ? []
+        : content.slice(at + marker.length).split("\n").map((l) => l.trim()).filter(Boolean);
+    const line = String(outcomeLine ?? "").trim();
+    if (!line) return { ok: false, error: "no outcome line to record" };
+
+    // Idempotence: the identical decision line already sits in the section —
+    // the note stays untouched (no edit stamp, no duplicate entry).
+    if (priorEntries.includes(line)) {
+      return { ok: true, noteNumber: Number(existing.note_number), unchanged: true };
     }
-    const fitted = room < line.length ? `${sliceSafe(line, room - 1)}…` : line;
-    const updated = (deps.updateNote ?? updateStaffNote)(
-      communityId,
-      noteNumber,
-      { content: `${existing.content}\n${fitted}`, editedBy },
-    );
+
+    // Cap the SECTION itself (pathological histories: many 600-char entries):
+    // drop the OLDEST entries first — the newest decision always survives —
+    // so the rewrite can never exceed the repository cap.
+    let entryList = [...priorEntries, line];
+    let section = marker + entryList.join("\n");
+    const sectionLimit = MAX_NOTE_CONTENT - 64;
+    while (section.length > sectionLimit && entryList.length > 1) {
+      entryList = entryList.slice(1);
+      section = marker + entryList.join("\n");
+    }
+    if (section.length > sectionLimit) {
+      entryList = [
+        sliceSafe(entryList[0], Math.max(1, sectionLimit - marker.length - 14)) + "…",
+      ];
+      section = marker + entryList.join("\n");
+    }
+
+    let body = String(base);
+    const room = MAX_NOTE_CONTENT - section.length;
+    if (body.length > room) {
+      body =
+        sliceSafe(body, Math.max(1, room - AUTOMOD_NOTE_TRUNCATION_MARKER.length - 1)) +
+        AUTOMOD_NOTE_TRUNCATION_MARKER;
+    }
+    const update = deps.updateNote ?? updateStaffNote;
+    let updated = update(communityId, noteNumber, { content: body + section, editedBy });
+    if (!updated && body.length > 1) {
+      // Belt: the room math already keeps us ≤ MAX_NOTE_CONTENT — a vanished
+      // row gets ONE retry with a harder slice rather than failing the click
+      // (recording the outcome is the note's point).
+      const forced =
+        sliceSafe(body, Math.max(1, MAX_NOTE_CONTENT - section.length - 14)) + "…[truncated]";
+      updated = update(communityId, noteNumber, { content: forced + section, editedBy });
+    }
     if (!updated) {
-      return { ok: false, error: "the note vanished mid-update — the outcome was not appended" };
+      return { ok: false, error: "the note vanished mid-update — the outcome was not recorded on it" };
     }
     return { ok: true, noteNumber: updated.note_number };
   } catch (err) {
-    return { ok: false, error: `could not append to the note (${err?.message || err})` };
+    return { ok: false, error: `could not record the outcome on the note (${err?.message || err})` };
   }
 }
 
@@ -757,7 +815,7 @@ async function cardArmPreamble(interaction, prefix, what) {
  * **Case:** A-n · action · state/result). A deduped re-click ALWAYS reads
  * **already handled** carrying the EXISTING outcome — never an error
  * (double clicks do not double-execute; the single-winner claim did its
- * job) — and never re-appends the staff note (no `terminal` flag).
+ * job) — and never re-writes the staff note (no `terminal` flag).
  */
 function classifyOutcome(res, row) {
   if (res?.ok && res.inFlight) {
@@ -885,7 +943,7 @@ async function postFreshCardFallback({ communityId, guildId, caseRow, payload, i
  * `am:card:approve:<actionRowId>` — staff gate → row/community validation →
  * master-enable + mode + breaker re-checks (specific refusal, ZERO
  * mutation) → the shared executor (mode/guards re-apply there; the atomic
- * claim kills double-clicks) → staff-note outcome append → card rebuild from
+ * claim kills double-clicks) → staff-note outcome update → card rebuild from
  * fresh rows → specific ephemeral to the clicker.
  *
  * @param {import("discord.js").ButtonInteraction} interaction
@@ -974,8 +1032,8 @@ async function handleCardApprove(interaction, ctx) {
     });
     const outcome = classifyOutcome(res, getAutomodAction(row.id) ?? row);
 
-    // ── staff-note outcome append (this click's terminal transition only —
-    //    a deduped re-click never appends twice) ────────────────────────────
+    // ── staff-note outcome UPDATE (this click's terminal transition only —
+    //    a deduped re-click never writes; #731: the SAME note row, updated) ──
     const noteWarnings = [];
     if (outcome.terminal && res?.deduped !== true) {
       const note = findCaseNoteRow({
@@ -986,13 +1044,13 @@ async function handleCardApprove(interaction, ctx) {
       });
       if (!note) {
         const warn =
-          "**Staff note:** no automod note for this subject — the outcome was not appended (the card was updated anyway).";
+          "**Staff note:** no automod note for this subject — the outcome could not be recorded (the card was updated anyway).";
         noteWarnings.push(warn);
         console.error(
-          `[automod] card approve note append skipped ${idTag({ ...ids, action: row.action, row: row.id, subject: row.subject_user_id })}: no harness note found for <@${row.subject_user_id}>`,
+          `[automod] card approve note update skipped ${idTag({ ...ids, action: row.action, row: row.id, subject: row.subject_user_id })}: no harness note found for <@${row.subject_user_id}>`,
         );
       } else {
-        const appended = appendNoteOutcome({
+        const recorded = updateNoteOutcome({
           communityId,
           noteNumber: note.note_number,
           outcomeLine: outcomeLineFor({
@@ -1003,10 +1061,10 @@ async function handleCardApprove(interaction, ctx) {
           }),
           editedBy: staffUserId,
         });
-        if (!appended.ok) {
-          noteWarnings.push(`**Staff note N-${note.note_number}:** ${appended.error} (the card was updated anyway).`);
+        if (!recorded.ok) {
+          noteWarnings.push(`**Staff note N-${note.note_number}:** ${recorded.error} (the card was updated anyway).`);
           console.error(
-            `[automod] card approve note append failed ${idTag({ ...ids, action: row.action, row: row.id, subject: row.subject_user_id })}: ${appended.error}`,
+            `[automod] card approve note update failed ${idTag({ ...ids, action: row.action, row: row.id, subject: row.subject_user_id })}: ${recorded.error}`,
           );
         }
       }
@@ -1047,7 +1105,7 @@ async function handleCardApprove(interaction, ctx) {
 
 /**
  * `am:card:dismiss:<actionRowId>` — staff gate → validation →
- * `dismissSuggestion` (zero Discord calls) → note append → card rebuild →
+ * `dismissSuggestion` (zero Discord calls) → note update → card rebuild →
  * ephemeral. No master/mode/breaker pre-gates: dismissing RUNS nothing, so
  * even a paused or mis-set guild must be able to decline a suggestion.
  *
@@ -1105,22 +1163,22 @@ async function handleCardDismiss(interaction, ctx) {
       });
       if (!note) {
         noteWarnings.push(
-          "**Staff note:** no automod note for this subject — the outcome was not appended (the card was updated anyway).",
+          "**Staff note:** no automod note for this subject — the outcome could not be recorded (the card was updated anyway).",
         );
         console.error(
-          `[automod] card dismiss note append skipped ${idTag({ ...ids, action: row.action, row: row.id, subject: row.subject_user_id })}: no harness note found for <@${row.subject_user_id}>`,
+          `[automod] card dismiss note update skipped ${idTag({ ...ids, action: row.action, row: row.id, subject: row.subject_user_id })}: no harness note found for <@${row.subject_user_id}>`,
         );
       } else {
-        const appended = appendNoteOutcome({
+        const recorded = updateNoteOutcome({
           communityId,
           noteNumber: note.note_number,
           outcomeLine: outcomeLineFor({ verb: "dismiss", staffUserId }),
           editedBy: staffUserId,
         });
-        if (!appended.ok) {
-          noteWarnings.push(`**Staff note N-${note.note_number}:** ${appended.error} (the card was updated anyway).`);
+        if (!recorded.ok) {
+          noteWarnings.push(`**Staff note N-${note.note_number}:** ${recorded.error} (the card was updated anyway).`);
           console.error(
-            `[automod] card dismiss note append failed ${idTag({ ...ids, action: row.action, row: row.id, subject: row.subject_user_id })}: ${appended.error}`,
+            `[automod] card dismiss note update failed ${idTag({ ...ids, action: row.action, row: row.id, subject: row.subject_user_id })}: ${recorded.error}`,
           );
         }
       }
@@ -1176,7 +1234,7 @@ module.exports = {
   participantsLogEntry,
   recordCardPostError,
   findCaseNoteRow,
-  appendNoteOutcome,
+  updateNoteOutcome,
   outcomeLineFor,
   // Button surface:
   parseCardButtonId,
