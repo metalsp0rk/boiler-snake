@@ -1,12 +1,14 @@
 /**
- * Forged Instrument entry (#710). Pages that have not migrated keep loading
- * /static/app.js. This module is the new shell's script: tokens, Shoelace's
- * CSP build (adoptedStyleSheets), and the custom primitives.
+ * Forged Instrument entry (#710). The signed-in shell also loads
+ * /static/app.js. This module is the shell script: page-body CSS, Shoelace's
+ * CSP build (adoptedStyleSheets), and the custom primitives. The sign-in
+ * landing links the CSS this module emits and does not load the module.
  *
  * Component list is the #709 vocabulary. Adding one requires an amendment
  * on that issue.
  */
 import "./base-path.js";
+import "./page.css";
 import "@shoelace-style/shoelace/dist/themes/dark.css";
 import "./fonts.css";
 import "./tokens.css";

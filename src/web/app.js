@@ -288,7 +288,7 @@ function createWebApp(options = {}) {
   app.use(createBodyCapMiddleware());
   app.use(createMutationRateLimit());
   app.use(createCsrfMiddleware());
-  // Shell assets (vendored libs, styles.css, app.js) — public, immutable-
+  // Shell assets (vendored libs, app.js, forge bundle) — public, immutable-
   // cached, dotfiles ignored, traversal-gated (src/web/middleware/static.js).
   // Mounted after the method gate so POST /static/* still 405s like the rest
   // of the surface; nothing here carries user data, so login-free is safe.

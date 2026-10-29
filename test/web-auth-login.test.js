@@ -25,6 +25,7 @@ const { describe, it, before, after } = require("node:test");
 const assert = require("node:assert/strict");
 const http = require("node:http");
 const fs = require("fs");
+const path = require("node:path");
 const { once } = require("node:events");
 const { loadDb, communityKey } = require("./helpers/env");
 
@@ -440,7 +441,24 @@ describe("web login/logout (mocked Discord, purpose-tagged state)", () => {
       // stays shell-free and JS-free (signed out, zero identity data).
       assert.match(body, /<img class="signin-logo" src="\/static\/logo\.png/, "logo in the card");
       assert.doesNotMatch(body, /app\.js/, "the landing never references console JS");
+      assert.doesNotMatch(body, /forge\.js/, "the landing does not load the forge module");
+      assert.doesNotMatch(body, /styles\.css/, "the retired stylesheet is not linked");
+      assert.match(body, /\/static\/forge\//, "the landing loads the forge stylesheet");
+      assert.match(body, /class="signin-watermark"/, "one shield watermark");
+      assert.match(body, /class="signin-serpent"/, "one serpent line");
+      assert.match(body, /staff and admin console/i);
+      assert.doesNotMatch(body, /\sstyle=/, "no inline style attributes");
       assert.doesNotMatch(body, /shell-nav/, "no shell sidebar on the public page");
+      const brand = fs.readFileSync(
+        path.join(__dirname, "../src/web/assets/primitives.css"),
+        "utf8"
+      );
+      assert.match(brand, /\.signin-watermark\s*\{[^}]*opacity:\s*0\.04/, "watermark is about 4%");
+      assert.match(
+        brand,
+        /a\.btn-signin:focus-visible\s*\{[^}]*box-shadow:[^}]*41 168 189/,
+        "teal focus glow on the OAuth entry"
+      );
     });
 
     it("signedout=1 shows the signed-out banner; the flag never appears without it", async () => {
@@ -485,7 +503,10 @@ describe("web login/logout (mocked Discord, purpose-tagged state)", () => {
       const { res, body } = await landing("?guild=..%2Fevil&next=%2Fadmin");
       assert.equal(res.status, 200);
       assert.match(body, /href="\/auth\/login\?continue=1"/);
-      assert.doesNotMatch(body, /evil|%2Fevil|admin/i, "no param echo, no widened target");
+      // The junk values themselves must not come back. Static copy may say
+      // "Admins" — that word is not the dropped next=%2Fadmin param.
+      assert.doesNotMatch(body, /evil|%2Fevil|%2Fadmin/i, "junk guild and next values are not echoed");
+      assert.doesNotMatch(body, /href="[^"]*(?:%2Fadmin|\/admin)/i, "the dropped next path is not a continue target");
       assert.doesNotMatch(body, /ticket transcript|guild console/);
     });
 

@@ -14,8 +14,7 @@
  * fallback, so web and Discord show the same text.
  *
  * Progress bar: rendered with a DECILE BUCKET CLASS (lb-bar-0 … lb-bar-10,
- * CSS in public/styles.css) — never an inline style attribute, keeping the
- * CSP (no style-src unsafe-inline) fully effective.
+ * CSS in assets/page.css) — never an inline style attribute.
  */
 
 const { html } = require("../escape");

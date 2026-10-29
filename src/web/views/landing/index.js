@@ -20,13 +20,13 @@
  *  - The continue href is built by {@link buildContinueHref} from those
  *    same whitelisted values, so the login round-trip keeps its return
  *    target without ever widening what the callback honors.
- *  - Escaped-by-default templates (views/escape.js); all CSS lives in
- *    /static/styles.css (§8.7 "no new inline styles").
+ *  - Escaped-by-default templates (views/escape.js). CSS is the forge
+ *    stylesheet only. No scripts, no inline style attributes (§8.7).
  */
 
 const { html } = require("../escape");
 const { banner } = require("../components");
-const { STYLES_SRC, LOGO_SRC } = require("../layout");
+const { LOGO_SRC, forgeStylesheetLinks } = require("../layout");
 
 /** Whitelisted context flags (derived from validated params, never echoed). */
 const CONTEXTS = Object.freeze(["guild", "ticket"]);
@@ -125,21 +125,27 @@ function renderSignInPage({
       )}">Continue with Fluxer — ${link.label || link.slug}</a></p>`
     );
   return html`<!DOCTYPE html>
-<html lang="en">
+<html lang="en" class="sl-theme-dark">
 <head>
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1"/>
 <title>Sign in · Boiler Snake</title>
-<link rel="stylesheet" href="${STYLES_SRC}"/>
+${forgeStylesheetLinks()}
 </head>
 <body class="signin-body">
+<svg class="signin-watermark" viewBox="0 0 100 100" aria-hidden="true">
+  <path d="M50 6 L90 20 V52 C90 76 50 94 50 94 C50 94 10 76 10 52 V20 Z"/>
+</svg>
 <main class="signin-card">
-  <img class="signin-logo" src="${LOGO_SRC}" alt="" width="44" height="44"/>
+  <img class="signin-logo" src="${LOGO_SRC}" alt="" width="72" height="72"/>
+  <svg class="signin-serpent" viewBox="0 0 120 16" aria-hidden="true">
+    <path d="M2 12 C20 12 28 4 46 4 C64 4 70 12 88 8 C100 5.5 108 4 118 6"/>
+  </svg>
   <h1 class="signin-title">Boiler Snake web console</h1>
   ${noticeLine(NOTICES.includes(notice) ? notice : null)}
-  <p class="signin-lede">Sign in with your Discord account to open the staff
-    console — tickets, XP, moderation tools, and integrations for guilds where
-    this bot is installed.</p>
+  <p class="signin-lede">This is the staff and admin console. Staff open
+    tickets, warnings, notes, and the event calendar. Admins grant XP and
+    change guild settings.</p>
   <section class="signin-what">
     <h2>What signing in does</h2>
     <ul>

@@ -3,8 +3,10 @@
  * shell chrome, dense table, stat card, lookup combobox, user chip/card,
  * pager, empty state, and the transcript viewer (#713). The signed-in
  * shell, the dashboard, and the data surfaces use these classes.
- * Unmigrated page bodies keep styles.css. The frozen transcript export
- * does not load this file; it inlines the same tokens.
+ * Page-body metrics that have not moved onto these classes live in
+ * page.css, imported ahead of this file. The frozen transcript export
+ * does not load this file; it inlines the same tokens. The sign-in
+ * landing loads this file and no script.
  *
  * Shell grid is the #642 contract: Menu collapse at ≤719px (never a
  * horizontal strip), 13rem rail at 720–1099, 15.5rem from 1100, shell
@@ -327,8 +329,8 @@ pre {
   text-align: center;
 }
 
-/* Flash / degraded banners on the shell. The sign-in landing does not load
-   this file, so styles.css keeps its own .banner rules for that page. */
+/* Flash / degraded banners on the shell. The sign-in card flushes its own
+   banner below, on the same tokens. */
 .bs-shell .banner,
 .bs-header ~ .banner {
   margin-left: 0;
@@ -835,8 +837,8 @@ sl-copy-button.bs-copy {
 
 /* Transcript viewer (#713). The frozen export inlines the same tokens
    from the Vite export build. These rules are the console page only.
-   Do not restyle .empty-state here: styles.css owns that class, and a
-   second rule would move every list page. */
+   .empty-state metrics stay in page.css so list pages do not pick up a
+   second rule from this file. */
 .transcript-header .subheading {
   display: flex;
   flex-wrap: wrap;
@@ -963,5 +965,196 @@ sl-copy-button.bs-copy {
   }
   .bs-kv {
     grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* Root guild list (#714). Rows are the shared panel, stacked. The tier
+   badge stays the same component the header uses. The link is the hit
+   target; the badge is not a second link. */
+.guild-list {
+  list-style: none;
+  margin: 0 0 16px;
+  padding: 0;
+}
+
+.guild-list-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.guild-list-link {
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
+  color: var(--bs-fg);
+  font-size: 16px;
+  font-weight: 600;
+  text-decoration: none;
+  overflow-wrap: anywhere;
+}
+
+.guild-list-link:hover {
+  color: var(--bs-action);
+}
+
+.guild-list ~ .subheading a,
+.empty-state ~ .subheading a {
+  color: var(--bs-action);
+}
+
+/* Sign-in landing (#714). One document for the signed-out page: crest on
+   graphite, one shield watermark at about 4% (opacity 0.04), one serpent
+   line, teal focus on the OAuth link. No script is loaded with this page. */
+.signin-body {
+  align-items: center;
+  justify-content: safe center;
+  padding: 2.5rem 1rem;
+  background: var(--bs-sunken);
+  overflow-x: clip;
+}
+
+.signin-watermark {
+  position: fixed;
+  right: max(-6rem, -8vw);
+  top: 50%;
+  width: min(28rem, 70vw);
+  height: auto;
+  transform: translateY(-50%);
+  color: var(--bs-fg);
+  opacity: 0.04;
+  pointer-events: none;
+}
+
+.signin-watermark path {
+  fill: currentColor;
+}
+
+.signin-card {
+  position: relative;
+  z-index: 1;
+  width: 100%;
+  max-width: 36rem;
+  padding: 2.5rem 2rem;
+  background: var(--bs-base);
+  border: 1px solid var(--bs-line);
+  border-radius: var(--bs-radius);
+  box-shadow: inset 0 1px 0 var(--bs-highlight);
+}
+
+.signin-logo {
+  display: block;
+  width: 72px;
+  height: 72px;
+  margin: 0;
+  border-radius: var(--bs-radius);
+}
+
+.signin-serpent {
+  display: block;
+  width: 7.5rem;
+  height: 1rem;
+  margin: 0.85rem 0 1rem;
+  color: var(--bs-action);
+  opacity: 0.7;
+}
+
+.signin-serpent path {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.25;
+  stroke-linecap: round;
+}
+
+.signin-title {
+  margin: 0 0 1rem;
+  font-size: 1.5rem;
+  letter-spacing: -0.02em;
+}
+
+.signin-lede {
+  margin: 0 0 1rem;
+  max-width: 62ch;
+}
+
+.signin-what {
+  margin: 0 0 1rem;
+}
+
+.signin-what h2 {
+  margin: 0 0 0.4rem;
+  color: var(--bs-muted);
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.signin-what ul {
+  margin: 0 0 0.5rem;
+  padding-left: 1.2rem;
+}
+
+.signin-what li {
+  padding: 0.15rem 0;
+}
+
+.signin-what p {
+  margin: 0.4rem 0 0;
+  color: var(--bs-muted);
+  font-size: 0.9rem;
+}
+
+.signin-card .banner {
+  margin: 0 0 1rem;
+  max-width: none;
+  border-color: var(--bs-line);
+  border-radius: var(--bs-radius);
+}
+
+.signin-card .banner-info {
+  background: var(--bs-info-tint);
+  color: var(--bs-info);
+}
+
+a.btn-signin {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 44px;
+  padding: 0.55rem 1.15rem;
+  background: var(--bs-action);
+  color: var(--bs-ink);
+  border: 1px solid var(--bs-action);
+  border-radius: var(--bs-radius);
+  font-weight: 600;
+  text-decoration: none;
+}
+
+a.btn-signin:hover {
+  background: var(--bs-action-hover);
+  border-color: var(--bs-action-hover);
+  color: var(--bs-ink);
+}
+
+a.btn-signin:focus-visible {
+  outline: 2px solid var(--bs-action);
+  outline-offset: 3px;
+  box-shadow: 0 0 0 6px rgb(41 168 189 / 35%);
+}
+
+.signin-footnote {
+  margin: 0.85rem 0 0;
+  color: var(--bs-muted);
+  font-size: 0.85rem;
+}
+
+@media (max-width: 719px) {
+  .signin-body {
+    padding: 1.25rem 0.75rem;
+  }
+  .signin-card {
+    padding: 1.5rem 1.15rem;
   }
 }

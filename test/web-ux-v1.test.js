@@ -326,7 +326,7 @@ describe("web UX v1.1 (root guild list, sidebar nav, member names)", () => {
 
   const STYLES_PATH = require("node:path").join(
     __dirname,
-    "../src/web/public/styles.css"
+    "../src/web/assets/page.css"
   );
   const PRIMITIVES_PATH = require("node:path").join(
     __dirname,
@@ -403,7 +403,7 @@ describe("web UX v1.1 (root guild list, sidebar nav, member names)", () => {
     assert.ok(body.includes('class="table-scroll"'), "archive table inside .table-scroll");
   });
 
-  it("mobile: styles.css carries the phone-pass rules (#642 contract)", () => {
+  it("mobile: page.css carries the phone-pass rules (#642 contract)", () => {
     const css = fsx.readFileSync(STYLES_PATH, "utf8");
     const primitives = fsx.readFileSync(PRIMITIVES_PATH, "utf8");
 
@@ -432,7 +432,7 @@ describe("web UX v1.1 (root guild list, sidebar nav, member names)", () => {
         "no nav flex-direction:row inside any max-width:720px query"
       );
     }
-    assert.doesNotMatch(css, /\.shell-(body|nav|bar|main|footer)\b/, "legacy shell chrome removed from styles.css");
+    assert.doesNotMatch(css, /\.shell-(body|nav|bar|main|footer)\b/, "legacy shell chrome stays out of page.css");
 
     // Phone contract (max-width: 719px) now lives on the forge shell:
     // Menu shows, one-column grid, the nav hides ONLY under
@@ -509,7 +509,7 @@ describe("web UX v1.1 (root guild list, sidebar nav, member names)", () => {
     assert.doesNotMatch(legacy480, /flex-direction:\s*column/, "the form stack no longer lives in a ≤480px block");
   });
 
-  it("mobile: styles.css keeps the Chart.js container contract (canvas unstyled)", () => {
+  it("mobile: page.css keeps the Chart.js container contract (canvas unstyled)", () => {
     const css = fsx.readFileSync(STYLES_PATH, "utf8");
     assert.match(
       css,
