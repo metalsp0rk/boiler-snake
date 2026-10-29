@@ -82,8 +82,10 @@ counts are stat cards. The messages chart is teal and the XP chart is steel. Use
 tickets, the archive, warnings, notes, staff, settings, sessions, voice, the events
 calendar, and the system and audit pages use the same compact tables: 13px type and
 34px rows on desktop, while phone rows still stack into cards. A snowflake on a
-person, a role, or an audit target has a copy button. The leaderboard, grant XP,
-and transcripts still use the previous table styles. The path id is the bot's internal
+person, a role, or an audit target has a copy button. The leaderboard and grant XP
+still use the previous table styles. The transcript viewer uses the same shell, badges,
+and panels as the rest of the console. Its raw export inlines the same tokens, so opening
+that file offline does not request `/static`. The path id is the bot's internal
 **community id** (a small integer — Discord servers and Fluxer communities share the namespace),
 not a Discord snowflake; bookmarks from before the communities migration (`/g/<snowflake>`)
 return 404. Pages:
@@ -94,7 +96,7 @@ return 404. Pages:
 - **`/g/{guildId}/notes`** — staff notes list + add (the `/note` twin, staff tier)
 - **`/g/{guildId}/tickets`** — ticket actions page (**senior**): open-ticket list with claim/close/summarize (transcripts: `/t`)
 - **`/g/{guildId}/t`** — the **archive for that guild** (staff), inside the console shell with the sidebar; search by ticket number or reason text, see creator/owner names.
-- **`/t`** — the **cross-guild archive** (staff+): every content-archived transcript from your staffed guilds (canonical URL — links posted in tickets always point here). Filter by guild (`/t?guild=…`) and jump back into the console. Transcripts render the immutable record with the summary AI generated at close; every page links its raw archived document (`…/raw`)
+- **`/t`** — the **cross-guild archive** (staff+): every content-archived transcript from your staffed guilds (canonical URL — links posted in tickets always point here). Filter by guild (`/t?guild=…`) and jump back into the console. A transcript renders the immutable record in the console shell, with the summary AI generated at close. Every page links its raw archived document (`…/raw`). That file is the frozen export: self-contained HTML, no summary, and no request to `/static`
 - **`/t` for non-staff** — if you hold no staff tier anywhere, `/t` becomes **Your tickets**: exactly the archived transcripts your links open (as creator, handler, or participant), never anyone else's and never staff rows. `?guild=` narrows that list, never widens it.
 - **`/g/{guildId}/settings`** — read view of every guild setting + staff-tier writes (command channels, level roles, integrations, cooldowns, decay, …)
 - **`/g/{guildId}/staff`** — staff roles (list + junior/senior set, level→role mappings) **and** the admin trigger for the command-visibility sync (the web twin of `/staff syncpermissions`)

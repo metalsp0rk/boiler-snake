@@ -3,7 +3,7 @@
 
 /**
  * Visual regression for the Forged Instrument console (#711 shell and
- * dashboard, #712 data surfaces).
+ * dashboard, #712 data surfaces, #713 transcript viewer and export).
  *
  * Screenshots real view HTML inside renderLayout at 3 desktop and 2 phone
  * widths. A diff fails the process. VISUAL_UPDATE=1 writes a baseline only
@@ -23,11 +23,17 @@
 
 const fs = require("fs");
 const http = require("http");
+const os = require("os");
 const path = require("path");
+// transcript.js opens SQLite when the viewer module loads. Point that at
+// an empty directory so a screenshot run does not touch the bot database.
+if (!process.env.DATA_DIR && !process.env.DB_PATH) {
+  process.env.DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), "forge-visual-"));
+}
 const { PNG } = require("pngjs");
 const pixelmatch = require("pixelmatch");
 const puppeteer = require("puppeteer");
-const { createCspMiddleware } = require("../../src/web/middleware/csp");
+const { createCspMiddleware, contentSecurityPolicy } = require("../../src/web/middleware/csp");
 const { createStaticMiddleware } = require("../../src/web/middleware/static");
 const { readBuildManifest, forgePublicPaths } = require("../../src/web/assets/stamp");
 const { renderLayout } = require("../../src/web/views/layout");
@@ -42,6 +48,8 @@ const { renderYourSessionsBody, renderSystemSessionsBody } = require("../../src/
 const { renderSystemBody, renderAuditBody } = require("../../src/web/views/system");
 const { renderVoiceBody } = require("../../src/web/views/voice");
 const { renderEventsMonth } = require("../../src/web/views/events");
+const { renderTranscriptPage } = require("../../src/web/views/transcripts/transcriptPage");
+const { renderTranscriptHtml } = require("../../src/features/tickets/transcript");
 const { html } = require("../../src/web/views/escape");
 
 const REPO_ROOT = path.join(__dirname, "..", "..");
@@ -66,6 +74,8 @@ const PAGES = [
   "audit",
   "voice",
   "events",
+  "transcript",
+  "transcript-export",
 ];
 const WIDTHS = [
   { name: "desktop-1280", width: 1280, height: 800 },
@@ -592,7 +602,68 @@ const PAGE_META = {
   },
 };
 
+const TRANSCRIPT_TOKEN = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
+const TRANSCRIPT_TICKET = {
+  community_id: "100",
+  ticket_number: 12,
+  transcript_token: TRANSCRIPT_TOKEN,
+  creator_user_id: ADA,
+  staff_owner_id: BEA,
+  closed_by_user_id: BEA,
+  created_at: CLOSED_MS - 3600000,
+  closed_at: CLOSED_MS,
+  reason: "Refund question",
+  close_reason: "Refunded",
+  is_sensitive: 0,
+};
+const TRANSCRIPT_MESSAGES = [
+  {
+    message_id: "100000000000000088",
+    author_id: ADA,
+    author_tag: "Ada",
+    content: "Can I get a refund for the June show?",
+    attachment_urls: JSON.stringify([
+      { name: "receipt.txt", href: "javascript:alert(1)" },
+      { name: "photo.png" },
+    ]),
+    sent_at: CLOSED_MS - 1800000,
+  },
+];
+
+function transcriptDocument(name, nonce) {
+  if (name === "transcript-export") {
+    // Full export document. Do not wrap it in renderLayout: it must stay
+    // free of /static, Shoelace, and the AI summary.
+    return renderTranscriptHtml(TRANSCRIPT_TICKET, TRANSCRIPT_MESSAGES, {
+      guildName: "Forge Guild",
+      requesterLabel: "Ada",
+      staffOwnerLabel: "Bea",
+      closedByLabel: "Bea",
+    });
+  }
+  // renderTranscriptPage already calls renderLayout.
+  return renderTranscriptPage({
+    req: { user: { userId: "42", discordTag: "ada" }, csrfToken: "csrf-visual" },
+    res: { locals: { cspNonce: nonce } },
+    ticket: TRANSCRIPT_TICKET,
+    messages: TRANSCRIPT_MESSAGES,
+    summary: {
+      source: "fallback",
+      summary: "Member asked about a refund.",
+      subject: "Refund",
+      message_count: 1,
+    },
+    staff: true,
+    tier: "staff",
+    names: NAMES,
+    guilds: VISUAL_GUILDS,
+  });
+}
+
 function pageDocument(name, nonce) {
+  if (name === "transcript" || name === "transcript-export") {
+    return transcriptDocument(name, nonce);
+  }
   const meta = PAGE_META[name];
   const shared = {
     guilds: VISUAL_GUILDS,
@@ -629,11 +700,21 @@ function startServer() {
     const fixture = url.pathname.match(/^\/fixture\/([a-z0-9-]+)$/);
     if (fixture && PAGES.includes(fixture[1])) {
       csp(req, res, () => {
-        const document = pageDocument(fixture[1], res.locals.cspNonce || "");
-        res.writeHead(200, {
+        const name = fixture[1];
+        const document = pageDocument(name, res.locals.cspNonce || "");
+        const headers = {
           "Content-Type": "text/html; charset=utf-8",
           "Cache-Control": "no-store",
-        });
+        };
+        // The export inlines woff2 as data: URIs. The console policy blocks
+        // those, so this one fixture response allows them. Other pages do not.
+        if (name === "transcript-export") {
+          headers["Content-Security-Policy"] = contentSecurityPolicy(
+            res.locals.cspNonce || "",
+            { embedFonts: true }
+          );
+        }
+        res.writeHead(200, headers);
         res.end(String(document));
       });
       return;
@@ -698,15 +779,19 @@ async function shoot(page, origin, name) {
   await page.evaluate(async () => {
     if (document.fonts && document.fonts.ready) await document.fonts.ready;
   });
-  await page.waitForFunction(() => customElements.get("sl-button"));
-  // app.js sets role=combobox only after the first keystroke (ensureList).
-  // A resting lookup is still a plain input with data-lookup wiring.
-  await page.waitForFunction(() => {
-    const copies = [...document.querySelectorAll("sl-copy-button")];
-    if (!copies.length) return true;
-    if (!customElements.get("sl-copy-button")) return false;
-    return copies.every((el) => el.shadowRoot && el.shadowRoot.querySelector("button"));
-  });
+  // The export is a standalone file: no Shoelace, no app.js. Waiting for
+  // sl-button there hangs until the timeout.
+  if (name !== "transcript-export") {
+    await page.waitForFunction(() => customElements.get("sl-button"));
+    // app.js sets role=combobox only after the first keystroke (ensureList).
+    // A resting lookup is still a plain input with data-lookup wiring.
+    await page.waitForFunction(() => {
+      const copies = [...document.querySelectorAll("sl-copy-button")];
+      if (!copies.length) return true;
+      if (!customElements.get("sl-copy-button")) return false;
+      return copies.every((el) => el.shadowRoot && el.shadowRoot.querySelector("button"));
+    });
+  }
   if (name === "dashboard") {
     await page.waitForFunction(() => {
       const boxes = [...document.querySelectorAll("[data-chart-src]")];

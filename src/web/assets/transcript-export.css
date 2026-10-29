@@ -1,0 +1,172 @@
+/**
+ * Offline transcript document (#713). Tokens and faces are the console's
+ * files. The Vite export build inlines the woff2 payloads so the archived
+ * HTML has no /static URL and still opens from disk.
+ */
+@import "./tokens.css";
+@import "./fonts.css";
+
+html {
+  color-scheme: dark;
+}
+
+body {
+  margin: 0 auto;
+  max-width: 900px;
+  padding: 24px 16px 48px;
+  background: var(--bs-base);
+  color: var(--bs-fg);
+  font-family: var(--bs-font-sans);
+  font-size: 14px;
+  line-height: 1.45;
+}
+
+h1 {
+  font-size: 22px;
+  line-height: 28px;
+  margin: 0 0 4px;
+}
+
+.lede {
+  margin: 0 0 12px;
+  color: var(--bs-muted);
+}
+
+.header {
+  border-bottom: 1px solid var(--bs-line);
+  padding-bottom: 16px;
+  margin-bottom: 16px;
+}
+
+.header dl,
+.bs-kv {
+  display: grid;
+  grid-template-columns: 10rem 1fr;
+  gap: 4px 12px;
+  margin: 0;
+}
+
+.header dt,
+.bs-kv dt {
+  color: var(--bs-muted);
+}
+
+.header dd,
+.bs-kv dd {
+  margin: 0;
+}
+
+.msg,
+.tmsg {
+  background: var(--bs-raised);
+  border: 1px solid var(--bs-line);
+  border-radius: var(--bs-radius);
+  padding: 12px 16px;
+  margin: 10px 0;
+}
+
+.meta,
+.tmsg-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-bottom: 6px;
+  color: var(--bs-muted);
+  font-size: 13px;
+}
+
+.author,
+.tmsg-author {
+  color: var(--bs-fg);
+  font-weight: 600;
+}
+
+.id,
+.gid,
+.tmsg-id,
+code {
+  font-family: var(--bs-font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.content,
+.tmsg-body {
+  word-break: break-word;
+}
+
+.empty-state {
+  margin: 16px 0;
+  color: var(--bs-muted);
+  text-align: center;
+}
+
+.attachments {
+  margin-top: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.att img,
+.att video {
+  max-width: min(100%, 520px);
+  height: auto;
+  border-radius: var(--bs-radius);
+  display: block;
+}
+
+.att audio {
+  width: min(100%, 420px);
+}
+
+.att figcaption,
+.att a {
+  font-size: 13px;
+  word-break: break-all;
+  color: var(--bs-action);
+}
+
+.att-blocked,
+.att.blocked {
+  background: var(--bs-danger-tint);
+  border: 1px solid var(--bs-line);
+  border-radius: var(--bs-radius);
+  padding: 8px 10px;
+}
+
+.att-missing,
+.att.missing {
+  background: var(--bs-sunken);
+  border: 1px solid var(--bs-line);
+  border-radius: var(--bs-radius);
+  padding: 8px 10px;
+  color: var(--bs-muted);
+}
+
+.att-note {
+  color: var(--bs-muted);
+}
+
+.badge {
+  display: inline-block;
+  margin-left: 8px;
+  padding: 2px 8px;
+  border-radius: var(--bs-radius-pill);
+  background: var(--bs-info-tint);
+  color: var(--bs-info);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  vertical-align: middle;
+}
+
+footer {
+  margin-top: 32px;
+  color: var(--bs-muted);
+  font-size: 12px;
+}
+
+a {
+  color: var(--bs-action);
+}

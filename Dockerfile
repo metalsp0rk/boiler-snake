@@ -26,7 +26,7 @@ ENV PUPPETEER_SKIP_DOWNLOAD=1
 
 COPY package.json package-lock.json ./
 RUN npm ci
-COPY vite.web.config.mjs ./
+COPY vite.web.config.mjs vite.export.config.mjs ./
 COPY src/web/assets ./src/web/assets
 COPY scripts/forge-assets.js ./scripts/forge-assets.js
 RUN npm run assets:build
@@ -51,6 +51,9 @@ COPY package.json package-lock.json ./
 COPY --from=deps /app/node_modules ./node_modules
 COPY src ./src
 COPY scripts ./scripts
+# The boot stamp hashes this file. It must be the same bytes the assets
+# stage hashed, or startWebServer refuses to listen.
+COPY vite.export.config.mjs ./
 COPY --from=assets /app/dist ./dist
 
 RUN groupadd --gid 1001 bot \

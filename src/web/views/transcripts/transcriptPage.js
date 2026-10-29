@@ -24,7 +24,7 @@
 const { html, raw } = require("../escape");
 const { formatTs } = require("../_helpers"); // #470 H1-8 (byte-identical copies unified)
 const { renderLayout } = require("../layout");
-const { userRef } = require("../components");
+const { userRef, emptyState, copyControl } = require("../components");
 const { escapeHtml } = require("../../../features/tickets/transcript");
 const { parseAttachmentList, mediaKind } = require("../../../features/tickets/assets");
 const { safeHref } = require("../../../core/safeHref");
@@ -45,11 +45,15 @@ function renderAttachments(m) {
     attachments = [];
   }
   const parts = attachments
-    .filter((a) => a && (a.href || a.url))
+    .filter((a) => a && (a.href || a.url || a.name))
     .map((a) => {
-      const rawHref = a.href || a.url;
+      const rawHref = a.href || a.url || "";
       const name = a.name || rawHref || "attachment";
       const kind = mediaKind(name, a.contentType);
+      // A name with no href is an incomplete mirror, not a poisoned scheme.
+      if (!rawHref) {
+        return html`<div class="att att-file att-missing"><span>${name}</span> <span class="att-note">(file missing from the archive)</span></div>`;
+      }
       // #466 (C2-2): the SAME scheme gate as the frozen archive (one rule,
       // both renderers — §4.1 render-time validation at the HTML boundary).
       const href = safeHref(rawHref);
@@ -86,6 +90,7 @@ function renderMessage(m) {
         <strong class="tmsg-author">${m.author_tag || m.author_id || "unknown"}</strong>
         <span>${formatTs(m.sent_at)}</span>
         <code class="tmsg-id">#${m.message_id || "?"}</code>
+        ${copyControl(m.message_id)}
       </header>
       <div class="tmsg-body">${bodyHtml(m.content)}</div>
       ${renderAttachments(m)}
@@ -116,10 +121,10 @@ function renderSummary(summary) {
       ? html`AI summary${summary.model ? html` · ${summary.model}` : html``}`
       : html`Auto summary (no AI configured at close time)`;
   return html`
-    <section class="panel transcript-summary">
-      <h2>Summary <span class="badge">${src}</span></h2>
+    <section class="bs-panel transcript-summary">
+      <h2>Summary <sl-badge class="bs-badge-steel" variant="neutral">${src}</sl-badge></h2>
       ${para ? html`<p class="summary-prose">${para}</p>` : html``}
-      ${bits.length ? html`<dl class="dashboard-dl">${bits}</dl>` : html``}
+      ${bits.length ? html`<dl class="bs-kv">${bits}</dl>` : html``}
     </section>`;
 }
 
@@ -168,7 +173,7 @@ function renderTranscriptPage({
   const title = `Ticket #${num} — archived transcript`;
 
   const meta = html`
-    <dl class="dashboard-dl transcript-meta">
+    <dl class="bs-kv">
       <dt>Requester</dt><dd>${person(staff, guildId, ticket.creator_user_id, names)}</dd>
       <dt>Staff owner</dt><dd>${person(staff, guildId, ticket.staff_owner_id, names)}</dd>
       <dt>Closed by</dt><dd>${person(staff, guildId, ticket.closed_by_user_id, names)}</dd>
@@ -181,7 +186,7 @@ function renderTranscriptPage({
 
   const body = (messages || []).length
     ? html`<div class="transcript-messages">${messages.map(renderMessage)}</div>`
-    : html`<p class="empty-state">No messages were archived for this ticket.</p>`;
+    : emptyState("No messages were archived for this ticket.");
 
   // One-time "you're signed in" acknowledgment after the login round-trip
   // (§8.15-15.13 ?logged-in=1). /t now lists a participant's own tickets.
@@ -190,7 +195,8 @@ function renderTranscriptPage({
     : html``;
 
   const content = html`
-    <section class="panel transcript-header">
+    <div class="bs-stack">
+    <section class="bs-panel transcript-header">
       <p class="subheading">
         Immutable record rendered from the archive database — this page shows
         exactly what was captured at close.
@@ -200,7 +206,8 @@ function renderTranscriptPage({
     </section>
     ${loginNote}
     ${renderSummary(summary)}
-    ${body}`;
+    ${body}
+    </div>`;
 
   // Staff get the shell chrome for the ticket's guild; participants get the
   // SAME content in a chrome-free layout (no switcher/sidebar//g/ links —

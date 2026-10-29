@@ -509,6 +509,11 @@ describe("web http net (tickets + oauth callback)", () => {
     const body = await res.text();
     assert.match(body, /hello http net/);
     assert.match(body, /Ticket #/);
+    assert.doesNotMatch(
+      res.headers.get("content-security-policy") || "",
+      /font-src/,
+      "the themed viewer keeps the console policy"
+    );
 
     const head = await authFetch(`/t/${tokenA}`, { method: "HEAD" });
     assert.equal(head.status, 200);
@@ -523,6 +528,11 @@ describe("web http net (tickets + oauth callback)", () => {
     const body = await res.text();
     assert.ok(body.startsWith("<!DOCTYPE html>"), "served file bytes, not a wrapper");
     assert.match(body, /hello http net/);
+    assert.match(
+      res.headers.get("content-security-policy") || "",
+      /font-src 'self' data:/,
+      "the frozen file inlines font bytes, so this response allows them"
+    );
 
     const head = await authFetch(`/t/${tokenA}/raw`, { method: "HEAD" });
     assert.equal(head.status, 200);
