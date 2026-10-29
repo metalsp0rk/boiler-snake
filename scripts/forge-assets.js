@@ -3,9 +3,10 @@
 
 /**
  * `npm run assets:build` / the `npm start` preflight (#710).
- * Vite writes dist/web. This script then copies Shoelace's icon SVGs (they
- * are fetched at runtime, not imported) and writes dist/forge-stamp.json.
- * A current stamp skips Vite.
+ * Vite writes dist/web. A second build then emits the self-contained
+ * transcript stylesheet (#713) into the same directory without emptying it.
+ * This script copies Shoelace's icon SVGs (they are fetched at runtime, not
+ * imported) and writes dist/forge-stamp.json. A current stamp skips Vite.
  */
 
 const { spawnSync } = require("child_process");
@@ -60,13 +61,7 @@ function writeStamp() {
   return stamp;
 }
 
-function build() {
-  const hash = hashInputs();
-  const existing = readStamp();
-  if (existing && existing.inputsHash === hash && outputsPresent(existing)) {
-    console.log("[assets] forge build is current");
-    return;
-  }
+function runVite(configFile) {
   const viteBin = path.join(REPO_ROOT, "node_modules/vite/bin/vite.js");
   if (!fs.existsSync(viteBin)) {
     console.error("[assets] vite is not installed. Run npm ci.");
@@ -74,11 +69,30 @@ function build() {
   }
   const result = spawnSync(
     process.execPath,
-    [viteBin, "build", "--config", "vite.web.config.mjs"],
+    [viteBin, "build", "--config", configFile],
     { cwd: REPO_ROOT, stdio: "inherit" }
   );
   if (result.status !== 0) {
     process.exit(result.status || 1);
+  }
+}
+
+function build() {
+  const hash = hashInputs();
+  const existing = readStamp();
+  if (existing && existing.inputsHash === hash && outputsPresent(existing)) {
+    console.log("[assets] forge build is current");
+    return;
+  }
+  // The console build empties dist/web. The export build must follow it,
+  // or emptyOutDir deletes transcript-export.css before the stamp is written.
+  runVite("vite.web.config.mjs");
+  runVite("vite.export.config.mjs");
+  const exportCss = path.join(DIST_DIR, "transcript-export.css");
+  if (!fs.existsSync(exportCss)) {
+    throw new Error(
+      "[assets] vite export build did not write dist/web/transcript-export.css"
+    );
   }
   copyIcons();
   const stamp = writeStamp();

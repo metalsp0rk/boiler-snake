@@ -57,7 +57,7 @@ RUN rm -rf /root/.cache/puppeteer \
   && PUPPETEER_SKIP_DOWNLOAD=0 npx puppeteer browsers install chrome \
   && test -x /root/.cache/puppeteer/chrome/linux-156.0.8078.47/chrome-linux64/chrome
 
-COPY vite.web.config.mjs ./
+COPY vite.web.config.mjs vite.export.config.mjs ./
 COPY src ./src
 COPY scripts ./scripts
 COPY test/visual/baselines ./test/visual/baselines

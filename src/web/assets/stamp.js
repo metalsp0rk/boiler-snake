@@ -6,9 +6,11 @@
  * stale, or names a file that is not in dist/web — a half-styled console
  * never comes up.
  *
- * The hash covers src/web/assets plus the pinned package versions in
- * package.json. It does not read node_modules, so the production image
- * (devDependencies omitted) can still verify the stamp.
+ * The hash covers src/web/assets, vite.export.config.mjs, and the pinned
+ * package versions in package.json. It does not read node_modules, so the
+ * production image (devDependencies omitted) can still verify the stamp.
+ * The runtime image must contain vite.export.config.mjs or this hash
+ * disagrees with the stamp written at image build.
  */
 
 const crypto = require("crypto");
@@ -65,6 +67,13 @@ function hashInputs(assetDir = ASSET_DIR) {
     hash.update(fs.readFileSync(abs));
     hash.update("\0");
   }
+  // A config-only change must rebuild. The file lives outside the asset
+  // dir so the console Vite input stays the only file that dir walks.
+  const exportConfig = path.join(REPO_ROOT, "vite.export.config.mjs");
+  hash.update("vite.export.config.mjs");
+  hash.update("\0");
+  hash.update(fs.readFileSync(exportConfig));
+  hash.update("\0");
   return hash.digest("hex");
 }
 

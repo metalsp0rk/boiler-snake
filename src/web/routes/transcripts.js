@@ -68,6 +68,7 @@ const { renderTranscriptPage } = require("../views/transcripts/transcriptPage");
 const { listTicketMessages } = require("../../db");
 const { renderTicketIndexPage } = require("../views/tickets/indexPage");
 const { writeShellHtml } = require("../views/layout");
+const { contentSecurityPolicy } = require("../middleware/csp");
 const { createGuildAccessResolver } = require("../auth/guildAccess");
 const { createTicketAccessResolver } = require("../auth/participants");
 // Fluxer PR 2: read-only communities-registry lookups (internal integer id →
@@ -603,10 +604,17 @@ async function serveTranscriptRaw(req, res, tokenRaw, ctx) {
   }
 
   const body = fs.readFileSync(resolved);
+  // writeHead names Content-Security-Policy so it replaces the middleware
+  // header. font-src data: is this response only: the file inlines the same
+  // woff2 payloads an offline open uses. The console policy stays 'self'.
   res.writeHead(200, {
     "Content-Type": "text/html; charset=utf-8",
     "Cache-Control": "private, max-age=300",
     "X-Content-Type-Options": "nosniff",
+    "Content-Security-Policy": contentSecurityPolicy(
+      (res.locals && res.locals.cspNonce) || "",
+      { embedFonts: true }
+    ),
   });
   if (req.method === "HEAD") {
     res.end();

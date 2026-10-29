@@ -1,10 +1,14 @@
 /*
  * Web admin console styles (roadmap/web-admin.md §8.2 public/; #642 shell
- * rebuild). No build step, no framework (§8.1-2): plain CSS, system-ui,
- * served from /static/styles.css. Visual language follows the ticket
- * transcripts (src/features/tickets/transcript.js): same system-ui stack,
- * same link blue, same quiet uppercase table headers — the console and the
- * transcripts are one product.
+ * rebuild). Legacy page-body CSS, served from /static/styles.css. The
+ * signed-in shell loads this file first, then the forge bundle, so forge
+ * tokens win on the chrome and on migrated pages.
+ *
+ * The transcript viewer (#713) lives in assets/primitives.css. The frozen
+ * export inlines the same tokens from the Vite export build and does not
+ * use this file. The console and the transcripts are one product: one
+ * token source. body still names system-ui so the unmigrated pages keep
+ * a face when the forge bundle is not on the page.
  *
  * DARK ONLY (#642): the signed-in console is one dark visual system.
  * The old light-scheme media-query palette is DELETED — do not repair it.
@@ -22,7 +26,8 @@
  *                    popovers.
  *   5. Pages       — per-surface blocks (dashboard, settings, moderation,
  *                    leaderboard, integrations, staff, voice, system/audit,
- *                    tickets, archive, transcript, charts, landing).
+ *                    tickets, archive, charts, landing). Transcript
+ *                    viewer rules live in assets/primitives.css.
  *   6. Responsive  — phone table/form stack and legacy per-page tweaks.
  *                    The 719 / 720–1099 / 1100+ shell grid lives in
  *                    assets/primitives.css.
@@ -1143,77 +1148,6 @@ td.people .who.sub {
 }
 p.panel-foot {
   margin-top: 0.75rem;
-}
-
-/* ---- transcript view (§8.15 amendment): themed rendering of the record ------------ */
-.transcript-header .subheading {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: space-between;
-  gap: var(--space-2);
-}
-.transcript-raw-link {
-  font-size: 0.9em;
-  white-space: nowrap;
-}
-.transcript-meta {
-  margin: 0.5rem 0 0;
-}
-.transcript-summary .badge {
-  font-size: 0.7em;
-  vertical-align: middle;
-  margin-left: 0.4rem;
-}
-.transcript-messages {
-  display: flex;
-  flex-direction: column;
-  gap: 0.6rem;
-  margin-top: var(--space-4);
-}
-.tmsg {
-  border: 1px solid var(--line);
-  border-radius: var(--radius);
-  padding: 0.7rem 0.95rem;
-  background: var(--bg-raised);
-}
-.tmsg-meta {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.75rem;
-  font-size: 0.8em;
-  color: var(--fg-muted);
-  margin-bottom: 0.35rem;
-}
-.tmsg-author {
-  color: var(--fg);
-}
-.tmsg-id {
-  color: var(--fg-muted);
-}
-.tmsg-body {
-  word-break: break-word;
-  line-height: 1.45;
-}
-.tmsg .attachments {
-  margin-top: 0.6rem;
-  display: flex;
-  flex-direction: column;
-  gap: 0.6rem;
-}
-.tmsg .att img,
-.tmsg .att video {
-  max-width: min(100%, 520px);
-  height: auto;
-  border-radius: 6px;
-  display: block;
-}
-.tmsg .att audio {
-  width: min(100%, 420px);
-}
-.tmsg .att figcaption,
-.tmsg .att a {
-  font-size: 0.85rem;
-  word-break: break-all;
 }
 
 /* ---- dashboard charts (Phase 4, client-rendered enhancement) ----------------

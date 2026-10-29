@@ -267,6 +267,8 @@ Requires a **closed** ticket channel.
 
 Transcript people lines look like `Cool Nick (@username) · 1234567890`. Mentions in message text become `@Cool Nick` (id kept in the author meta line). Images/videos/audio render inline in the HTML when mirrored.
 
+The written HTML is a dark graphite page. The stylesheet is inlined from the console token build, fonts included, so the file opens offline and does not request `/static`. The console viewer is a separate page on those same tokens. `/raw` serves the frozen file, and that file does not include the AI summary.
+
 **Sensitive:** metadata stub only → delete channel (no fetch/HTML/AI/URL/media). The requester is **not** DMed on archive — their only notice is the close DM ("closed + reason"), which never contains a URL.
 
 Optional env for media mirroring:
