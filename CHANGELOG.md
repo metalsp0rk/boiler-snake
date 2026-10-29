@@ -1,5 +1,52 @@
 # Changelog
 
+## [1.39.0](https://github.com/metalsp0rk/boiler-snake/compare/v1.38.0...v1.39.0) (2026-10-29)
+
+
+### Features
+
+* **automod:** ban tool — outbound banMember, audit reason, honest attempts ([#738](https://github.com/metalsp0rk/boiler-snake/issues/738)) ([7643ebf](https://github.com/metalsp0rk/boiler-snake/commit/7643ebff59ae22968308ce4c407666262a172914))
+* **automod:** case card with Approve/Dismiss buttons ([#730](https://github.com/metalsp0rk/boiler-snake/issues/730)) ([8015cc4](https://github.com/metalsp0rk/boiler-snake/commit/8015cc49f2b08426a45516d6cb8dbb5d129b6b4f))
+* **automod:** case-context collector + read-only lookup tools ([#727](https://github.com/metalsp0rk/boiler-snake/issues/727)) ([c86d2f6](https://github.com/metalsp0rk/boiler-snake/commit/c86d2f6c4df1d2cb0f7467133e8677e3f6328716))
+* **automod:** circuit breaker trips on runaway auto attempts ([#739](https://github.com/metalsp0rk/boiler-snake/issues/739)) ([4767a5e](https://github.com/metalsp0rk/boiler-snake/commit/4767a5e263e43a51bfd83dfdd84021eaedcc9935))
+* **automod:** delete-message tool — window-scoped, per-id honest ([#734](https://github.com/metalsp0rk/boiler-snake/issues/734)) ([c3a6fb3](https://github.com/metalsp0rk/boiler-snake/commit/c3a6fb34e4cc3e42aee344991d1bc275aefef3e9))
+* **automod:** guild settings + /automod status + /automodconfig ([#725](https://github.com/metalsp0rk/boiler-snake/issues/725)) ([cbf42e4](https://github.com/metalsp0rk/boiler-snake/commit/cbf42e4fbe075e4c109bff6dafe3315573419003))
+* **automod:** kick tool — audit reason rides Discord via the outbound helper ([#737](https://github.com/metalsp0rk/boiler-snake/issues/737)) ([b6bd03b](https://github.com/metalsp0rk/boiler-snake/commit/b6bd03b9c28acb3d18fe7de3cc978d460d7079bf))
+* **automod:** LLM case harness, isolated from Gork ([#728](https://github.com/metalsp0rk/boiler-snake/issues/728)) ([e346684](https://github.com/metalsp0rk/boiler-snake/commit/e34668490aec0ef15337880d84da4c352f0312e4))
+* **automod:** moderation queue — referral modal, reporter anonymity, case resolutions ([#771](https://github.com/metalsp0rk/boiler-snake/issues/771)) ([076d44c](https://github.com/metalsp0rk/boiler-snake/commit/076d44c3068c6a0af02986a287549bdc064308fd))
+* **automod:** no_action — required reason, prompt laws ([#732](https://github.com/metalsp0rk/boiler-snake/issues/732)) ([46e99f8](https://github.com/metalsp0rk/boiler-snake/commit/46e99f841f9985aac09f29bb3933d53f18fdc396))
+* **automod:** per-action mode gate + execution guards ([#729](https://github.com/metalsp0rk/boiler-snake/issues/729)) ([e2126a0](https://github.com/metalsp0rk/boiler-snake/commit/e2126a0c63f1126b913d69dc4c28f8aae2e595a5))
+* **automod:** staff notes for considered users only — commit-time reconciliation ([#731](https://github.com/metalsp0rk/boiler-snake/issues/731)) ([d4057ee](https://github.com/metalsp0rk/boiler-snake/commit/d4057ee3645c7ac56fd0ed99c3a9530daa91d72d))
+* **automod:** staff referral intake — /automod refer + Refer to automod ([#726](https://github.com/metalsp0rk/boiler-snake/issues/726)) ([149ef2c](https://github.com/metalsp0rk/boiler-snake/commit/149ef2cc64939e67a7347e89df84795aab8f5c43))
+* **automod:** ticket tool — member-visible law enforced, rate-slot honest ([#735](https://github.com/metalsp0rk/boiler-snake/issues/735)) ([b62fa28](https://github.com/metalsp0rk/boiler-snake/commit/b62fa288a8d4f5dfeffe92945464906b19568f6f))
+* **automod:** timeout tool — required reason rides Discord, breaker gates both paths ([#736](https://github.com/metalsp0rk/boiler-snake/issues/736)) ([985baff](https://github.com/metalsp0rk/boiler-snake/commit/985baffbcf10065e3c52a024fce42368b365c0da))
+* **automod:** warning tool through the existing warning writer ([#733](https://github.com/metalsp0rk/boiler-snake/issues/733)) ([65f65e5](https://github.com/metalsp0rk/boiler-snake/commit/65f65e5f39296b4837bd8893b14af353ac2919ff))
+* **commands:** dispatch message/user context-menu interactions ([#747](https://github.com/metalsp0rk/boiler-snake/issues/747)) ([f9d306a](https://github.com/metalsp0rk/boiler-snake/commit/f9d306a8204a921c2c295dd668cd0e1217d4dcf5))
+* **db:** ticket_reports migration + repository accessors ([#746](https://github.com/metalsp0rk/boiler-snake/issues/746)) ([73a99d0](https://github.com/metalsp0rk/boiler-snake/commit/73a99d0c7145ec6852b18579236a4d468f7f02cb))
+* **tickets:** evidence snapshot embed + attachment re-upload pipeline ([#752](https://github.com/metalsp0rk/boiler-snake/issues/752)) ([8414992](https://github.com/metalsp0rk/boiler-snake/commit/841499227992f8db6119537a3e5fed5718cfbf5a))
+* **tickets:** pending-report TTL store + report modal constants ([#749](https://github.com/metalsp0rk/boiler-snake/issues/749)) ([528f37d](https://github.com/metalsp0rk/boiler-snake/commit/528f37da6122c5783f266601e95b0448b2671946))
+* **tickets:** Report Post / Report User context-menu builders at staff tier ([#748](https://github.com/metalsp0rk/boiler-snake/issues/748)) ([f41ed6c](https://github.com/metalsp0rk/boiler-snake/commit/f41ed6c5be248a4ca5c669848108095fb62a4823))
+* **tickets:** Report Post / Report User invoke handlers + report modals ([#750](https://github.com/metalsp0rk/boiler-snake/issues/750)) ([d8c2ab0](https://github.com/metalsp0rk/boiler-snake/commit/d8c2ab09ca40c31abaee1eb12b7101083a81154f))
+* **tickets:** Report Post modal submit — evidence-before-delete, parse law, dup nudge ([#753](https://github.com/metalsp0rk/boiler-snake/issues/753)) ([1606442](https://github.com/metalsp0rk/boiler-snake/commit/1606442c2864c719f32475c373c25bb828fd9f2a))
+* **tickets:** Report User modal submit + shared openReportTicket helper ([#751](https://github.com/metalsp0rk/boiler-snake/issues/751)) ([2aeb6d2](https://github.com/metalsp0rk/boiler-snake/commit/2aeb6d290af097c250fafd4bf4e6cbb88ba3242c))
+* **web:** add the forge asset pipeline and visual harness ([3ffc2a6](https://github.com/metalsp0rk/boiler-snake/commit/3ffc2a6509c2c0fb42e16380280dc3d93c4e9949))
+* **web:** forge the data surfaces ([7620f81](https://github.com/metalsp0rk/boiler-snake/commit/7620f815b241f3cf0387ef9b4970d2f57599567b))
+* **web:** forge the landing and retire the old stylesheet ([3bbf4ab](https://github.com/metalsp0rk/boiler-snake/commit/3bbf4ab36621341b71471fec4b5c645da480fa0e))
+* **web:** forge the signed-in shell and dashboard ([4d96ee4](https://github.com/metalsp0rk/boiler-snake/commit/4d96ee40ce9925ea11e35c77517badfad112d41f))
+* **web:** forge the transcript viewer and export ([f6bcc22](https://github.com/metalsp0rk/boiler-snake/commit/f6bcc22a3ae2021e3ded9625404c72462deb219e))
+
+
+### Bug Fixes
+
+* **bridge:** rebuild Discord reply headers via v14 message.reference ([#744](https://github.com/metalsp0rk/boiler-snake/issues/744)) ([77c37c5](https://github.com/metalsp0rk/boiler-snake/commit/77c37c5372dd24449c9b47d71629ed638fb7eb0e))
+* **ci:** download Chrome after npm ci in the visual image ([ff2e640](https://github.com/metalsp0rk/boiler-snake/commit/ff2e6400c358a15e270bac246f1a51daed2e9d4e))
+* **ci:** install Chrome inside the visual image ([36e8736](https://github.com/metalsp0rk/boiler-snake/commit/36e873643bbb27b397edcd255c05056c1a22309b))
+* **ci:** install Chrome libraries for the forge visual job ([0f70871](https://github.com/metalsp0rk/boiler-snake/commit/0f708718cf34fd40ca2e9f320e4a6f94a21a25a5))
+* **ci:** install unzip so the visual image can extract Chrome ([6886f7c](https://github.com/metalsp0rk/boiler-snake/commit/6886f7ca84115a291185a26c62692f167e280826))
+* **ci:** run the visual harness in a Chrome-ready image ([85bcd53](https://github.com/metalsp0rk/boiler-snake/commit/85bcd53c8e02257e614270fd571c8e8476921667))
+* **web:** pin dashboard ids and symbols to self-hosted fonts ([7f68ba3](https://github.com/metalsp0rk/boiler-snake/commit/7f68ba3dcf84745700563c5a13502e14580f01ab))
+* **web:** snap dashboard type to whole pixels ([f497201](https://github.com/metalsp0rk/boiler-snake/commit/f4972013272546d5909270f1abc3c03b7485362a))
+
 ## [1.38.0](https://github.com/metalsp0rk/boiler-snake/compare/v1.37.0...v1.38.0) (2026-10-26)
 
 
