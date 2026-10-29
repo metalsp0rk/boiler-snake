@@ -106,9 +106,9 @@ function renderSelfRow({ session, guildId, csrfToken, isCurrent }) {
         <form class="ticket-inline-form" method="post" action="/g/${gid}/sessions/revoke">
           <input type="hidden" name="_csrf" value="${csrfToken || ""}"/>
           <input type="hidden" name="created_at" value="${session.createdAt}"/>
-          <button type="submit" class="btn btn-danger btn-sm">
+          <sl-button type="submit" variant="danger" size="medium">
             ${isCurrent ? "Sign out this browser" : "Revoke session"}
-          </button>
+          </sl-button>
         </form>
       </td>
     </tr>`;
@@ -139,10 +139,10 @@ function renderYourSessionsBody({ guildId, sessions, currentId, csrfToken, flash
   );
   return html`
     ${flashBanner(flash)}
-    <section class="panel sessions-panel">
+    <section class="bs-panel sessions-panel">
       <h2>Signed-in sessions</h2>
       ${sessions && sessions.length
-        ? html`<table class="list-table sessions-table">
+        ? html`<table class="bs-table sessions-table" data-density="compact">
             <thead>
               <tr>
                 <th>Account</th><th>Created</th><th>Last seen</th>
@@ -186,9 +186,9 @@ function renderSystemRow({ session, guildId, csrfToken, isCurrent, names }) {
           <input type="hidden" name="_csrf" value="${csrfToken || ""}"/>
           <input type="hidden" name="target_user_id" value="${session.userId}"/>
           <input type="hidden" name="created_at" value="${session.createdAt}"/>
-          <button type="submit" class="btn btn-danger btn-sm">
+          <sl-button type="submit" variant="danger" size="medium">
             ${isCurrent ? "Sign out this browser" : "Revoke session"}
-          </button>
+          </sl-button>
         </form>
       </td>
     </tr>`;
@@ -227,10 +227,10 @@ function renderSystemSessionsBody({
   );
   return html`
     ${flashBanner(flash)}
-    <section class="panel system-sessions-panel">
+    <section class="bs-panel system-sessions-panel">
       <h2>Live web sessions (system-wide)</h2>
       ${sessions && sessions.length
-        ? html`<table class="list-table system-sessions-table">
+        ? html`<table class="bs-table system-sessions-table" data-density="compact">
             <thead>
               <tr>
                 <th>User</th><th>Tag</th><th>Created</th><th>Last seen</th>

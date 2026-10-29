@@ -76,10 +76,14 @@ Scheduled posts) show only while the path is under `/events`. Settings and integ
 options are **in-page anchors** within those two pages, not separate routes. On a phone
 the sidebar collapses behind the Menu button (719px and below). From 720px the rail is
 13rem wide, and from 1100px it is 15.5rem. The signed-in chrome is graphite with teal
-for the current page and for actions, and steel for secondary information. Dashboard
-counts are stat cards. The messages chart is teal and the XP chart is steel. Other
-pages share this chrome; their page contents keep the previous styles until those
-surfaces move over. The path id is the bot's internal
+for the current page and for actions, and steel for secondary information (badges,
+a selected row, metadata). Dashboard
+counts are stat cards. The messages chart is teal and the XP chart is steel. Users,
+tickets, the archive, warnings, notes, staff, settings, sessions, voice, the events
+calendar, and the system and audit pages use the same compact tables: 13px type and
+34px rows on desktop, while phone rows still stack into cards. A snowflake on a
+person, a role, or an audit target has a copy button. The leaderboard, grant XP,
+and transcripts still use the previous table styles. The path id is the bot's internal
 **community id** (a small integer — Discord servers and Fluxer communities share the namespace),
 not a Discord snowflake; bookmarks from before the communities migration (`/g/<snowflake>`)
 return 404. Pages:
@@ -112,7 +116,8 @@ cache only — a page never waits on Discord. Cache misses show the raw id (as
 hover-text/label), and a quiet background fetcher resolves those misses right
 after; reloading the page usually fills the names in. A member who **left the
 guild** keeps their raw id permanently — that's honest, not a bug. Those ids
-are set in JetBrains Mono, including a short id that renders as code.
+are set in JetBrains Mono, including a short id that renders as code. Inline
+code on these pages uses that same face.
 
 ## Type-ahead & friendly identifiers
 
@@ -127,7 +132,10 @@ rows. **Channel id fields** (settings log/post channels, event channels)
 get the same treatment: staff-only, cache-only name suggestions — type a
 channel name and pick it, or keep pasting raw ids, which always works.
 Typeahead rides the console's JavaScript; the server accepts names,
-`<@…>` / `<@&…>` mentions, and plain IDs regardless.
+`<@…>` / `<@&…>` mentions, and plain IDs regardless. The warnings and notes
+filters, the events channel and people fields, and the archive search use that
+same combobox. **Find a setting** on the settings page filters the sections
+below it; it is not an id lookup.
 
 ## People everywhere
 

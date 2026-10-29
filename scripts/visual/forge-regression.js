@@ -2,11 +2,13 @@
 "use strict";
 
 /**
- * Visual regression for the Forged Instrument shell and dashboard (#711).
+ * Visual regression for the Forged Instrument console (#711 shell and
+ * dashboard, #712 data surfaces).
  *
- * Screenshots real renderLayout / renderDashboardContent HTML (staff nav,
- * one sample guild) at 3 desktop and 2 phone widths. A diff fails the
- * process. VISUAL_UPDATE=1 rewrites test/visual/baselines.
+ * Screenshots real view HTML inside renderLayout at 3 desktop and 2 phone
+ * widths. A diff fails the process. VISUAL_UPDATE=1 writes a baseline only
+ * when it is missing or the pixels differ, so a matching shot stays
+ * byte-for-byte.
  *
  * The server is the console's real CSP middleware plus the real static
  * middleware, and it stubs the two same-origin chart JSON routes so
@@ -14,8 +16,9 @@
  * in shadow DOM via adoptedStyleSheets under that exact policy.
  *
  * Record baselines with VISUAL_UPDATE=1. Raw ids use self-hosted JetBrains
- * Mono. The right-arrow and the less-than-or-equal sign are self-hosted
- * Inter glyphs, so host Chrome and the Bookworm image share these shots.
+ * Mono. The left arrow, the right arrow, ≤, and ≥ are self-hosted Inter
+ * glyphs. Sample timestamps that go through formatWhen sit in year 2100
+ * so the relative clause stays "now" and the shots do not age.
  */
 
 const fs = require("fs");
@@ -29,6 +32,16 @@ const { createStaticMiddleware } = require("../../src/web/middleware/static");
 const { readBuildManifest, forgePublicPaths } = require("../../src/web/assets/stamp");
 const { renderLayout } = require("../../src/web/views/layout");
 const { renderDashboardContent } = require("../../src/web/views/dashboard/dashboardPage");
+const { renderUserSearchPage } = require("../../src/web/views/users");
+const { renderTicketIndexContent } = require("../../src/web/views/tickets/indexPage");
+const { renderTicketActionsBody } = require("../../src/web/views/ticketActions");
+const { renderWarningsBody, renderNotesBody } = require("../../src/web/views/moderation");
+const { renderStaffBody } = require("../../src/web/views/staff");
+const { renderSettingsBody } = require("../../src/web/views/settings");
+const { renderYourSessionsBody, renderSystemSessionsBody } = require("../../src/web/views/sessions");
+const { renderSystemBody, renderAuditBody } = require("../../src/web/views/system");
+const { renderVoiceBody } = require("../../src/web/views/voice");
+const { renderEventsMonth } = require("../../src/web/views/events");
 const { html } = require("../../src/web/views/escape");
 
 const REPO_ROOT = path.join(__dirname, "..", "..");
@@ -37,7 +50,23 @@ const ACTUAL_DIR = path.join(REPO_ROOT, "test/visual/actual");
 const DIFF_DIR = path.join(REPO_ROOT, "test/visual/diff");
 const EVIDENCE_PATH = path.join(REPO_ROOT, "test/visual/csp-evidence.json");
 
-const PAGES = ["shell", "dashboard"];
+const PAGES = [
+  "shell",
+  "dashboard",
+  "users",
+  "ticket-actions",
+  "archive",
+  "warnings",
+  "notes",
+  "staff",
+  "settings",
+  "sessions",
+  "system-sessions",
+  "system",
+  "audit",
+  "voice",
+  "events",
+];
 const WIDTHS = [
   { name: "desktop-1280", width: 1280, height: 800 },
   { name: "desktop-1440", width: 1440, height: 900 },
@@ -132,32 +161,462 @@ const LEADERS_JSON = {
   ],
 };
 
-function pageDocument(name, nonce) {
-  const shared = {
-    guilds: VISUAL_GUILDS,
-    currentGuildId: "100",
-    tier: "staff",
-    user: { userId: "42", discordTag: "ada" },
-    csrfToken: "csrf-visual",
-    nonce,
+/** Year 2100: formatWhen's relative half stays "now" on every machine. */
+const WHEN_MS = Date.UTC(2100, 0, 1);
+const CLOSED_MS = Date.UTC(2026, 5, 6, 20, 0, 0);
+const ADA = "100000000000000042";
+const BEA = "100000000000000043";
+const ROLE = "100000000000000099";
+const CHANNEL = "100000000000000077";
+const NAMES = new Map([
+  [ADA, "Ada"],
+  [BEA, "Bea"],
+]);
+
+function visualReq() {
+  return { guildAccess: { communityId: "100", guildId: "100", tier: "staff" } };
+}
+
+function warnPage(row) {
+  return {
+    userId: null,
+    state: "active",
+    invalidUser: false,
+    pageSize: 25,
+    offset: 0,
+    total: 1,
+    rows: [row],
   };
-  if (name === "dashboard") {
-    return renderLayout({
-      ...shared,
-      title: "Dashboard",
-      heading: "Dashboard",
-      lede: "Guild health at a glance.",
-      path: "/g/100",
-      content: renderDashboardContent(DASHBOARD_SAMPLE, { guildId: "100" }),
+}
+
+function pageContent(name) {
+  if (name === "users") {
+    return renderUserSearchPage(visualReq(), {
+      search: {
+        query: "Ada",
+        searched: true,
+        results: [{ user_id: ADA, xp: 4200, level: 12 }],
+      },
+      names: NAMES,
+      queryKind: "name",
+    }).content;
+  }
+  if (name === "ticket-actions") {
+    return renderTicketActionsBody({
+      guildId: "100",
+      csrfToken: "csrf-visual",
+      flash: null,
+      maxReason: 200,
+      names: NAMES,
+      tickets: [
+        {
+          id: 4,
+          ticket_number: 12,
+          creator_user_id: ADA,
+          staff_owner_id: BEA,
+          reason: "Refund question",
+        },
+      ],
     });
   }
-  return renderLayout({
-    ...shared,
+  if (name === "archive") {
+    return renderTicketIndexContent({
+      tickets: [
+        {
+          transcript_token: "tok-visual",
+          community_id: "100",
+          ticket_number: 12,
+          creator_user_id: ADA,
+          staff_owner_id: BEA,
+          closed_at: CLOSED_MS,
+          reason: "Refund question",
+          close_reason: "Resolved",
+          ai_summary_json: null,
+        },
+      ],
+      total: 1,
+      page: 1,
+      pageSize: 20,
+      guildId: "100",
+      namesByGuild: new Map([["100", NAMES]]),
+      inShell: true,
+      viewerMode: "staff",
+      baseUrl: "/g/100/t",
+    });
+  }
+  if (name === "warnings") {
+    return renderWarningsBody(visualReq(), {
+      page: warnPage({
+        warning_number: 12,
+        user_id: ADA,
+        issuer_id: BEA,
+        created_at: WHEN_MS,
+        voided_at: null,
+        reason: "Posted a scam link",
+      }),
+      csrfToken: "csrf-visual",
+      names: NAMES,
+    });
+  }
+  if (name === "notes") {
+    return renderNotesBody(visualReq(), {
+      page: warnPage({
+        note_number: 3,
+        user_id: ADA,
+        author_id: BEA,
+        created_at: WHEN_MS,
+        deleted_at: null,
+        content: "Asked for a refund last week.",
+      }),
+      csrfToken: "csrf-visual",
+      names: NAMES,
+    });
+  }
+  if (name === "staff") {
+    return renderStaffBody({
+      view: {
+        roles: {
+          available: true,
+          rows: [{ roleId: ROLE, level: "senior", addedAt: WHEN_MS }],
+          seniors: 1,
+          juniors: 0,
+        },
+        levelRoles: {
+          available: true,
+          rows: [{ roleId: ROLE, levelRequired: 10, dropGraceDays: 7 }],
+        },
+        oauth: { available: false },
+      },
+      resolveRoleName: () => "Mods",
+      envConfig: { available: true, ready: false, missing: ["CLIENT_SECRET"] },
+      guildId: "100",
+      tier: "staff",
+      csrfToken: "csrf-visual",
+      flash: null,
+    });
+  }
+  if (name === "settings") {
+    return renderSettingsBody({
+      snapshot: {
+        guildSettings: {
+          available: true,
+          msgXp: 15,
+          reactionXp: 5,
+          voiceXpPerMin: 2,
+          levelXpFactor: 100,
+          msgCooldownSec: 20,
+          reactionCooldownSec: 10,
+          decayEnabled: true,
+          decayMinMessages: 1,
+          decayWindowDays: 30,
+          decayPercent: 0.1,
+          auditLogChannelId: CHANNEL,
+        },
+        commandChannels: { available: true, ids: [CHANNEL], everywhere: false },
+        levelRoles: {
+          available: true,
+          rows: [{ roleId: ROLE, levelRequired: 10, dropGraceDays: 7 }],
+        },
+        freshness: { ageMs: 12000, fromCache: true },
+      },
+      resolveChannelName: () => "audit-log",
+      csrfToken: "csrf-visual",
+      guildId: "100",
+    });
+  }
+  if (name === "sessions") {
+    return renderYourSessionsBody({
+      guildId: "100",
+      currentId: "visual-current",
+      csrfToken: "csrf-visual",
+      sessions: [
+        {
+          id: "visual-current",
+          discordTag: "ada",
+          createdAt: WHEN_MS,
+          lastSeenAt: WHEN_MS,
+          expiresAt: WHEN_MS,
+        },
+      ],
+    });
+  }
+  if (name === "system-sessions") {
+    return renderSystemSessionsBody({
+      guildId: "100",
+      currentId: "visual-current",
+      csrfToken: "csrf-visual",
+      names: NAMES,
+      sessions: [
+        {
+          id: "visual-current",
+          userId: ADA,
+          discordTag: "ada",
+          createdAt: WHEN_MS,
+          lastSeenAt: WHEN_MS,
+          expiresAt: WHEN_MS,
+        },
+      ],
+    });
+  }
+  if (name === "system") {
+    return renderSystemBody({
+      status: {
+        process: {
+          available: true,
+          uptimeMs: 3661000,
+          startedAt: WHEN_MS,
+          nodeVersion: "v22.23.4",
+          pid: 1000,
+        },
+        sqlite: { path: "/data/xpbot.sqlite" },
+        sessionPrune: { state: "ok", detail: "idle", intervalMs: 3600000 },
+        tickers: {
+          available: true,
+          rows: [{ name: "voice", status: "ok", lastTickAt: WHEN_MS, detail: "on minute" }],
+        },
+        webSurface: {
+          publicHttpPortConfigured: true,
+          publicHttpPort: 8080,
+          publicBaseUrl: "https://example.invalid",
+          secureCookies: true,
+          insecureHttpWarning: false,
+          sessionSecret: { configured: true, source: "SESSION_SECRET" },
+        },
+        oauth: { available: false },
+        oauthEnv: { available: true, ready: false, missing: ["CLIENT_SECRET"] },
+      },
+    });
+  }
+  if (name === "audit") {
+    return renderAuditBody(visualReq(), {
+      names: NAMES,
+      page: {
+        origin: null,
+        invalidOrigin: false,
+        pageSize: 25,
+        offset: 0,
+        total: 1,
+        rows: [
+          {
+            id: 9,
+            created_at: WHEN_MS,
+            actor_user_id: ADA,
+            origin: "web",
+            action: "warnings.add",
+            target_type: "user",
+            target_id: BEA,
+            details_json: '{"warning":12}',
+          },
+        ],
+      },
+    });
+  }
+  if (name === "voice") {
+    return renderVoiceBody({
+      resolveChannelName: () => "General",
+      snapshot: {
+        communityId: "100",
+        freshness: { ageMs: 12000, fromCache: true },
+        config: { available: true, voiceXpPerMin: 5 },
+        music: {
+          status: "playing",
+          nowPlaying: {
+            title: "Night Drive",
+            author: "Ada",
+            positionMs: 83000,
+            durationMs: 180000,
+            paused: false,
+            requesterId: ADA,
+            isStream: false,
+          },
+          queue: {
+            rows: [
+              {
+                position: 1,
+                title: "Second song",
+                author: "Bea",
+                durationMs: 200000,
+                requesterId: BEA,
+                isStream: false,
+              },
+            ],
+            truncated: false,
+            total: 1,
+            volume: 80,
+            voiceChannelId: CHANNEL,
+          },
+        },
+        live: {
+          available: true,
+          channels: [
+            {
+              channelId: CHANNEL,
+              humans: 3,
+              afk: 0,
+              mutedOrDeaf: 1,
+              eligible: 2,
+              earning: true,
+            },
+          ],
+          totals: { humans: 3, eligible: 2 },
+          truncated: false,
+          afkChannelId: null,
+        },
+      },
+    });
+  }
+  if (name === "events") {
+    return renderEventsMonth({
+      cid: "100",
+      year: 2026,
+      month: 6,
+      zone: "UTC",
+      nowMs: Date.UTC(2026, 5, 6, 15, 0, 0),
+      csrfToken: "csrf-visual",
+      drafts: [],
+      scheduled: [],
+      events: [
+        {
+          community_id: "100",
+          id: 7,
+          title: "Friday raid",
+          status: "posted",
+          start_at: CLOSED_MS,
+          end_at: Date.UTC(2026, 5, 6, 22, 0, 0),
+        },
+      ],
+    });
+  }
+  return null;
+}
+
+const PAGE_META = {
+  shell: {
     title: "Settings",
     heading: "Settings",
     lede: "Guild settings for this community.",
     path: "/g/100/settings",
-    content: html`<p class="subheading">Command channels, XP, and decay live on this page.</p>`,
+    tier: "staff",
+  },
+  dashboard: {
+    title: "Dashboard",
+    heading: "Dashboard",
+    lede: "Guild health at a glance.",
+    path: "/g/100",
+    tier: "staff",
+  },
+  users: { title: "Users", heading: "Users", lede: "Search tracked members.", path: "/g/100/users", tier: "staff" },
+  "ticket-actions": {
+    title: "Ticket actions",
+    heading: "Ticket actions",
+    lede: "Open tickets in this server.",
+    path: "/g/100/tickets",
+    tier: "senior",
+  },
+  archive: {
+    title: "Ticket archive",
+    heading: "Ticket archive",
+    lede: "Archived transcripts for this guild.",
+    path: "/g/100/t",
+    tier: "staff",
+  },
+  warnings: {
+    title: "Warnings",
+    heading: "Warnings",
+    lede: "Warnings for this guild.",
+    path: "/g/100/warnings",
+    tier: "staff",
+  },
+  notes: {
+    title: "Staff notes",
+    heading: "Staff notes",
+    lede: "Staff notes for this guild.",
+    path: "/g/100/notes",
+    tier: "staff",
+  },
+  staff: {
+    title: "Staff roles",
+    heading: "Staff roles",
+    lede: "Who can use staff commands.",
+    path: "/g/100/staff",
+    tier: "staff",
+  },
+  settings: {
+    title: "Settings",
+    heading: "Settings",
+    lede: "Guild settings for this community.",
+    path: "/g/100/settings",
+    tier: "staff",
+  },
+  sessions: {
+    title: "Your sessions",
+    heading: "Your sessions",
+    lede: "Browsers signed in on your account.",
+    path: "/g/100/sessions",
+    tier: "staff",
+  },
+  "system-sessions": {
+    title: "Web sessions",
+    heading: "Web sessions",
+    lede: "Every live console session.",
+    path: "/g/100/system/sessions",
+    tier: "admin",
+  },
+  system: {
+    title: "System",
+    heading: "System",
+    lede: "Process, storage, and jobs.",
+    path: "/g/100/system",
+    tier: "admin",
+  },
+  audit: {
+    title: "Audit trail",
+    heading: "Audit trail",
+    lede: "admin_audit rows for this guild.",
+    path: "/g/100/audit",
+    tier: "admin",
+  },
+  voice: {
+    title: "Voice",
+    heading: "Voice",
+    lede: "Now playing and live voice.",
+    path: "/g/100/voice",
+    tier: "staff",
+  },
+  events: {
+    title: "Events",
+    heading: "Events",
+    lede: "This month in the guild zone.",
+    path: "/g/100/events",
+    tier: "staff",
+  },
+};
+
+function pageDocument(name, nonce) {
+  const meta = PAGE_META[name];
+  const shared = {
+    guilds: VISUAL_GUILDS,
+    currentGuildId: "100",
+    tier: meta.tier,
+    user: { userId: "42", discordTag: "ada" },
+    csrfToken: "csrf-visual",
+    nonce,
+  };
+  let content;
+  if (name === "dashboard") {
+    content = renderDashboardContent(DASHBOARD_SAMPLE, { guildId: "100" });
+  } else if (name === "shell") {
+    content = html`<p class="subheading">Command channels, XP, and decay live on this page.</p>`;
+  } else {
+    content = pageContent(name);
+  }
+  return renderLayout({
+    ...shared,
+    title: meta.title,
+    heading: meta.heading,
+    lede: meta.lede,
+    path: meta.path,
+    content,
   });
 }
 
@@ -167,8 +626,8 @@ function startServer() {
 
   const server = http.createServer((req, res) => {
     const url = new URL(req.url || "/", "http://127.0.0.1");
-    const fixture = url.pathname.match(/^\/fixture\/(shell|dashboard)$/);
-    if (fixture) {
+    const fixture = url.pathname.match(/^\/fixture\/([a-z0-9-]+)$/);
+    if (fixture && PAGES.includes(fixture[1])) {
       csp(req, res, () => {
         const document = pageDocument(fixture[1], res.locals.cspNonce || "");
         res.writeHead(200, {
@@ -240,6 +699,14 @@ async function shoot(page, origin, name) {
     if (document.fonts && document.fonts.ready) await document.fonts.ready;
   });
   await page.waitForFunction(() => customElements.get("sl-button"));
+  // app.js sets role=combobox only after the first keystroke (ensureList).
+  // A resting lookup is still a plain input with data-lookup wiring.
+  await page.waitForFunction(() => {
+    const copies = [...document.querySelectorAll("sl-copy-button")];
+    if (!copies.length) return true;
+    if (!customElements.get("sl-copy-button")) return false;
+    return copies.every((el) => el.shadowRoot && el.shadowRoot.querySelector("button"));
+  });
   if (name === "dashboard") {
     await page.waitForFunction(() => {
       const boxes = [...document.querySelectorAll("[data-chart-src]")];
@@ -361,6 +828,13 @@ async function main() {
 
         const baselinePath = path.join(BASELINE_DIR, file);
         if (update) {
+          if (fs.existsSync(baselinePath)) {
+            const kept = comparePng(actualPath, baselinePath, path.join(DIFF_DIR, file));
+            if (kept.ok) {
+              console.log(`[visual] ${file} match (kept)`);
+              continue;
+            }
+          }
           fs.copyFileSync(actualPath, baselinePath);
           console.log(`[visual] updated ${file}`);
           continue;

@@ -147,11 +147,11 @@ function renderTicketActionsBody({ guildId, tickets, csrfToken, flash, maxReason
   );
   return html`
     ${flashBanner(flash)}
-    <section class="panel ticket-actions-panel">
+    <section class="bs-panel ticket-actions-panel">
       <h2>Open tickets</h2>
       <p class="panel-foot"><a href="/g/${gid}/t">Archived tickets →</a></p>
       ${tickets && tickets.length
-        ? html`<table class="list-table ticket-actions-table table-stack">
+        ? html`<table class="bs-table ticket-actions-table table-stack" data-density="compact">
             <thead>
               <tr>
                 <th>ID</th><th>Ticket</th><th>Requester</th><th>Staff owner</th>
@@ -171,7 +171,7 @@ function renderTicketActionsBody({ guildId, tickets, csrfToken, flash, maxReason
         stays slash-only — §8.6.
       </p>
     </section>
-    <section class="panel ticket-summary-panel">
+    <section class="bs-panel ticket-summary-panel">
       <h2>Regenerate summary</h2>
       <form class="integ-write-form ticket-summary-form" method="post" action="/g/${gid}/tickets/summarize">
         <input type="hidden" name="_csrf" value="${csrfToken || ""}"/>

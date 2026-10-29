@@ -728,7 +728,7 @@ th {
 .moderation .pager { margin: 0.25rem 0 0; font-size: 0.85rem; }
 .moderation .pager a { margin-right: 0.5rem; }
 
-.moderation .moderation-table { font-size: 0.85rem; }
+
 /* Voided/deleted rows are quiet by COLOR, not opacity (#642); the state
    pill below them stays fully readable (the row keeps its text pill). */
 .moderation .row-voided td,
@@ -1055,8 +1055,6 @@ th {
 /* Paths and URLs break instead of blowing out the layout. */
 .system-path code, code.system-path { word-break: break-all; }
 
-.system-table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
-
 .system-panel .hint { font-size: 0.8rem; color: var(--fg-muted); opacity: 1; margin: 0.6rem 0 0; }
 
 /* Audit origin badges (whitelisted kinds only — views/system ORIGIN_KINDS). */
@@ -1064,9 +1062,7 @@ th {
 .badge-origin-slash { color: var(--tier-senior); }
 .badge-origin-system { color: var(--fg-muted); }
 
-/* Audit rows: dense table, details as escaped scrollable plain text. */
-.audit .audit-table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
-.audit .audit-table th, .audit .audit-table td { padding: 0.4rem 0.5rem; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
+/* Audit rows: the compact bs-table owns density. Details stay escaped plain text. */
 .audit .audit-id { width: 4rem; font-variant-numeric: tabular-nums; color: var(--fg-muted); }
 .audit .audit-action, .audit .audit-target, .audit .user-id { word-break: break-all; }
 .audit .audit-details-cell { min-width: 0; } /* #652: was 16rem — forced the phone page sideways */
@@ -1418,10 +1414,6 @@ a.btn-signin {
   gap: var(--space-2);
 }
 
-/* Event list tables ride the shared stack (.list-table/.table-stack); this
-   only tightens the densest columns' type on phones (Responsive). */
-.events-table { font-size: 0.85rem; }
-
 /* Inline destructive row form (archive / preset delete): the typed-confirm
    field gets the danger treatment without the block .danger-zone padding. */
 .events-danger-inline {
@@ -1451,18 +1443,6 @@ a.btn-signin {
 
 @media (max-width: 640px) {
   .setting-row { grid-template-columns: 1fr; gap: 0.15rem; }
-}
-
-@media (max-width: 640px) {
-  .integrations-panel .settings-table { font-size: 0.8rem; }
-}
-
-@media (max-width: 640px) {
-  .staff-table { font-size: 0.8rem; }
-}
-
-@media (max-width: 640px) {
-  .voice-panel .settings-table { font-size: 0.8rem; }
 }
 
 @media (max-width: 640px) {

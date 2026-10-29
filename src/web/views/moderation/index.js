@@ -106,7 +106,7 @@ function csrfField(csrfToken) {
 function renderWarnIssueForm({ guildId, csrfToken, maxReason, maxEvidence, maxExpiryDays }) {
   const actionPath = `/g/${encodeURIComponent(guildId)}/moderation/warnings/issue`;
   return html`
-    <section class="panel moderation-write-panel">
+    <section class="bs-panel moderation-write-panel">
       <h2>Issue warning</h2>
       <p class="hint">
         Runs the same pipeline as <code>/warn add</code>: sequential W-ref,
@@ -140,7 +140,7 @@ function renderWarnIssueForm({ guildId, csrfToken, maxReason, maxEvidence, maxEx
 function renderWarnVoidForm({ guildId, csrfToken, maxReason }) {
   const actionPath = `/g/${encodeURIComponent(guildId)}/moderation/warnings/void`;
   return html`
-    <section class="panel moderation-write-panel">
+    <section class="bs-panel moderation-write-panel">
       <h2>Void warning</h2>
       <p class="hint">
         Same as <code>/warn void</code>: pick the number from the W-… ref
@@ -168,7 +168,7 @@ function renderWarnVoidForm({ guildId, csrfToken, maxReason }) {
 function renderNoteAddForm({ guildId, csrfToken, maxContent }) {
   const actionPath = `/g/${encodeURIComponent(guildId)}/moderation/notes`;
   return html`
-    <section class="panel moderation-write-panel">
+    <section class="bs-panel moderation-write-panel">
       <h2>Add staff note</h2>
       <p class="hint">
         Same as <code>/note add</code>: sequential N-ref, staff-only forever.
@@ -249,11 +249,11 @@ const pager = (base, filters, page) =>
  * @param {{ userId: string|null, invalidUser: boolean, state: string }} page
  * @param {Array<[string, string]>} stateOptions [value, label] pairs
  */
-function filterForm(action, page, stateOptions) {
+function filterForm(action, page, stateOptions, guildId) {
   return html`
     <form class="filter-form" method="get" action="${action}">
       <label for="f-u">User ID</label>
-      <input id="f-u" type="search" name="u" value="${page.userId || ""}" placeholder="subject user id…" maxlength="20"/>
+      <input id="f-u" type="search" name="u" value="${page.userId || ""}" placeholder="subject user id…" maxlength="20" autocomplete="off" data-lookup="users" data-lookup-url="/g/${encodeURIComponent(guildId)}/lookups/users"/>
       <label for="f-state">State</label>
       <select id="f-state" name="state">
         ${stateOptions.map(
@@ -332,7 +332,7 @@ function renderWarningsBody(req, { page, flash = null, csrfToken = null, bounds 
         actionLabel: "Issue a warning",
       });
   const list = page.rows.length
-    ? html`<table class="list-table moderation-table table-stack">
+    ? html`<table class="bs-table moderation-table table-stack" data-density="compact">
         <thead>
           <tr><th>Ref</th><th>Subject</th><th>Issuer</th><th>Created</th><th>State</th><th>Reason</th></tr>
         </thead>
@@ -356,13 +356,13 @@ function renderWarningsBody(req, { page, flash = null, csrfToken = null, bounds 
     ${page.invalidUser
       ? banner("warn", "Invalid user filter ignored — the user filter needs a numeric Discord user id.")
       : html``}
-    <section class="panel moderation-controls">
+    <section class="bs-panel moderation-controls">
       <div class="moderation-filters">
         ${filterForm(base, page, [
           ["active", "Active (hide voided — slash default)"],
           ["voided", "Voided only"],
           ["all", "All (incl. voided)"],
-        ])}
+        ], guildId)}
       </div>
       <div class="moderation-issue">
         ${renderWarnIssueForm({ guildId, csrfToken, maxReason: bounds.maxReason ?? 1000, maxEvidence: bounds.maxEvidence ?? 500, maxExpiryDays: bounds.maxExpiryDays ?? 3650 })}
@@ -404,7 +404,7 @@ function renderNotesBody(req, { page, flash = null, csrfToken = null, bounds = {
         actionLabel: "Add a note",
       });
   const list = page.rows.length
-    ? html`<table class="list-table moderation-table table-stack">
+    ? html`<table class="bs-table moderation-table table-stack" data-density="compact">
         <thead>
           <tr><th>Ref</th><th>Subject</th><th>Author</th><th>Created</th><th>State</th><th>Content</th></tr>
         </thead>
@@ -437,7 +437,7 @@ function renderNotesBody(req, { page, flash = null, csrfToken = null, bounds = {
     ${filterForm(base, page, [
       ["active", "Active (hide deleted — slash default)"],
       ["all", "All (incl. soft-deleted)"],
-    ])}
+    ], guildId)}
     <p class="counts"><strong>${page.total}</strong> note${page.total === 1 ? " matches" : "s match"} this filter${page.userId ? html` · subject ${page.userId}` : html` · guild-wide`}.</p>
     ${list}
     <p class="hint">Notes are staff-only and never shown to the subject. Soft-delete keeps the row for audit (slash parity).</p>

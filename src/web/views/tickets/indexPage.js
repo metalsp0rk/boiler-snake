@@ -213,7 +213,7 @@ function renderTicketIndexContent({
     ${guildId && !inShell ? html`<input type="hidden" name="guild" value="${guildId}">` : html``}
     <input type="search" name="q" maxlength="100" placeholder="Number, reason, or type a name…"${lookupAttrs}
       ${q ? html`value="${q}"` : html``} aria-label="Search archived tickets">
-    <button type="submit">Search</button>
+    <button type="submit" class="btn">Search</button>
     ${q ? html`<a class="search-clear" href="${hrefFor(1)}">Clear</a>` : html``}
   </form>`;
 
@@ -221,7 +221,7 @@ function renderTicketIndexContent({
   // wide archive rows scroll inside the div instead of forcing the whole
   // page sideways at 360–430px. Markup inside stays byte-untouched.
   const tableBlock = html`<div class="table-scroll">
-    <table class="table-stack">
+    <table class="bs-table table-stack" data-density="compact">
       <thead>
         <tr>
           <th>Ticket</th>

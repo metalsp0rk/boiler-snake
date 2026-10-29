@@ -82,7 +82,7 @@ function pagerAppend(baseHref, param, { offset, total, shown }) {
  */
 function identityCard(profile, communityId, names = null) {
   return html`
-    <section class="panel user-identity">
+    <section class="bs-panel user-identity">
       <h2>Identity</h2>
       <dl class="kv">
         <dt>User ID</dt>
@@ -99,7 +99,7 @@ function warningsSection(profile, baseHref, communityId, names = null) {
   const { rows, offset, total } = profile.warnings;
   const { warnsActive, warnsTotal } = profile.counts;
   const list = rows.length
-    ? html`<table class="list-table">
+    ? html`<table class="bs-table" data-density="compact">
         <thead>
           <tr><th>Ref</th><th>By</th><th>Created</th><th>Expires</th><th>Status</th><th>Reason</th></tr>
         </thead>
@@ -118,7 +118,7 @@ function warningsSection(profile, baseHref, communityId, names = null) {
       ${pagerAppend(baseHref, "w_off", { offset, total, shown: rows.length })}`
     : emptyState("No warnings on record.");
   return html`
-    <section class="panel user-warnings">
+    <section class="bs-panel user-warnings">
       <h2>Warnings</h2>
       <p class="counts"><strong>${warnsActive}</strong> active · <strong>${warnsTotal}</strong> total (incl. voided)</p>
       ${list}
@@ -139,7 +139,7 @@ function notesSection(profile, baseHref, communityId, names = null) {
       ${pagerAppend(baseHref, "n_off", { offset, total, shown: rows.length })}`
     : emptyState("No active staff notes.");
   return html`
-    <section class="panel user-notes">
+    <section class="bs-panel user-notes">
       <h2>Staff notes</h2>
       <p class="counts"><strong>${notesActive}</strong> active · <strong>${notesTotal}</strong> total (incl. deleted — deleted stay hidden here, as in slash)</p>
       ${list}
@@ -149,7 +149,7 @@ function notesSection(profile, baseHref, communityId, names = null) {
 function ticketsSection(profile, baseHref) {
   const { rows, offset, hasMore } = profile.tickets;
   const list = rows.length
-    ? html`<table class="list-table">
+    ? html`<table class="bs-table" data-density="compact">
         <thead>
           <tr><th>Ticket</th><th>Role</th><th>Status</th><th>Created</th><th>Reason</th></tr>
         </thead>
@@ -167,7 +167,7 @@ function ticketsSection(profile, baseHref) {
       ${pagerAppend(baseHref, "t_off", { offset, total: hasMore ? offset + rows.length + 1 : null, shown: rows.length })}`
     : emptyState("No tickets involving this user.");
   return html`
-    <section class="panel user-tickets">
+    <section class="bs-panel user-tickets">
       <h2>Recent tickets</h2>
       ${list}
     </section>`;
@@ -182,14 +182,14 @@ function activityArea(profile, activity) {
   const base = `/g/${activity.guildId}/users/${profile.userId}`;
   if (!activity.visible) {
     return html`
-      <section class="panel user-activity-denied">
+      <section class="bs-panel user-activity-denied">
         <h2>Activity</h2>
         <p class="activity-denied">${SENIOR_DENIED_MESSAGE}</p>
       </section>`;
   }
   const { ranking } = activity;
   return html`
-    <section class="panel user-activity">
+    <section class="bs-panel user-activity">
       <h2>Activity</h2>
       <dl class="kv">
         <dt>Window (${ranking.windowLabel})</dt>
@@ -225,7 +225,7 @@ function rankingTable(ranking, page) {
     return emptyState("No tracked messages yet. Backfill history (slash) or wait for new posts.");
   }
   const entityLabel = page === "categories" ? "Category" : "Channel";
-  return html`<table class="list-table activity-table">
+  return html`<table class="bs-table activity-table" data-density="compact">
     <thead>
       <tr><th>#</th><th>${entityLabel}</th><th>Posts</th><th>Share</th><th>Rate</th></tr>
     </thead>
@@ -279,7 +279,7 @@ function renderUserSearchPage(req, { guilds, search, names = null, queryKind = n
     <p class="hint">ID search matches tracked users (exact or prefix). Name search matches members currently cached by the bot (it warms as you browse); tracked members are always found by ID. Results are capped at 50.</p>
     ${search.searched
       ? rows.length
-        ? html`<table class="list-table">
+        ? html`<table class="bs-table" data-density="compact">
             <thead><tr><th>User</th><th>XP</th><th>Level</th></tr></thead>
             <tbody>${rows}</tbody>
           </table>`
@@ -322,7 +322,7 @@ function renderUserActivityBody(req, { profile, activity }) {
       <a class="tab" href="${base}">Profile</a>
       <a class="tab active" href="${actBase}">Activity</a>
     </nav>
-    <section class="panel user-activity-full">
+    <section class="bs-panel user-activity-full">
       <h2>Activity · ${activity.page === "categories" ? "Categories" : "Channels"} · ${ranking.windowLabel}</h2>
       ${activityControls(actBase, activity.window, activity.page)}
       <dl class="kv">

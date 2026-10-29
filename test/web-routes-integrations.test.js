@@ -331,13 +331,13 @@ describe("web integrations page (GET /g/:guildId/integrations, staff tier, read-
       for (const id of ["youtube", "twitch", "reaction-roles", "reminders", "honeypot"]) {
         assert.match(
           body,
-          new RegExp(`<section id="${id}" data-setting-section class="panel`),
+          new RegExp(`<section id="${id}" data-setting-section class="bs-panel`),
           `section#${id} carries the frozen id + find-box hook`
         );
       }
       // Class strings stay stable where other tests/CSS pin them.
       assert.ok(
-        body.includes('class="panel settings-panel integrations-panel"'),
+        body.includes('class="bs-panel settings-panel integrations-panel"'),
         "shared section chrome classes unchanged"
       );
       // Create/update fields stay BLANK with example placeholders (no prefill;

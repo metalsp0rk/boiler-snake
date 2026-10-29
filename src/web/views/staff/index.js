@@ -106,7 +106,10 @@ function advisoryStrip() {
 function roleRef(roleId, resolveName) {
   if (!roleId) return html`<em class="muted">—</em>`;
   const name = typeof resolveName === "function" ? resolveName(roleId) : null;
-  return html`<code class="role-id">${roleId}</code>${name
+  const copy = /^[0-9]{5,20}$/.test(String(roleId))
+    ? html`<sl-copy-button class="bs-copy" value="${roleId}" copy-label="Copy role id"></sl-copy-button>`
+    : html``;
+  return html`<code class="role-id">${roleId}</code>${copy}${name
     ? html` <span class="role-name">(${name})</span>`
     : html``}`;
 }
@@ -123,7 +126,7 @@ function staffRolesTable(roles, resolveName) {
       "No staff roles configured. Slash: /staff role add <role> junior|senior (server admin)."
     );
   }
-  return html`<table class="list-table staff-table table-stack">
+  return html`<table class="bs-table staff-table table-stack" data-density="compact">
     <thead>
       <tr><th scope="col">Role ID</th><th scope="col">Level</th><th scope="col">Added</th></tr>
     </thead>
@@ -151,7 +154,7 @@ function levelRolesTable(levelRoles, resolveName) {
       "No level→role mappings configured. Slash: /leveltorole set <role> <level> <drop-days>."
     );
   }
-  return html`<table class="list-table staff-table level-roles-table table-stack">
+  return html`<table class="bs-table staff-table level-roles-table table-stack" data-density="compact">
     <thead>
       <tr><th scope="col">Role ID</th><th scope="col">Level required</th><th scope="col">Drop grace (days)</th></tr>
     </thead>
@@ -206,7 +209,7 @@ function staffLevelSelect(name) {
 function staffRoleForms({ guildId, csrfToken }) {
   const base = `/g/${guildId}/staff/role`;
   return html`
-    <section class="panel staff-mutate-panel">
+    <section class="bs-panel staff-mutate-panel">
       <h2>Manage staff roles <span class="badge badge-tier badge-tier-admin">admin</span></h2>
       <p class="subheading">
         Same service layer and validation as the slash <code>/staff role</code>
@@ -236,7 +239,7 @@ function staffRoleForms({ guildId, csrfToken }) {
 function levelRoleForms({ guildId, csrfToken }) {
   const base = `/g/${guildId}/staff/levelrole`;
   return html`
-    <section class="panel staff-mutate-panel level-role-panel">
+    <section class="bs-panel staff-mutate-panel level-role-panel">
       <h2>Manage level→role mappings</h2>
       <p class="subheading">
         Same service layer and validation as the slash <code>/leveltorole</code>
@@ -350,7 +353,7 @@ function renderSyncStatusPanel({ oauth, envConfig, trigger, flash }) {
       : html``;
 
   return html`
-    <section class="panel staff-sync-panel">
+    <section class="bs-panel staff-sync-panel">
       <h2>Command visibility sync</h2>
       ${syncFlashBanner(flash)}
       <p class="sync-state-row">Authorization ${authBadge} · ${envBadge}</p>
@@ -390,12 +393,12 @@ function renderStaffBody({ view, resolveRoleName, envConfig, guildId, tier, csrf
 
   return html`
     <div class="staff-grid">
-      <section class="panel staff-roles-panel">
+      <section class="bs-panel staff-roles-panel">
         <h2>Staff roles</h2>
         ${counts} ${staffRolesTable(roles, resolveRoleName)} ${levelLegend()}
       </section>
       ${canMutate && tier === "admin" ? staffRoleForms({ guildId, csrfToken }) : html``}
-      <section id="level-roles" class="panel level-roles-config-panel">
+      <section id="level-roles" class="bs-panel level-roles-config-panel">
         <h2>Level→role mappings</h2>
         ${levelRolesTable(levelRoles, resolveRoleName)}
       </section>
