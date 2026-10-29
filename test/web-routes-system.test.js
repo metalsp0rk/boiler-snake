@@ -872,7 +872,7 @@ describe("GET /g/:guildId/audit — newest-first viewer with origin filter + pag
     const { res, body } = await hit(`${AUD}?origin=web&o=100`, { key: "admin" });
     assert.equal(res.status, 200);
     assert.ok(
-      body.includes('<table class="list-table audit-table table-stack">'),
+      body.includes('<table class="bs-table audit-table table-stack" data-density="compact">'),
       "audit table adopts the shared phone-stack contract",
     );
     for (const label of ["When", "Actor", "Origin", "Action", "Target", "Details"]) {

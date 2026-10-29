@@ -32,6 +32,18 @@ body {
   line-height: 1.45;
 }
 
+/* Bare controls keep a UA face, and that face is a different file on
+   each OS. An unsized input's intrinsic width follows it, so a grid
+   column can sit on a different wrap boundary, and a filled field
+   antialiases past the pixelmatch threshold. Buttons stay on the UA
+   face: inheriting the body font there moves label pixels that
+   already match. */
+input,
+select,
+textarea {
+  font-family: inherit;
+}
+
 :focus-visible {
   outline: var(--bs-focus);
   outline-offset: 2px;
@@ -59,12 +71,17 @@ body {
   text-decoration: none;
 }
 
-/* .user-id covers both the profile link and the short-id <code>. The UA
-   monospace is a different face on each OS and grows the line by a pixel. */
+/* .user-id covers both the profile link and the short-id <code>. Bare
+   code/kbd/pre would otherwise use the UA monospace, a different face on
+   each OS, which changes line breaks between machines. */
 .bs-id,
 .bs-metric,
 .lookup-id,
-.user-id {
+.user-id,
+code,
+kbd,
+samp,
+pre {
   font-family: var(--bs-font-mono);
   font-variant-numeric: tabular-nums;
 }
@@ -423,6 +440,7 @@ body {
   padding: 0 12px;
   border-bottom: 1px solid var(--bs-line);
   text-align: left;
+  vertical-align: middle;
   white-space: nowrap;
 }
 
@@ -444,11 +462,56 @@ body {
   background: var(--bs-hover);
 }
 
+/* D4 compact: 13px type, 34px row on desktop. Data cells wrap. The fixed
+   height stays at ≥720px so a .table-stack card under 719px can grow. */
+.bs-table[data-density="compact"] {
+  font-size: 13px;
+}
+
 .bs-table[data-density="compact"] th,
 .bs-table[data-density="compact"] td {
-  height: var(--bs-row-compact);
   padding: 0 8px;
   font-size: 13px;
+  line-height: 20px;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+@media (min-width: 720px) {
+  .bs-table[data-density="compact"] th,
+  .bs-table[data-density="compact"] td {
+    height: var(--bs-row-compact);
+  }
+}
+
+/* D2: a selected data row is information, so the tint is steel. */
+.bs-table tbody tr.is-selected {
+  background: var(--bs-info-tint);
+}
+
+/* Clickable controls inside a migrated panel are teal with graphite ink.
+   Danger and the settings clear submit stay on their own treatments. */
+.bs-panel .btn:not(.btn-danger):not(.btn--danger):not(.settings-submit-clear),
+.moderation .filter-form .btn,
+.search-form .btn,
+.archive-search .btn {
+  background: var(--bs-action);
+  border-color: var(--bs-action);
+  color: var(--bs-sunken);
+}
+
+.bs-panel .btn:not(.btn-danger):not(.btn--danger):not(.settings-submit-clear):hover,
+.moderation .filter-form .btn:hover,
+.search-form .btn:hover,
+.archive-search .btn:hover {
+  background: var(--bs-action);
+  border-color: var(--bs-action);
+  filter: brightness(1.08);
+}
+
+sl-copy-button.bs-copy {
+  margin-left: 4px;
+  vertical-align: middle;
 }
 
 .bs-pager {

@@ -120,7 +120,7 @@ function channelRef(channelId, resolveName, missingHtml = null) {
  * (byte-exact for all three pages): a page that does not pass an option
  * renders an EMPTY fragment there — exactly what its old private copy did —
  * so the unified engine cannot shift a single byte. `cls` appends the
- * page's own panel class to the shared "panel settings-panel" base.
+ * page's own panel class to the shared "bs-panel settings-panel" base.
  * `id` (#642) lands on the <section> ONLY when it passes the strict
  * slug whitelist — deep-link/section-nav anchors can never smuggle
  * markup or attributes. `dataSection` (#643) adds the boolean
@@ -136,7 +136,7 @@ function section(title, bodyHtml, opts = {}) {
       : html``;
   const dataSection = opts.dataSection ? raw(" data-setting-section") : "";
   return html`
-    <section${idAttr}${dataSection} class="panel settings-panel${opts.cls ? ` ${opts.cls}` : ""}">
+    <section${idAttr}${dataSection} class="bs-panel settings-panel${opts.cls ? ` ${opts.cls}` : ""}">
       <h2>${title}</h2>
       ${opts.hint ? html`<p class="setting-admin-hint">${opts.hint}</p>` : html``}
       ${opts.notice ? banner("warn", opts.notice) : html``}

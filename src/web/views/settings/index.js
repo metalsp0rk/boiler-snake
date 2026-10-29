@@ -529,7 +529,7 @@ function levelRolesSection(cluster, ctx) {
     return section(title, emptyState(READ_FAILED), { cls: "settings-section", dataSection: true });
   }
   const body = cluster.rows.length
-    ? html`<table class="list-table settings-table">
+    ? html`<table class="bs-table settings-table" data-density="compact">
         <thead>
           <tr><th scope="col">Role ID</th><th scope="col">Level required</th><th scope="col">Drop grace (days)</th></tr>
         </thead>

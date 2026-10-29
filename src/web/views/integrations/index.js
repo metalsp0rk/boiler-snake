@@ -396,7 +396,7 @@ function youtubeSection(yt, ctx, page = {}) {
     )}`;
 
   const rows = yt.rows.length
-    ? html`<table class="list-table settings-table">
+    ? html`<table class="bs-table settings-table" data-density="compact">
         <thead>
           <tr><th scope="col">Channel</th><th scope="col">URL</th><th scope="col">Last video</th><th scope="col">Last checked</th></tr>
         </thead>
@@ -500,7 +500,7 @@ function twitchSection(tw, ctx, page = {}) {
     )}`;
 
   const rows = tw.rows.length
-    ? html`<table class="list-table settings-table">
+    ? html`<table class="bs-table settings-table" data-density="compact">
         <thead>
           <tr><th scope="col">Broadcaster</th><th scope="col">Login</th><th scope="col">Status</th><th scope="col">Last stream</th><th scope="col">Last checked</th></tr>
         </thead>
@@ -574,7 +574,7 @@ function reactionRolesSection(rr, ctx, page = {}) {
   }
   const { resolveChannelName, guildId, csrfToken } = ctx;
   const rows = rr.panels.length
-    ? html`<table class="list-table settings-table">
+    ? html`<table class="bs-table settings-table" data-density="compact">
         <thead>
           <tr><th scope="col">Panel</th><th scope="col">Channel</th><th scope="col">Message ID</th><th scope="col">Options</th></tr>
         </thead>
@@ -668,7 +668,7 @@ function eventRemindersSection(er, ctx, page = {}) {
       governsBadge("reminderChannel")
     )}`;
   const rows = er.configs.length
-    ? html`<table class="list-table settings-table">
+    ? html`<table class="bs-table settings-table" data-density="compact">
         <thead>
           <tr><th scope="col">Shortname</th><th scope="col">Event ID</th><th scope="col">Ping role</th><th scope="col">Channel</th><th scope="col">Next fire</th><th scope="col">Reminders (sent/unsent)</th></tr>
         </thead>
@@ -727,7 +727,7 @@ function honeypotSection(hp, ctx, page = {}) {
   const chanBody = !chans.available
     ? emptyState(READ_FAILED)
     : chans.rows.length
-      ? html`<table class="list-table settings-table">
+      ? html`<table class="bs-table settings-table" data-density="compact">
           <thead>
             <tr><th scope="col">Channel</th><th scope="col">Warning message</th></tr>
           </thead>

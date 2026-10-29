@@ -71,12 +71,12 @@ function stateBadge(ok, yesLabel, noLabel) {
 function renderProcessPanel(processInfo) {
   const p = processInfo || { available: false };
   if (!p.available) {
-    return html`<section class="panel system-panel">
+    return html`<section class="bs-panel system-panel">
       <h2>Process</h2>
       ${emptyState("Process health is unavailable.")}
     </section>`;
   }
-  return html`<section class="panel system-panel">
+  return html`<section class="bs-panel system-panel">
     <h2>Process</h2>
     <dl class="kv system-kv">
       <dt>Uptime</dt>
@@ -96,7 +96,7 @@ function renderProcessPanel(processInfo) {
 function renderStoragePanel(sqlite, sessionPrune) {
   const db = sqlite || { path: null };
   const prune = sessionPrune || { state: "unknown" };
-  return html`<section class="panel system-panel">
+  return html`<section class="bs-panel system-panel">
     <h2>Storage &amp; background jobs</h2>
     <dl class="kv system-kv">
       <dt>SQLite file</dt>
@@ -120,7 +120,7 @@ function renderTickersPanel(tickers) {
     !tickers || !tickers.available
       ? emptyState("Ticker registry unavailable — status unknown.")
       : rows.length
-        ? html`<table class="list-table system-table">
+        ? html`<table class="bs-table system-table" data-density="compact">
             <thead>
               <tr><th scope="col">Source</th><th scope="col">Status</th><th scope="col">Last tick</th><th scope="col">Detail</th></tr>
             </thead>
@@ -139,7 +139,7 @@ function renderTickersPanel(tickers) {
         : emptyState(
             "No ticker health sources are registered — tickers do not expose their schedules in-process yet, so their state is honestly unknown."
           );
-  return html`<section class="panel system-panel">
+  return html`<section class="bs-panel system-panel">
     <h2>Ticker health</h2>
     ${body}
     <p class="hint">Registry-driven (voice, decay, reminders, YouTube/Twitch tickers register when they expose state). Unregistered sources stay unknown — this page never fabricates a tick.</p>
@@ -156,7 +156,7 @@ function renderWebSurfacePanel(surface) {
           "SESSION_SECRET is unset — session signing falls back to CLIENT_SECRET. Set a dedicated SESSION_SECRET (§8.10)."
         )
       : html``;
-  return html`<section class="panel system-panel">
+  return html`<section class="bs-panel system-panel">
     <h2>Web surface</h2>
     <dl class="kv system-kv">
       <dt>PUBLIC_HTTP_PORT</dt>
@@ -244,7 +244,10 @@ function targetCell(row) {
   const type = row.target_type ? String(row.target_type) : null;
   const id = row.target_id ? String(row.target_id) : null;
   if (!type && !id) return html`<span class="muted">—</span>`;
-  return html`<code class="audit-target">${type && id ? `${type}:${id}` : type || id}</code>`;
+  const copy = id && /^[0-9]{5,20}$/.test(id)
+    ? html`<sl-copy-button class="bs-copy" value="${id}" copy-label="Copy id"></sl-copy-button>`
+    : html``;
+  return html`<code class="audit-target">${type && id ? `${type}:${id}` : type || id}</code>${copy}`;
 }
 
 /**
@@ -289,7 +292,7 @@ function renderAuditBody(req, { page, names = null }) {
   const filterOrigin = page.origin || "all";
 
   const list = page.rows.length
-    ? html`<table class="list-table audit-table table-stack">
+    ? html`<table class="bs-table audit-table table-stack" data-density="compact">
         <thead>
           <tr><th scope="col">#</th><th scope="col">Time</th><th scope="col">Actor</th><th scope="col">Origin</th><th scope="col">Action</th><th scope="col">Target</th><th scope="col">Details</th></tr>
         </thead>

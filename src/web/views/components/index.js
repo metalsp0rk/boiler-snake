@@ -99,11 +99,24 @@ function userRef(guildId, userId, names = null) {
   // (app.js fetches it on hover; card data is cache-only + self-warming).
   return html`<a class="user-id" href="/g/${guildId}/users/${id}" data-user-card="/g/${guildId}/users/${id}/card"${
     name ? html` title="${id}"` : html``
-  }>${name || id}</a>`;
+  }>${name || id}</a>${copyControl(id)}`;
+}
+
+/**
+ * Copy control for a snowflake. Shoelace owns the button; the value is the
+ * id itself, never a label. Short non-ids get nothing (the code chip is
+ * already the whole value).
+ * @param {string} id
+ * @returns {import("../escape").SafeString}
+ */
+function copyControl(id) {
+  if (!USER_ID_OK.test(String(id ?? ""))) return html``;
+  return html`<sl-copy-button class="bs-copy" value="${id}" copy-label="Copy id"></sl-copy-button>`;
 }
 
 module.exports = {
   userRef,
+  copyControl,
   TIER_LABELS,
   tierBadge,
   degradedBanner,

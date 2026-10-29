@@ -383,7 +383,8 @@ describe("web UX v1.1 (root guild list, sidebar nav, member names)", () => {
     const { res, body } = await req(`/g/${CID_A}/sessions`, cookieOf.staff);
     assert.equal(res.status, 200);
     assert.ok(body.includes("sessions-panel"), "panel wrapper (mobile scroll hook)");
-    assert.ok(body.includes("list-table sessions-table"), "wrapping table class");
+    assert.ok(body.includes("bs-table sessions-table"), "compact table class");
+    assert.ok(body.includes('data-density="compact"'), "sessions use the compact row");
     assert.ok(body.includes("ticket-inline-form"), "inline PRG revoke form");
     assert.ok(body.includes("Revoke"), "revoke control present");
   });
@@ -392,7 +393,7 @@ describe("web UX v1.1 (root guild list, sidebar nav, member names)", () => {
     const { res, body } = await req(`/g/${CID_A}/system/sessions`, cookieOf.admin);
     assert.equal(res.status, 200);
     assert.ok(body.includes("system-sessions-panel"), "panel wrapper (mobile scroll hook)");
-    assert.ok(body.includes("list-table system-sessions-table"), "wrapping table class");
+    assert.ok(body.includes("bs-table system-sessions-table"), "compact table class");
     assert.ok(body.includes("Revoke"), "revoke control present");
   });
 

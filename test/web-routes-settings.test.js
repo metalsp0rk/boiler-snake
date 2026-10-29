@@ -620,7 +620,7 @@ describe("web settings page (GET /g/:guildId/settings, staff tier, read-only)", 
       for (const id of ["xp", "cooldowns", "decay", "logs", "command-channels"]) {
         assert.match(
           body,
-          new RegExp(`<section id="${id}" data-setting-section class="panel`),
+          new RegExp(`<section id="${id}" data-setting-section class="bs-panel`),
           `section#${id} carries the frozen id + find-box hook`
         );
       }

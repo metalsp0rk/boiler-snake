@@ -198,7 +198,7 @@ describe("#608: promoted helper families", () => {
 
   it("section: cls appends to the shared base, hint/notice render in order", () => {
     const bare = helpers.section("T", html`<p>b</p>`).toString();
-    assert.match(bare, /class="panel settings-panel"/);
+    assert.match(bare, /class="bs-panel settings-panel"/);
     // settings bytes: no cls → no trailing space in the class attribute
     assert.doesNotMatch(bare, /settings-panel "/);
     const full = helpers
@@ -208,7 +208,7 @@ describe("#608: promoted helper families", () => {
         notice: "the notice",
       })
       .toString();
-    assert.match(full, /class="panel settings-panel voice-panel"/);
+    assert.match(full, /class="bs-panel settings-panel voice-panel"/);
     assert.ok(
       full.indexOf("setting-admin-hint") < full.indexOf("the notice"),
       `hint renders before notice, got: ${full}`,

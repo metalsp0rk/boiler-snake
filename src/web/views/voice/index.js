@@ -148,7 +148,7 @@ function musicSection(music, resolveChannelName) {
     ${music.queue
       ? html`
           ${music.queue.rows.length
-            ? html`<table class="list-table settings-table voice-queue table-stack">
+            ? html`<table class="bs-table settings-table voice-queue table-stack" data-density="compact">
                 <thead>
                   <tr><th scope="col">#</th><th scope="col">Track</th><th scope="col">Duration</th><th scope="col">Requested by</th></tr>
                 </thead>
@@ -199,7 +199,7 @@ function liveSection(live, resolveChannelName) {
     );
   }
   const rows = live.channels.length
-    ? html`<table class="list-table settings-table voice-live table-stack">
+    ? html`<table class="bs-table settings-table voice-live table-stack" data-density="compact">
         <thead>
           <tr><th scope="col">Channel</th><th scope="col">Humans</th><th scope="col">AFK</th><th scope="col">Muted/deaf</th><th scope="col">Eligible</th><th scope="col">Earning XP</th></tr>
         </thead>

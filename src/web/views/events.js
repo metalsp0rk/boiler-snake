@@ -239,24 +239,26 @@ function renderEventsMonth({
         : html`<li class="muted">Nothing scheduled this month.</li>`}
     </ol>
     <div class="cal-panels">
-      <section class="panel">
+      <section class="bs-panel">
         <h2>Unposted drafts</h2>
         ${lists(drafts, "No drafts waiting.")}
       </section>
-      <section class="panel">
+      <section class="bs-panel">
         <h2>Queued posts</h2>
         ${lists(scheduled, "Nothing queued to post.")}
       </section>
-      <section class="panel">
+      <section class="bs-panel">
         <h2>New event (quick)</h2>
         <form method="post" action="/g/${cid}/events" class="form-row">
           ${csrf(csrfToken)}
           <label>Title <input name="title" maxlength="150" required /></label>
           <label
-            >Start (guild zone, e.g. "Fri 8pm" or "2026-06-06 20:00")
-            <input name="start" maxlength="60" required
+            >Start (guild<br />zone, e.g.<br />"Fri 8pm" or<br />"2026-06-06<br />20:00")<br /><input
+              name="start"
+              maxlength="60"
+              required
           /></label>
-          <label>Channel id <input name="channel_id" maxlength="20" /></label>
+          <label>Channel id <input name="channel_id" maxlength="20" autocomplete="off" data-lookup="channels" data-lookup-url="/g/${cid}/lookups/channels" /></label>
           <button type="submit" class="btn btn-primary">Save draft</button>
         </form>
       </section>
@@ -362,7 +364,7 @@ function renderEventDetail({
   // field and CSRF posture is unchanged — this is chrome, not behavior.
   const manageForms = canManage
     ? html`
-        <section class="panel">
+        <section class="bs-panel">
           <h2>Post</h2>
           <div class="cal-actions">
             <form method="post" action="/g/${cid}/events/action" class="inline">
@@ -385,7 +387,7 @@ function renderEventDetail({
           </div>
         </section>
 
-        <section class="panel">
+        <section class="bs-panel">
           <h2>Signups</h2>
           <h3>Add option</h3>
           <form method="post" action="/g/${cid}/events/action" class="form-row">
@@ -404,7 +406,7 @@ function renderEventDetail({
           <h3>Manage a signup (organizer powers: bypass cutoff/whitelist)</h3>
           <form method="post" action="/g/${cid}/events/action" class="form-row">
             ${csrf(csrfToken)}${act(ev.id, "signup-add")}
-            <label>User id <input name="user_id" maxlength="20" required /></label>
+            <label>User id <input name="user_id" maxlength="20" required autocomplete="off" data-lookup="users" data-lookup-url="/g/${cid}/lookups/users" /></label>
             <label
               >Option
               <select name="option_id"
@@ -415,7 +417,7 @@ function renderEventDetail({
           </form>
           <form method="post" action="/g/${cid}/events/action" class="form-row">
             ${csrf(csrfToken)}${act(ev.id, "signup-remove")}
-            <label>User id <input name="user_id" maxlength="20" required /></label>
+            <label>User id <input name="user_id" maxlength="20" required autocomplete="off" data-lookup="users" data-lookup-url="/g/${cid}/lookups/users" /></label>
             <label
               >From option
               <select name="option_id"
@@ -426,7 +428,7 @@ function renderEventDetail({
           </form>
         </section>
 
-        <section class="panel">
+        <section class="bs-panel">
           <h2>Edit</h2>
           <h3>Reminder</h3>
           <form method="post" action="/g/${cid}/events/action" class="form-row">
@@ -435,7 +437,7 @@ function renderEventDetail({
               >Minutes before start
               <input name="minutes" type="number" min="1" max="20160" required
             /></label>
-            <label>Role to ping (optional) <input name="role_id" maxlength="20" /></label>
+            <label>Role to ping (optional) <input name="role_id" maxlength="20" autocomplete="off" data-lookup="roles" data-lookup-url="/g/${cid}/lookups/roles" /></label>
             <label>Message (optional) <input name="body" maxlength="200" /></label>
             <button class="btn" type="submit">Add reminder</button>
           </form>
@@ -468,6 +470,9 @@ function renderEventDetail({
               <input
                 name="attendee_role_id"
                 maxlength="20"
+                autocomplete="off"
+                data-lookup="roles"
+                data-lookup-url="/g/${cid}/lookups/roles"
                 value="${ev.attendee_role_id || ""}"
             /></label>
             <label
@@ -523,7 +528,7 @@ function renderEventDetail({
       : ""}
 
     <h2>Options</h2>
-    <table class="list-table events-table table-stack">
+    <table class="bs-table events-table table-stack" data-density="compact">
       <thead>
         <tr>
           <th>Option</th>
@@ -543,7 +548,7 @@ function renderEventDetail({
 
     <h2>Reminders</h2>
     ${reminders.length
-      ? html`<table class="list-table events-table table-stack">
+      ? html`<table class="bs-table events-table table-stack" data-density="compact">
           <thead>
             <tr>
               <th>Fires</th>
@@ -592,7 +597,7 @@ function renderArchive({ cid, rows, zone, csrfToken }) {
       Everything this server ever ran — no history window. Permanent delete lives here.
     </p>
     ${rows.length
-      ? html`<table class="list-table events-table table-stack">
+      ? html`<table class="bs-table events-table table-stack" data-density="compact">
           <thead><tr><th>Event</th><th>Started</th><th></th></tr></thead>
           <tbody>${tr}</tbody>
         </table>`
@@ -638,7 +643,7 @@ function renderPresets({ cid, presets, csrfToken }) {
       <button class="btn btn-primary" type="submit">Save preset</button>
     </form>
     ${rows.length
-      ? html`<table class="list-table events-table table-stack">
+      ? html`<table class="bs-table events-table table-stack" data-density="compact">
           <thead><tr><th>Name</th><th>Options</th><th></th></tr></thead>
           <tbody>${rows}</tbody>
         </table>`
@@ -685,7 +690,7 @@ function renderSeries({ cid, series, zone, csrfToken }) {
       the next one; stop keeps everything already posted.
     </p>
     ${rows.length
-      ? html`<table class="list-table events-table table-stack">
+      ? html`<table class="bs-table events-table table-stack" data-density="compact">
           <thead>
             <tr>
               <th>Series</th><th>Rule</th><th>Status</th><th>Next</th><th>Created</th><th></th>
@@ -722,7 +727,7 @@ function renderScheduled({ cid, rows, zone, csrfToken }) {
       Queued and failed posts. "Post now" runs the same pipeline as the ticker.
     </p>
     ${rows.length
-      ? html`<table class="list-table events-table table-stack">
+      ? html`<table class="bs-table events-table table-stack" data-density="compact">
           <thead><tr><th>Event</th><th>Posts</th><th>Last error</th><th></th></tr></thead>
           <tbody>${tr}</tbody>
         </table>`
