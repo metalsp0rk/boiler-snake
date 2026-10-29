@@ -618,10 +618,11 @@ describe("shell over HTTP (fake Discord, real sessions)", () => {
   // --- /static serving ----------------------------------------------------
 
   describe("/static", () => {
-    it("serves app.js + styles.css with immutable cache + nosniff", async () => {
+    it("serves app.js with immutable cache + nosniff; styles.css is gone (#714)", async () => {
+      const missing = await fetch(`${base}/static/styles.css`);
+      assert.equal(missing.status, 404, "legacy stylesheet is not shipped");
       for (const [file, type] of [
         ["app.js", "text/javascript"],
-        ["styles.css", "text/css"],
       ]) {
         const res = await fetch(`${base}/static/${file}`);
         assert.equal(res.status, 200, file);
@@ -895,7 +896,8 @@ describe("vendored assets + app.js wiring (#459 purge guard)", () => {
       );
       assert.ok(!/alpine|react|vue|svelte|tailwind/i.test(path.basename(file)), file);
     }
-    assert.ok(fs.existsSync(path.join(PUBLIC_DIR, "styles.css")));
+    assert.equal(fs.existsSync(path.join(PUBLIC_DIR, "styles.css")), false, "styles.css retired (#714)");
+    assert.ok(fs.existsSync(path.join(__dirname, "../src/web/assets/page.css")), "page-body CSS lives in the forge bundle");
     assert.ok(fs.existsSync(path.join(PUBLIC_DIR, "app.js")));
   });
 
@@ -907,9 +909,10 @@ describe("vendored assets + app.js wiring (#459 purge guard)", () => {
   });
 
   it("layout references resolve to files that exist under public/", () => {
-    const { CHART_SRC, APP_SRC, STYLES_SRC } = require("../src/web/views/layout");
+    const { CHART_SRC, APP_SRC } = require("../src/web/views/layout");
     // #459: HTMX_SRC is no longer exported — every reference must resolve.
-    for (const srcPath of [CHART_SRC, APP_SRC, STYLES_SRC]) {
+    // #714: STYLES_SRC is gone with /static/styles.css.
+    for (const srcPath of [CHART_SRC, APP_SRC]) {
       assert.ok(srcPath.startsWith("/static/"), srcPath);
       const abs = path.join(PUBLIC_DIR, srcPath.replace("/static/", "").split("?")[0]);
       assert.ok(fs.existsSync(abs), `${srcPath} → ${abs} missing`);
@@ -930,8 +933,11 @@ describe("vendored assets + app.js wiring (#459 purge guard)", () => {
 
 
 
-  it("styles.css: dark-only palette + shell width contract (#642)", () => {
-    const css = fs.readFileSync(path.join(PUBLIC_DIR, "styles.css"), "utf8");
+  it("page.css: dark-only palette + shell width contract (#642, #714)", () => {
+    const css = fs.readFileSync(path.join(__dirname, "../src/web/assets/page.css"), "utf8");
+    const doc = String(renderLayout({ title: "T", content: "", nonce: "" }));
+    assert.doesNotMatch(doc, /styles\.css/, "the shell does not link the retired stylesheet");
+    assert.match(doc, /\/static\/forge\//, "the shell links the forge bundle");
     // Base (:root) palette must be the DARK one, sitting BEFORE the first
     // media query — this slice IS that range assertion (#642 keeps it).
     const rootBlock = css.slice(css.indexOf(":root"), css.indexOf("@media"));
@@ -943,11 +949,10 @@ describe("vendored assets + app.js wiring (#459 purge guard)", () => {
       "no prefers-color-scheme light override (#642 dark-only)"
     );
     assert.match(css, /color-scheme:\s*dark/, "dark-only color-scheme declaration");
-    assert.match(css, /font-family:\s*system-ui/, "system-ui (transcript language)");
     // Responsive shell: viewport meta (layout) + wrap/fluid rules (CSS).
-    const doc = String(renderLayout({ title: "T", content: "", nonce: "" }));
+    const shell = doc;
     assert.match(
-      doc,
+      shell,
       /<meta name="viewport" content="width=device-width, initial-scale=1"\/>/
     );
     assert.match(css, /flex-wrap:\s*wrap/, "header wraps at narrow breakpoints");
@@ -958,6 +963,7 @@ describe("vendored assets + app.js wiring (#459 purge guard)", () => {
       path.join(__dirname, "../src/web/assets/primitives.css"),
       "utf8"
     );
+    assert.match(primitives, /font-family:\s*var\(--bs-font-sans\)/, "body uses the forge face");
     assert.match(primitives, /\.bs-shell\s*\{[^}]*max-width:\s*1400px/, "shell grid capped at 1400px");
     assert.match(
       primitives,

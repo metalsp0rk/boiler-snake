@@ -24,9 +24,9 @@ function renderGuildListBody({ rows = [], degraded = false, truncated = false })
       )}
       ${transcripts}`;
   }
-  const list = html`<ul class="guild-list">
+  const list = html`<ul class="bs-stack guild-list">
     ${rows.map(
-      (g) => html`<li class="guild-list-row">
+      (g) => html`<li class="bs-panel guild-list-row">
         <a class="guild-list-link" href="/g/${g.id}">${g.name || g.id}</a>
         ${tierBadge(g.tier)}
       </li>`

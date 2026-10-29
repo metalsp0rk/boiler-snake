@@ -1,6 +1,6 @@
 /**
  * /static/* file serving for the shell assets (src/web/public/: vendored
- * Chart.js, styles.css, app.js — roadmap/web-admin.md §8.2/§8.7).
+ * Chart.js, app.js, and the hashed forge bundle — roadmap/web-admin.md §8.2/§8.7).
  * /static/forge/* is the Vite build (dist/web, #710). Legacy files stay
  * in public/ until a page migrates; the two roots never share a URL.
  *

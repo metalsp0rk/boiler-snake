@@ -17,7 +17,7 @@
  *
  * JS-IS-ON DOCTRINE (#642): the signed-in console REQUIRES JavaScript —
  * the old <noscript> guild hint is gone (typing /g/<id> is still a URL).
- * The signed-out landing page loads no app.js and is untouched.
+ * The signed-out landing page loads the forge stylesheet and no script.
  *
  * SHELL STRUCTURE (#642, fixed order; #711 forge chrome):
  *   skip link (first focusable) → header (logo lockup, guild switcher, tier
@@ -55,15 +55,16 @@ const { readBuildManifest, forgePublicPaths } = require("../assets/stamp");
 /**
  * ASSET CACHE-BUSTING (§8.7): /static/* is served immutable, max-age=1y,
  * no ETag/Last-Modified — the URL is the ONLY invalidation lever. UX v1.1
- * proved the doctrine bites: bare "/static/styles.css" pinned one-year-old
- * CSS against new markup (unstyled sidebar). The release version rides as
- * a query and changes on every release.
+ * proved the doctrine bites: bare "/static/app.js" pinned one-year-old
+ * script against new markup. The release version rides as a query and
+ * changes on every release.
  * (The static middleware ignores queries when resolving files.)
  * #642: the release version is suffixed per shell-revision so operators on
- * an old immutable copy pick up the rebuilt styles.css/app.js WITHOUT a
- * package version bump; later issues that touch these files bump the suffix.
+ * an old immutable copy pick up the rebuilt app.js WITHOUT a package
+ * version bump; later issues that touch the shell bump the suffix.
+ * #714 retired /static/styles.css. Page-body CSS ships in the forge bundle.
  */
-const ASSET_VERSION = `${require("../../../package.json").version}-shell13`;
+const ASSET_VERSION = `${require("../../../package.json").version}-shell14`;
 
 /**
  * Vendored Chart.js UMD (Phase 4 charts, operator decision 2026-09-25) —
@@ -76,7 +77,6 @@ const ASSET_VERSION = `${require("../../../package.json").version}-shell13`;
  */
 const CHART_SRC = "/static/vendor/chart.4.5.1.min.js";
 const APP_SRC = `/static/app.js?v=${ASSET_VERSION}`;
-const STYLES_SRC = `/static/styles.css?v=${ASSET_VERSION}`;
 /** Header logo lockup (256×256 source, rendered 28×28; alt="" because the
  *  "Boiler Snake" word stays visible at every width — the image is decor). */
 const LOGO_SRC = `/static/logo.png?v=${ASSET_VERSION}`;
@@ -94,6 +94,13 @@ function forgeAssetTags() {
     );
   }
   return forgeAssets;
+}
+
+/** Stylesheet links for a page that loads the forge CSS and no forge script.
+ *  The sign-in landing uses this. The signed-in shell uses {@link forgeAssetTags}. */
+function forgeStylesheetLinks() {
+  const forge = forgeAssetTags();
+  return html`${forge.css.map((href) => html`<link rel="stylesheet" href="${href}"/>\n`)}`;
 }
 
 /**
@@ -376,9 +383,9 @@ function renderLayout(opts) {
   const hasNav = String(sideNav) !== "";
   const lead = lede || subheading;
   const shellClass = hasNav ? "bs-shell" : "bs-shell is-solo";
-  // Legacy styles first, then forge, so tokens and the shell grid win.
-  // The module follows app.js: both are deferred, document order holds,
-  // and forge.js skips lookup/user-card when app.js is on the page.
+  // Forge CSS carries page-body rules and the shell. The module follows
+  // app.js: both are deferred, document order holds, and forge.js skips
+  // lookup/user-card when app.js is on the page.
   const forge = forgeAssetTags();
   const forgeCss = forge.css.map((href) => html`<link rel="stylesheet" href="${href}"/>\n`);
 
@@ -388,7 +395,6 @@ function renderLayout(opts) {
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1"/>
 <title>${title} · Boiler Snake</title>
-<link rel="stylesheet" href="${STYLES_SRC}"/>
 ${forgeCss}
 <script src="${CHART_SRC}" defer${nonceAttr}></script>
 <script src="${APP_SRC}" defer${nonceAttr}></script>
@@ -523,6 +529,6 @@ module.exports = {
   NAV_GROUPS,
   CHART_SRC,
   APP_SRC,
-  STYLES_SRC,
   LOGO_SRC,
+  forgeStylesheetLinks,
 };

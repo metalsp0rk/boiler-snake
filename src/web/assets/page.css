@@ -1,36 +1,27 @@
 /*
- * Web admin console styles (roadmap/web-admin.md §8.2 public/; #642 shell
- * rebuild). Legacy page-body CSS, served from /static/styles.css. The
- * signed-in shell loads this file first, then the forge bundle, so forge
- * tokens win on the chrome and on migrated pages.
+ * Page-body rules (#642 metrics) inside the forge bundle (#714). This file
+ * is not served at /static/styles.css. forge.js imports it before Shoelace
+ * and before primitives.css, which is the same cascade the separate
+ * stylesheet used to have: these rules first, shell tokens win where they
+ * already did.
  *
- * The transcript viewer (#713) lives in assets/primitives.css. The frozen
- * export inlines the same tokens from the Vite export build and does not
- * use this file. The console and the transcripts are one product: one
- * token source. body still names system-ui so the unmigrated pages keep
- * a face when the forge bundle is not on the page.
+ * Landing and the root guild list live in primitives.css. The transcript
+ * viewer does too. The frozen export does not import this file.
  *
- * DARK ONLY (#642): the signed-in console is one dark visual system.
- * The old light-scheme media-query palette is DELETED — do not repair it.
- * `color-scheme: dark` only. Components never hardcode a color; everything
- * rides the tokens below.
+ * DARK ONLY (#642): one dark visual system. The light-scheme palette stays
+ * deleted. `color-scheme: dark` only.
  *
  * FILE INDEX (fixed section order):
- *   1. Tokens      — every color/space/radius/type value lives here.
+ *   1. Tokens      — page-body palette. Shell colors stay in tokens.css.
  *   2. Base        — resets, body, focus ring, reduced motion.
- *   3. Page frame  — subheading + page actions. Shell chrome (header, nav,
- *                    grid, breadcrumb, footer) lives in assets/primitives.css.
- *   4. Components  — buttons (+aliases), banners, panels, forms, inputs,
- *                    tables (.table-stack/.table-scroll), badges, pills,
- *                    tabs, .kv, .stat, find box, section nav, search form,
- *                    popovers.
- *   5. Pages       — per-surface blocks (dashboard, settings, moderation,
- *                    leaderboard, integrations, staff, voice, system/audit,
- *                    tickets, archive, charts, landing). Transcript
- *                    viewer rules live in assets/primitives.css.
- *   6. Responsive  — phone table/form stack and legacy per-page tweaks.
- *                    The 719 / 720–1099 / 1100+ shell grid lives in
- *                    assets/primitives.css.
+ *   3. Page frame  — subheading + page actions. Shell chrome lives in
+ *                    primitives.css.
+ *   4. Components  — buttons, banners, panels, forms, tables, badges.
+ *   5. Pages       — dashboard, settings, moderation, leaderboard,
+ *                    integrations, staff, voice, system/audit, tickets,
+ *                    archive, charts, events calendar.
+ *   6. Responsive  — phone table/form stack. The shell grid lives in
+ *                    primitives.css.
  */
 
 /* ==========================================================================
@@ -75,7 +66,7 @@
   --nav-w: 15.5rem;
   --shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
 
-  /* Type — system-ui stays (no webfont). */
+  /* Type metrics. primitives.css body sets the forge face on top of this. */
   --text-xs: 0.75rem;
   --text-sm: 0.875rem;
   --text-md: 1rem;
@@ -180,8 +171,8 @@ a { color: var(--link); }
   font-size: 0.85rem;
 }
 
-/* Signed-in shell banners are flushed by primitives.css (.bs-shell .banner).
-   These rules remain for the sign-in landing, which does not load forge CSS. */
+/* Signed-in shell banners and the sign-in card are flushed in
+   primitives.css. These rules cover banners outside those scopes. */
 .banner-degraded,
 .banner-warn { background: var(--warn-bg); color: var(--warn); }
 .banner-info { background: var(--info-bg); color: var(--info); }
@@ -1082,35 +1073,6 @@ th {
    scroll box keeps one huge row from stretching the page. */
 .audit .audit-details { margin: 0; padding: 0.35rem 0.5rem; border: 1px solid var(--line); border-radius: 0.35rem; background: var(--bg); font-size: var(--text-xs); white-space: pre-wrap; word-break: break-word; overflow-wrap: anywhere; max-height: 14rem; overflow: auto; }
 
-/* ---- root guild list (UX v1.1 lobby) ---------------------------------------------- */
-.guild-list {
-  list-style: none;
-  margin: 0 0 var(--space-4);
-  padding: 0;
-  display: grid;
-  gap: 0.6rem;
-}
-
-.guild-list-row {
-  display: flex;
-  align-items: center;
-  gap: 0.7rem;
-  background: var(--bg-raised);
-  border: 1px solid var(--line);
-  border-radius: 6px;
-  padding: 0.85rem 1rem;
-}
-
-.guild-list-link {
-  font-size: 1.05rem;
-  font-weight: 600;
-  color: var(--fg);
-  text-decoration: none;
-  overflow-wrap: anywhere;
-}
-
-.guild-list-link:hover { text-decoration: underline; }
-
 /* ---- archive first-class (§8.15): search form, people cells, panel feet ----------- */
 .archive-search {
   display: flex;
@@ -1177,63 +1139,6 @@ p.panel-foot {
   font-size: 0.8rem;
   color: var(--fg-muted);
   font-style: italic;
-}
-
-/* ---- public sign-in landing (views/landing) ----------------------------------
-   Signed-out face of the console: centered card, no shell, no scripts. */
-
-.signin-body {
-  align-items: center;
-  justify-content: center;
-  padding: var(--space-7) var(--space-4);
-}
-
-.signin-card {
-  background: var(--bg-raised);
-  border: 1px solid var(--line);
-  border-radius: var(--radius);
-  padding: var(--space-7);
-  max-width: 36rem;
-  width: 100%;
-}
-
-.signin-title { font-size: 1.4rem; margin: 0 0 var(--space-4); }
-
-/* #653: the shell logo marks the card as the same product — the page stays
-   static HTML (no shell, no sidebar, no app.js). */
-.signin-logo { display: block; margin: 0 0 var(--space-3); border-radius: 8px; }
-
-.signin-lede { margin: 0 0 var(--space-4); }
-
-.signin-what { margin: 0 0 var(--space-4); }
-
-.signin-what h2 {
-  font-size: 0.8rem;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  color: var(--fg-muted);
-  margin: 0 0 0.4rem;
-}
-
-.signin-what ul { margin: 0 0 var(--space-2); padding-left: 1.3rem; }
-
-.signin-what li { padding: 0.15rem 0; }
-
-.signin-what p { margin: 0.4rem 0 0; color: var(--fg-muted); font-size: 0.9rem; }
-
-.signin-card .banner { margin: 0 0 var(--space-4); }
-
-a.btn-signin {
-  display: inline-flex;
-  align-items: center;
-  text-decoration: none;
-  font-weight: 600;
-}
-
-.signin-footnote {
-  margin: 0.75rem 0 0;
-  font-size: 0.85rem;
-  color: var(--fg-muted);
 }
 
 /* ---- events calendar (#650): month grid + phone agenda ---------------------- */

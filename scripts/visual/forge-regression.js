@@ -3,7 +3,8 @@
 
 /**
  * Visual regression for the Forged Instrument console (#711 shell and
- * dashboard, #712 data surfaces, #713 transcript viewer and export).
+ * dashboard, #712 data surfaces, #713 transcript viewer and export,
+ * #714 landing, sign-in, and the guild list).
  *
  * Screenshots real view HTML inside renderLayout at 3 desktop and 2 phone
  * widths. A diff fails the process. VISUAL_UPDATE=1 writes a baseline only
@@ -50,6 +51,8 @@ const { renderVoiceBody } = require("../../src/web/views/voice");
 const { renderEventsMonth } = require("../../src/web/views/events");
 const { renderTranscriptPage } = require("../../src/web/views/transcripts/transcriptPage");
 const { renderTranscriptHtml } = require("../../src/features/tickets/transcript");
+const { renderSignInPage } = require("../../src/web/views/landing");
+const { renderGuildListBody } = require("../../src/web/views/root");
 const { html } = require("../../src/web/views/escape");
 
 const REPO_ROOT = path.join(__dirname, "..", "..");
@@ -76,6 +79,9 @@ const PAGES = [
   "events",
   "transcript",
   "transcript-export",
+  "landing",
+  "signin",
+  "root",
 ];
 const WIDTHS = [
   { name: "desktop-1280", width: 1280, height: 800 },
@@ -664,6 +670,34 @@ function pageDocument(name, nonce) {
   if (name === "transcript" || name === "transcript-export") {
     return transcriptDocument(name, nonce);
   }
+  if (name === "landing" || name === "signin") {
+    // The public page. No shell, no script. `signin` is the same document
+    // with the signed-out notice and the ticket-return banner.
+    return renderSignInPage({
+      notice: name === "signin" ? "signedout" : null,
+      context: name === "signin" ? "ticket" : null,
+      continueHref: "/auth/login?continue=1",
+    });
+  }
+  if (name === "root") {
+    return renderLayout({
+      title: "Guilds",
+      heading: "Your guilds",
+      lede: "Pick a guild to open its console.",
+      content: renderGuildListBody({
+        rows: [
+          { id: "100", name: "Forge Guild", tier: "admin" },
+          { id: "101", name: "Second Guild", tier: "staff" },
+        ],
+      }),
+      guilds: [],
+      currentGuildId: null,
+      tier: null,
+      user: { userId: "42", discordTag: "ada" },
+      csrfToken: "csrf-visual",
+      nonce,
+    });
+  }
   const meta = PAGE_META[name];
   const shared = {
     guilds: VISUAL_GUILDS,
@@ -779,9 +813,9 @@ async function shoot(page, origin, name) {
   await page.evaluate(async () => {
     if (document.fonts && document.fonts.ready) await document.fonts.ready;
   });
-  // The export is a standalone file: no Shoelace, no app.js. Waiting for
-  // sl-button there hangs until the timeout.
-  if (name !== "transcript-export") {
+  // The export and the sign-in page ship no Shoelace and no app.js.
+  // Waiting for sl-button there hangs until the timeout.
+  if (name !== "transcript-export" && name !== "landing" && name !== "signin") {
     await page.waitForFunction(() => customElements.get("sl-button"));
     // app.js sets role=combobox only after the first keystroke (ensureList).
     // A resting lookup is still a plain input with data-lookup wiring.

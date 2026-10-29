@@ -167,18 +167,22 @@ describe("transcript viewer edge states (#713)", () => {
     assert.ok(!page.includes('class="panel transcript-header"'));
   });
 
-  it("retires the transcript block from styles.css and keeps system-ui on body", () => {
+  it("keeps transcript rules in primitives and does not ship styles.css", () => {
+    assert.equal(
+      fs.existsSync(path.join(__dirname, "../src/web/public/styles.css")),
+      false
+    );
     const css = fs.readFileSync(
-      path.join(__dirname, "../src/web/public/styles.css"),
+      path.join(__dirname, "../src/web/assets/page.css"),
       "utf8"
     );
     assert.doesNotMatch(css, /\.tmsg\b/);
-    assert.match(css, /font-family:\s*system-ui/);
     const primitives = fs.readFileSync(
       path.join(__dirname, "../src/web/assets/primitives.css"),
       "utf8"
     );
     assert.match(primitives, /\.tmsg\b/);
+    assert.match(primitives, /font-family:\s*var\(--bs-font-sans\)/);
   });
 });
 
