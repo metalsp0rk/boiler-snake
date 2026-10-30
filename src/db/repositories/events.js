@@ -223,6 +223,33 @@ const EVENT_PATCH_COLUMNS = new Set([
 ]);
 
 const EVENT_JSON_COLUMNS = new Set(["announce_role_ids", "role_whitelist"]);
+
+/**
+ * Instant columns MUST persist as integer epoch-ms. SQLite INTEGER affinity
+ * stores what it cannot numeric-convert AS TEXT (type affinity, not
+ * coercion) — migration 072 healed rows like that, which poisoned the web
+ * calendar with a literal "NaN". Reject non-finite values at the write
+ * boundary instead of re-persisting the corruption; numeric strings coerce
+ * exactly like affinity would.
+ */
+const EVENT_INSTANT_COLUMNS = new Set(["start_at", "end_at", "post_at", "cutoff_at"]);
+
+function toInstantColumn(key, raw) {
+  if (raw === null) {
+    if (key === "start_at") throw new Error("start_at cannot be null.");
+    return null;
+  }
+  const numericish =
+    typeof raw === "number" || typeof raw === "bigint" ||
+    (typeof raw === "string" && raw.trim() !== "");
+  const n = numericish ? Number(raw) : NaN;
+  if (!Number.isFinite(n)) {
+    throw new Error(
+      `${key} must be a finite epoch-ms instant (got "${String(raw).slice(0, 40)}").`,
+    );
+  }
+  return n;
+}
 const EVENT_BOOL_COLUMNS = new Set([
   "multiple_signups",
   "thread_enabled",
@@ -236,6 +263,7 @@ function normalizeEventPatch(patch = {}) {
     if (raw === undefined) continue;
     if (EVENT_JSON_COLUMNS.has(key)) out[key] = toJsonArray(raw);
     else if (EVENT_BOOL_COLUMNS.has(key)) out[key] = bool(Boolean(raw));
+    else if (EVENT_INSTANT_COLUMNS.has(key)) out[key] = toInstantColumn(key, raw);
     else out[key] = raw;
   }
   return out;
@@ -263,6 +291,12 @@ function createEvent({
     }
     if (!Number.isFinite(startAt)) {
       return { ok: false, error: "A valid start time is required." };
+    }
+    let postMs;
+    try {
+      postMs = toInstantColumn("post_at", postAt);
+    } catch (err) {
+      return { ok: false, error: err?.message || String(err) };
     }
     if (options && options.length > MAX_OPTIONS_PER_EVENT) {
       return {
@@ -295,7 +329,7 @@ function createEvent({
           status,
           start_at: startAt,
           channel_id: channelId,
-          post_at: postAt,
+          post_at: postMs,
           description: p.description ?? null,
           location: p.location ?? null,
           end_at: p.end_at ?? null,
@@ -424,7 +458,12 @@ function listUpcomingEvents(communityId, { limit = 20, nowMs = now() } = {}) {
 
 /** Patch allow-listed event columns (returns updated row or error). */
 function updateEvent(eventId, patch = {}) {
-  const p = normalizeEventPatch(patch);
+  let p;
+  try {
+    p = normalizeEventPatch(patch);
+  } catch (err) {
+    return { ok: false, error: err?.message || String(err) };
+  }
   const keys = Object.keys(p);
   if (!keys.length) return { ok: true, event: getEventById(eventId) };
   if (!getEventById(eventId)) return { ok: false, error: "Event not found." };

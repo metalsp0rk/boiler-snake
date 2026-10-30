@@ -38,17 +38,26 @@ function withReq(req, fn) {
   }
 }
 
-/** "Fri, Jun 6, 2026, 8:00 PM" in the guild zone (honest fallback). */
+/**
+ * "Fri, Jun 6, 2026, 8:00 PM" in the guild zone (honest fallback).
+ *
+ * Never echoes the broken value: a non-numeric instant (legacy rows carried
+ * TEXT dates / the string "NaN" — migration 072 repairs them) and an invalid
+ * zone BOTH render "—" — the same honest-unknown doctrine as the dashboard.
+ * The old `String(ms)` fallback printed literal "NaN" in the calendar.
+ */
 function fmtTime(ms, zone) {
   if (ms == null) return "—";
+  const n = Number(ms);
+  if (!Number.isFinite(n)) return "—";
   try {
     return new Intl.DateTimeFormat("en-US", {
       timeZone: zone || "UTC",
       dateStyle: "medium",
       timeStyle: "short",
-    }).format(new Date(Number(ms)));
+    }).format(new Date(n));
   } catch {
-    return String(ms);
+    return "—";
   }
 }
 
