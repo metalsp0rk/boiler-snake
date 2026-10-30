@@ -33,35 +33,38 @@
 :root {
   color-scheme: dark;
 
-  --bg: #191b1f;
-  --bg-raised: #212429;
-  --bg-sunken: #121417;
+  /* Forge-graphite single source: every legacy alias resolves to its
+     --bs-* token (tokens.css, loaded first); the literal fallbacks keep a
+     standalone page.css readable. No legacy blue remains. */
+  --bg: var(--bs-base, #161a20);
+  --bg-raised: var(--bs-raised, #1d222a);
+  --bg-sunken: var(--bs-sunken, #101318);
 
-  --fg: #e7e9ee;
-  --fg-muted: #a3a9b5;
+  --fg: var(--bs-fg, #e7eaee);
+  --fg-muted: var(--bs-muted, #9aa0a8);
 
-  --link: #5b9dff;
-  --focus: #5b9dff;
-  --accent: #3d6fbf; /* white label on this is ~5.0:1 → .btn-primary keeps font-size 1rem */
+  --link: var(--bs-action, #29a8bd);
+  --focus: var(--bs-action, #29a8bd);
+  --accent: var(--bs-action, #29a8bd); /* dark --bs-ink label rides this in .btn-primary */
 
-  --danger: #e07b6b;
-  --danger-bg: #3c1a1a;
-  --warn: #f0c96c;
-  --warn-bg: #3a2f14;
-  --ok: #7fb069;
-  --info: #9cc6ff;
-  --info-bg: #16283c;
+  --danger: var(--bs-danger, #e07b6b);
+  --danger-bg: var(--bs-danger-tint, #2c1c1a);
+  --warn: var(--bs-warn, #f0c96c);
+  --warn-bg: var(--bs-warn-tint, #2a2416);
+  --ok: var(--bs-ok, #7fb069);
+  --info: var(--bs-info, #86a9c6);
+  --info-bg: var(--bs-info-tint, #182631);
 
   /* Resolved against forge --bs-action / --bs-info when that sheet loads.
      Literals here keep a chart readable if the token is missing. */
-  --chart-line: #29a8bd;
-  --chart-bar: #86a9c6;
+  --chart-line: var(--bs-action, #29a8bd);
+  --chart-bar: var(--bs-info, #86a9c6);
   --chart-fill: rgba(41, 168, 189, 0.18);
 
-  --line: #3a3e46;
+  --line: var(--bs-line, #343b47);
   --line-strong: #4c525c;
 
-  --radius: 8px;
+  --radius: var(--bs-radius, 3px);
   --header-h: 3.25rem;
   --nav-w: 15.5rem;
   --shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
@@ -82,12 +85,12 @@
   --space-6: 2rem;
   --space-7: 2.5rem;
 
-  /* Legacy aliases (components may migrate off them; hexes already land in
-     the canonical tokens above). */
-  --btn-bg: #2c313a;
+  /* Legacy aliases (components may migrate off them; every value resolves to
+     the canonical forge tokens above). */
+  --btn-bg: var(--bs-raised, #1d222a);
   --btn-fg: var(--fg);
   --tier-staff: var(--ok);
-  --tier-senior: #d8b54c;
+  --tier-senior: var(--bs-warn, #f0c96c);
   --tier-admin: var(--danger);
 }
 
@@ -166,7 +169,7 @@ a { color: var(--link); }
   margin: 0.9rem auto 0;
   max-width: 1100px;
   padding: 0.65rem 0.85rem;
-  border-radius: 6px;
+  border-radius: var(--bs-radius, 3px);
   border: 1px solid var(--line);
   font-size: 0.85rem;
 }
@@ -191,7 +194,7 @@ a { color: var(--link); }
   background: var(--btn-bg);
   color: var(--btn-fg);
   border: 1px solid var(--line);
-  border-radius: 6px;
+  border-radius: var(--bs-radius, 3px);
   font: inherit;
   cursor: pointer;
   display: inline-flex;
@@ -205,15 +208,19 @@ a { color: var(--link); }
 .btn-sm:hover,
 .btn--small:hover { border-color: var(--link); }
 
-/* One primary submit per form: accent fill, white label, full 1rem text. */
+/* One primary submit per form: action fill, dark ink label (≥7:1 on teal),
+   full 1rem text. Mirrors the primitives .bs-btn--action treatment. */
 .btn-primary {
   background: var(--accent);
   border-color: var(--accent);
-  color: #ffffff;
+  color: var(--bs-ink, #101318);
   font-size: var(--text-md);
 }
 
-.btn-primary:hover { border-color: var(--link); }
+.btn-primary:hover {
+  background: var(--bs-action-hover, #218a9e);
+  border-color: var(--bs-action-hover, #218a9e);
+}
 
 /* Danger family: OUTLINE treatment (--danger text + border), never filled. */
 .btn-danger,
@@ -247,7 +254,7 @@ a { color: var(--link); }
 .error-body {
   border: 1px solid var(--line);
   background: var(--bg-raised);
-  border-radius: 6px;
+  border-radius: var(--bs-radius, 3px);
   padding: 1rem 1.15rem;
 }
 
@@ -273,7 +280,7 @@ a { color: var(--link); }
   background: var(--bg-sunken);
   color: var(--fg);
   border: 1px solid var(--line);
-  border-radius: 6px;
+  border-radius: var(--bs-radius, 3px);
   padding: 0.4rem 0.6rem;
   font: inherit;
   max-width: 100%;
@@ -324,6 +331,7 @@ summary {
   padding: 0.15rem 0.5rem;
   border-radius: 999px;
   border: 1px solid var(--line);
+  white-space: nowrap;
 }
 
 .badge-tier-staff { color: var(--tier-staff); }
@@ -389,7 +397,7 @@ th {
   padding: 0.35rem 0.9rem;
   border: 1px solid var(--line);
   border-bottom: 0;
-  border-radius: 6px 6px 0 0;
+  border-radius: var(--bs-radius, 3px) var(--bs-radius, 3px) 0 0;
   background: transparent;
   color: var(--fg);
   text-decoration: none;
@@ -492,7 +500,7 @@ th {
 
 .lookup-opt {
   display: flex; justify-content: space-between; gap: var(--space-3); align-items: baseline;
-  padding: 6px 10px; border-radius: 6px; cursor: pointer;
+  padding: 6px 10px; border-radius: var(--bs-radius, 3px); cursor: pointer;
 }
 
 .lookup-opt:hover,
@@ -531,13 +539,15 @@ th {
 
 /* ---- dashboard (subtask 14, §8.6 row 1 — data tables, no charts) ---------- */
 
-/* Auto-fit grid: two panels per row on desktop, one below ~700px, no
-   media query needed; the stamp always spans the full row. */
+/* Explicit two-column flow (replaces auto-fit, which orphaned the narrow
+   panels: every full-span row kept all auto-fit tracks occupied, so the
+   narrow cards stayed stuck in one track with dead space beside them).
+   Full-width sections span; Activity and Now playing pair up on the
+   desktop rail; everything stacks in DOM order below it. */
 .dashboard {
   display: grid;
   gap: var(--space-4);
-  grid-template-columns: repeat(auto-fit, minmax(min(340px, 100%), 1fr));
-  align-items: start;
+  grid-template-columns: 1fr;
 }
 
 /* Card chrome is .bs-panel (primitives.css). Wide rows still span the grid. */
@@ -596,34 +606,38 @@ th {
 .dashboard-table td { overflow-wrap: anywhere; }
 .dashboard-table td code { overflow-wrap: anywhere; }
 
-/* ---- settings (GET /g/:guildId/settings — read surface + PRG writes) ------ */
-/* Reuses shell tokens; nothing here restyles sibling pages. */
+/* ---- settings (GET /g/:guildId/settings — read surface + PRG writes) ------
+   Polish pass: fields ride a fixed label column (control columns now start
+   at the SAME x in every panel), help text sits in its own grid column,
+   and the submit is always the right-aligned last row. Reuses shell tokens;
+   nothing here restyles sibling pages. */
 .settings-grid {
   display: flex;
   flex-direction: column;
-  gap: var(--space-4);
+  gap: var(--space-5);
 }
 
 .settings-panel .setting-admin-hint {
-  margin: 0 0 0.75rem;
-  padding: 0.4rem 0.6rem;
+  margin: 0 0 var(--space-3);
+  padding: var(--space-2) var(--space-3);
   border-left: 3px solid var(--tier-admin);
   background: var(--bg-raised);
   color: var(--tier-admin);
   font-size: 0.85rem;
 }
 
-.settings-rows { display: flex; flex-direction: column; gap: 0.45rem; font-size: 0.9rem; }
+/* Read wall shared with integrations/voice (label | value | meta | govern). */
+.settings-rows { display: flex; flex-direction: column; gap: var(--space-2); font-size: 0.9rem; }
 
 .setting-row {
   display: grid;
   grid-template-columns: minmax(9rem, 1fr) minmax(6rem, 1fr) minmax(8rem, 1fr) minmax(10rem, 1.2fr);
-  gap: 0.4rem var(--space-4);
+  gap: var(--space-1) var(--space-4);
   align-items: baseline;
   border-bottom: 1px dashed var(--line);
-  padding-bottom: 0.35rem;
+  padding-bottom: var(--space-2);
 }
-.setting-row:last-child { border-bottom: none; }
+.setting-row:last-child { border-bottom: none; padding-bottom: 0; }
 
 .setting-label { color: var(--fg-muted); }
 .setting-value code, .channel-id, .settings-table code { word-break: break-all; }
@@ -633,29 +647,44 @@ th {
 .settings-list { margin: 0; padding-left: 1.4rem; font-size: 0.9rem; }
 .settings-table { width: 100%; }
 
-.settings-note { margin: 0 0 0.5rem; font-size: 0.9rem; }
 .settings-stamp { margin: 0; }
 .channel-name { color: var(--fg-muted); }
 
-/* settings writes (Phase 2) — plain PRG forms under .settings-* only.
-   (.btn-small / .settings-submit-clear ride the shared button aliases.) */
+/* PRG write forms (#643 + polish): one grid column; the cluster's submit is
+   always the right-aligned final row (it used to float wherever flex-wrap
+   dropped it — mid-panel on XP, bottom-right on cooldowns). */
 .settings-form {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: flex-end;
-  gap: 0.6rem;
-  margin: 0.6rem 0 0;
-  padding: 0.6rem 0 0;
+  display: grid;
+  gap: var(--space-3);
+  margin: 0;
+  padding: var(--space-4) 0 0;
   border-top: 1px dashed var(--line);
 }
+.settings-form > .btn { justify-self: end; }
 .settings-form-inline {
   display: inline-flex;
+  flex-wrap: wrap;
   margin: 0;
   padding: 0;
   border-top: 0;
-  gap: 0.35rem;
+  gap: var(--space-2);
   align-items: center;
 }
+
+/* Field pair: the label text column is bounded so every control in every
+   panel starts at the same x (the old inline flow made inputs jog by the
+   width of each label). */
+.form-row-field {
+  display: grid;
+  grid-template-columns: minmax(8rem, 12.5rem) minmax(0, 1fr);
+  gap: var(--space-1) var(--space-3);
+  align-items: center;
+  min-width: 0;
+}
+.form-row-label { color: var(--fg); }
+.form-row-field .input { width: 100%; max-width: 22rem; }
+
+/* Legacy field-stack selectors (pre-#643 write forms; callers migrate off). */
 .setting-field { display: grid; gap: 0.2rem; font-size: 0.8rem; }
 .setting-field-label { color: var(--fg-muted); }
 .setting-field-wide .setting-input-channel { min-width: 13rem; }
@@ -669,15 +698,20 @@ th {
   font-size: 0.85rem;
 }
 .setting-input-number { width: 8.5rem; }
-.settings-log-forms {
-  display: grid;
-  gap: 0.5rem;
-  margin: 0.75rem 0 0;
-  padding: 0.6rem 0 0;
-  border-top: 1px dashed var(--line);
+
+/* Log-channel clusters: help line, then id field + Set + Clear on one
+   actions row (Clear used to wrap under the field — same action, two rows). */
+.settings-log-forms { display: grid; gap: var(--space-4); }
+.settings-log-stream { display: grid; gap: var(--space-3); min-width: 0; }
+.settings-log-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
 }
-.settings-log-forms .settings-form-inline { border-top: 0; }
-.settings-list-item { display: flex; align-items: center; gap: 0.6rem; margin: 0.25rem 0; }
+.settings-log-actions .settings-form { min-width: 0; border-top: 0; padding-top: 0; }
+.settings-log-actions .form-row { flex: 1 1 18rem; min-width: 0; }
+.settings-list-item { display: flex; align-items: center; gap: var(--space-2); margin: var(--space-1) 0; }
 
 /* ---- moderation (warnings + notes, §8.6 row 3) ----------------------------- */
 /* Everything scoped under .moderation so this section can never restyle
@@ -1086,7 +1120,7 @@ th {
   max-width: 26rem;
   padding: 0.4rem 0.6rem;
   border: 1px solid var(--line);
-  border-radius: 6px;
+  border-radius: var(--bs-radius, 3px);
   background: var(--bg-raised);
   color: var(--fg);
 }
@@ -1154,6 +1188,26 @@ p.panel-foot {
   gap: var(--space-2);
   margin-bottom: var(--space-3);
 }
+
+/* The month stamp is the page's position — quiet strong, not another link. */
+.cal-nav .cal-month {
+  font-family: var(--bs-font-mono);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.01em;
+}
+
+.cal-nav a {
+  display: inline-flex;
+  align-items: center;
+  min-height: 32px;
+  padding: 0 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  color: var(--link);
+  text-decoration: none;
+}
+
+.cal-nav a:hover { border-color: var(--link); }
 
 /* One-line in-page nav so the sub-pages stay reachable when the phone
    sidebar is collapsed behind the Menu button. */
@@ -1241,11 +1295,61 @@ p.panel-foot {
 
 .cal-list li { margin-bottom: 0.35rem; }
 
+/* Deterministic columns (replaces auto-fit, which paired the two text
+   panels asymmetrically at mid widths and clipped the quick form at all
+   of them): 1 → 2 → 3 columns at the shell's breakpoints. Children are
+   min-width:0 so a wide control shrinks instead of punching the card. */
 .cal-panels {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  grid-template-columns: 1fr;
   gap: var(--space-3);
 }
+
+.cal-panels > * { min-width: 0; }
+
+/* ---- events quick-create: ONE column, always --------------------------------
+   The old .form-row two-column grid inside a ~1/3-width panel forced its
+   controls past the card edge ("text outside the box"). Stacked labels keep
+   every field reachable at any panel width. */
+.cal-quick-form {
+  display: grid;
+  gap: var(--space-3);
+}
+
+.cal-quick-form label {
+  display: grid;
+  gap: 6px;
+  color: var(--fg-muted);
+  font-size: 0.8rem;
+}
+
+.cal-quick-form .input { width: 100%; max-width: none; }
+
+.cal-quick-help {
+  font-size: 0.75rem;
+  color: var(--fg-muted);
+}
+
+.cal-quick-form .btn { justify-self: start; }
+
+/* Event detail / preset manage forms ride the shared .form-row grid, but
+   their inline-wrapped labels read as clutter. Control UNDER its label. */
+.events-form > label {
+  display: grid;
+  gap: 4px;
+  align-content: start;
+  color: var(--fg-muted);
+  font-size: 0.8rem;
+}
+
+.events-form > label:has(input[type="checkbox"]) {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  color: var(--fg);
+}
+
+.events-form .input { width: 100%; }
 
 .cal-actions {
   display: flex;
@@ -1422,6 +1526,9 @@ p.panel-foot {
   /* Two-column field rows from 720px up (one column below). */
   .form-row { grid-template-columns: 1fr 1fr; }
 
+  /* Calendar panels pair up from the tablet rail. */
+  .cal-panels { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+
   /* In-page section nav sticks to the top on desktop (#642). */
   .section-nav {
     position: sticky;
@@ -1430,4 +1537,13 @@ p.panel-foot {
     background: var(--bg);
     padding: var(--space-2) 0;
   }
+}
+
+@media (min-width: 1100px) {
+  /* Full three-panel row on the desktop rail. */
+  .cal-panels { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+
+  /* Dashboard pairs its two narrow panels (Activity · Now playing);
+     every wide section still spans via .dashboard-panel-wide. */
+  .dashboard { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }

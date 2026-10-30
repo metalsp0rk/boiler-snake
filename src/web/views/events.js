@@ -225,7 +225,8 @@ function renderEventsMonth({
   return html`
     ${flash()}
     <div class="cal-nav">
-      ${nav(prev, "← prev")} · ${year}-${pad2(month)} · ${nav(next, "next →")}
+      ${nav(prev, "← prev")} <strong class="cal-month">${year}-${pad2(month)}</strong>
+      ${nav(next, "next →")}
       <span class="muted">(guild zone: ${zone})</span>
     </div>
     <nav class="cal-pages" aria-label="Event pages">
@@ -256,18 +257,29 @@ function renderEventsMonth({
         <h2>Queued posts</h2>
         ${lists(scheduled, "Nothing queued to post.")}
       </section>
-      <section class="bs-panel">
+      <section class="bs-panel cal-quick">
         <h2>New event (quick)</h2>
-        <form method="post" action="/g/${cid}/events" class="form-row">
+        ${/* Single-column stacked form (.cal-quick-form): the old two-column
+             .form-row inside a ~1/3-width panel pushed controls past the
+             card edge — text and inputs rendered outside the box. */ ""}
+        <form method="post" action="/g/${cid}/events" class="cal-quick-form">
           ${csrf(csrfToken)}
-          <label>Title <input name="title" maxlength="150" required /></label>
+          <label>Title<input class="input" name="title" maxlength="150" required /></label>
           <label
-            >Start (guild<br />zone, e.g.<br />"Fri 8pm" or<br />"2026-06-06<br />20:00")<br /><input
-              name="start"
-              maxlength="60"
-              required
+            >Start<input class="input" name="start" maxlength="60" required />
+            <span class="cal-quick-help"
+              >Guild time zone — e.g. "Fri 8pm" or "2026-06-06 20:00".</span
+            ></label
+          >
+          <label
+            >Channel id<input
+              class="input"
+              name="channel_id"
+              maxlength="20"
+              autocomplete="off"
+              data-lookup="channels"
+              data-lookup-url="/g/${cid}/lookups/channels"
           /></label>
-          <label>Channel id <input name="channel_id" maxlength="20" autocomplete="off" data-lookup="channels" data-lookup-url="/g/${cid}/lookups/channels" /></label>
           <button type="submit" class="btn btn-primary">Save draft</button>
         </form>
       </section>
@@ -399,11 +411,11 @@ function renderEventDetail({
         <section class="bs-panel">
           <h2>Signups</h2>
           <h3>Add option</h3>
-          <form method="post" action="/g/${cid}/events/action" class="form-row">
+          <form method="post" action="/g/${cid}/events/action" class="form-row events-form">
             ${csrf(csrfToken)}${act(ev.id, "option-add")}
-            <label>Label <input name="label" maxlength="80" required /></label>
+            <label>Label <input class="input" name="label" maxlength="80" required /></label>
             <label
-              >Capacity <input name="capacity" type="number" min="0" max="100000"
+              >Capacity <input class="input" name="capacity" type="number" min="0" max="100000"
             /></label>
             <label
               ><input type="checkbox" name="waitlist" value="1" checked />
@@ -413,23 +425,23 @@ function renderEventDetail({
           </form>
 
           <h3>Manage a signup (organizer powers: bypass cutoff/whitelist)</h3>
-          <form method="post" action="/g/${cid}/events/action" class="form-row">
+          <form method="post" action="/g/${cid}/events/action" class="form-row events-form">
             ${csrf(csrfToken)}${act(ev.id, "signup-add")}
-            <label>User id <input name="user_id" maxlength="20" required autocomplete="off" data-lookup="users" data-lookup-url="/g/${cid}/lookups/users" /></label>
+            <label>User id <input class="input" name="user_id" maxlength="20" required autocomplete="off" data-lookup="users" data-lookup-url="/g/${cid}/lookups/users" /></label>
             <label
               >Option
-              <select name="option_id"
+              <select class="input" name="option_id"
                 >${options.map((o) => html`<option value="${o.id}">${o.label}</option>`)}</select
               ></label
             >
             <button class="btn" type="submit">Add signup</button>
           </form>
-          <form method="post" action="/g/${cid}/events/action" class="form-row">
+          <form method="post" action="/g/${cid}/events/action" class="form-row events-form">
             ${csrf(csrfToken)}${act(ev.id, "signup-remove")}
-            <label>User id <input name="user_id" maxlength="20" required autocomplete="off" data-lookup="users" data-lookup-url="/g/${cid}/lookups/users" /></label>
+            <label>User id <input class="input" name="user_id" maxlength="20" required autocomplete="off" data-lookup="users" data-lookup-url="/g/${cid}/lookups/users" /></label>
             <label
               >From option
-              <select name="option_id"
+              <select class="input" name="option_id"
                 >${options.map((o) => html`<option value="${o.id}">${o.label}</option>`)}</select
               ></label
             >
@@ -440,43 +452,44 @@ function renderEventDetail({
         <section class="bs-panel">
           <h2>Edit</h2>
           <h3>Reminder</h3>
-          <form method="post" action="/g/${cid}/events/action" class="form-row">
+          <form method="post" action="/g/${cid}/events/action" class="form-row events-form">
             ${csrf(csrfToken)}${act(ev.id, "reminder-add")}
             <label
               >Minutes before start
-              <input name="minutes" type="number" min="1" max="20160" required
+              <input class="input" name="minutes" type="number" min="1" max="20160" required
             /></label>
-            <label>Role to ping (optional) <input name="role_id" maxlength="20" autocomplete="off" data-lookup="roles" data-lookup-url="/g/${cid}/lookups/roles" /></label>
-            <label>Message (optional) <input name="body" maxlength="200" /></label>
+            <label>Role to ping (optional) <input class="input" name="role_id" maxlength="20" autocomplete="off" data-lookup="roles" data-lookup-url="/g/${cid}/lookups/roles" /></label>
+            <label>Message (optional) <input class="input" name="body" maxlength="200" /></label>
             <button class="btn" type="submit">Add reminder</button>
           </form>
 
           <h3>Edit fields (writes sync back to the Discord message)</h3>
-          <form method="post" action="/g/${cid}/events/action" class="form-row">
+          <form method="post" action="/g/${cid}/events/action" class="form-row events-form">
             ${csrf(csrfToken)}${act(ev.id, "edit")}
-            <label>Title <input name="title" maxlength="150" value="${ev.title}" /></label>
-            <label>Start (guild zone, empty = keep) <input name="start" maxlength="60" /></label>
-            <label>End (guild zone) <input name="end" maxlength="60" /></label>
+            <label>Title <input class="input" name="title" maxlength="150" value="${ev.title}" /></label>
+            <label>Start (guild zone, empty = keep) <input class="input" name="start" maxlength="60" /></label>
+            <label>End (guild zone) <input class="input" name="end" maxlength="60" /></label>
             <label
               >Description
-              <input name="description" maxlength="1000" value="${ev.description || ""}"
+              <input class="input" name="description" maxlength="1000" value="${ev.description || ""}"
             /></label>
             <label
-              >Location <input name="location" maxlength="200" value="${ev.location || ""}"
+              >Location <input class="input" name="location" maxlength="200" value="${ev.location || ""}"
             /></label>
             <label
-              >Image URL <input name="image_url" maxlength="400" value="${ev.image_url || ""}"
+              >Image URL <input class="input" name="image_url" maxlength="400" value="${ev.image_url || ""}"
             /></label>
             <label
-              >Color <input name="color" maxlength="9" placeholder="#5865f2" value="${ev.color || ""}"
+              >Color <input class="input" name="color" maxlength="9" placeholder="#5865f2" value="${ev.color || ""}"
             /></label>
             <label
               >Cutoff minutes before start (-1 clears)
-              <input name="cutoff_minutes" type="number" min="-1" max="20160"
+              <input class="input" name="cutoff_minutes" type="number" min="-1" max="20160"
             /></label>
             <label
               >Attendee role id (existing-role mode; empty clears)
               <input
+                class="input"
                 name="attendee_role_id"
                 maxlength="20"
                 autocomplete="off"
@@ -486,7 +499,7 @@ function renderEventDetail({
             /></label>
             <label
               >Attendee role is existing
-              <select name="attendee_role_existing"
+              <select class="input" name="attendee_role_existing"
                 ><option value="">keep mode</option>
                 <option value="1">yes — use the id above</option>
                 <option value="0">no — bot-managed temp role</option></select
@@ -504,7 +517,7 @@ function renderEventDetail({
             class="inline"
           >
             ${csrf(csrfToken)}${act(ev.id, "delete")}
-            <label>Type <code>DELETE</code> <input name="confirm" maxlength="10" required /></label>
+            <label>Type <code>DELETE</code> <input class="input" name="confirm" maxlength="10" required /></label>
             <button class="btn btn-danger" type="submit">Permanent delete</button>
           </form>
         </div>
@@ -594,7 +607,7 @@ function renderArchive({ cid, rows, zone, csrfToken }) {
           class="events-danger-inline"
         >
           ${csrf(csrfToken)}${act(ev.id, "delete")}
-          <label>confirm <input name="confirm" maxlength="10" placeholder="DELETE" /></label>
+          <label>confirm <input class="input" name="confirm" maxlength="10" placeholder="DELETE" /></label>
           <button class="btn btn-sm btn-danger" type="submit">Delete forever</button>
         </form>
       </td>
@@ -629,7 +642,7 @@ function renderPresets({ cid, presets, csrfToken }) {
           ${/* #649: typed DELETE confirm (H2-15) — same idiom as the archive/permanent
                delete forms above; the route compares the value verbatim. Styled by
                #650 as a danger-zone field. */ ""}
-          <label class="danger-zone danger-zone-inline">confirm <input name="confirm" maxlength="10" autocomplete="off" placeholder="DELETE" /></label>
+          <label class="danger-zone danger-zone-inline">confirm <input class="input" name="confirm" maxlength="10" autocomplete="off" placeholder="DELETE" /></label>
           <button class="btn btn-sm btn-danger" type="submit">Delete</button>
         </form>
       </td>
@@ -641,13 +654,13 @@ function renderPresets({ cid, presets, csrfToken }) {
       Saved option groups reusable at create time (twins <code>/eventsignup preset</code>
       in Discord).
     </p>
-    <form method="post" action="/g/${cid}/events/presets" class="form-row">
+    <form method="post" action="/g/${cid}/events/presets" class="form-row events-form">
       ${csrf(csrfToken)}
-      <label>Name <input name="name" maxlength="60" required /></label>
+      <label>Name <input class="input" name="name" maxlength="60" required /></label>
       <label
         >Options (comma-separated labels, optional <code>|capacity</code>
         suffix)
-        <input name="spec" maxlength="400" placeholder="Pizza|10, Salad, Cakes|2" required
+        <input class="input" name="spec" maxlength="400" placeholder="Pizza|10, Salad, Cakes|2" required
       /></label>
       <button class="btn btn-primary" type="submit">Save preset</button>
     </form>
