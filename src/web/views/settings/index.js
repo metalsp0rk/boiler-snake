@@ -163,11 +163,17 @@ function formHelp(fieldKey, partsHtml) {
   return html`<p class="form-help" data-help-for="${fieldKey}">${partsHtml}</p>`;
 }
 
-/** One labelled field row: label + control, .form-help slot beside/below
- *  it (the shell's two-column ≥720px grid, stacked on phones). */
+/**
+ * One labelled field row: a two-column FIELD (fixed-width label text +
+ * aligned control) plus the .form-help slot in its own column (#471 polish
+ * pass — before, the label text and control shared one inline flow, so
+ * every panel's inputs started at a different x).
+ */
 function formRow(labelText, controlHtml, helpHtml = html``) {
   return html`<div class="form-row">
-    <label class="form-row-field">${labelText}${controlHtml}</label>
+    <label class="form-row-field"
+      ><span class="form-row-label">${labelText}</span>${controlHtml}</label
+    >
     ${helpHtml}
   </div>`;
 }
@@ -410,7 +416,8 @@ function logStreamCluster(ctx, { path, stream, label, fieldKey, currentHtml, def
     ctx,
     path,
     html`${hiddenStream}${formRow(`${label} channel id`, channelIdField("channel", ctx))}`,
-    "Set"
+    "Set",
+    { inline: true }
   );
   const clearForm = postForm(ctx, path, hiddenStream, "Clear", {
     submitName: "clear",
@@ -423,7 +430,8 @@ function logStreamCluster(ctx, { path, stream, label, fieldKey, currentHtml, def
       fieldKey,
       html`<strong>Current:</strong> ${currentHtml} · <strong>Default:</strong> ${defaultHtml} · ${governsBadge(commandName)}`
     )}
-    ${setForm} ${clearForm}
+    ${/* One actions row: the id field, Set and Clear share a baseline. */ ""}
+    <div class="settings-log-actions">${setForm} ${clearForm}</div>
   </div>`;
 }
 

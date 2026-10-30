@@ -208,7 +208,7 @@ function renderJobsSection(tickers, ctx = {}) {
     : html`<p class="bs-empty">No background jobs report in yet — features have not started publishing job state to the console.</p>`;
 
   return html`
-    <section class="bs-panel dashboard-tickers">
+    <section class="bs-panel dashboard-panel-wide dashboard-tickers">
       <h2>Background jobs</h2>
       <p class="subheading">
         Automated tasks that keep features fresh. <strong>ok</strong> = ran
@@ -300,6 +300,11 @@ function renderChartsSection(ctx) {
 
 /**
  * Full dashboard body (goes into the shell via renderShellPage).
+ *
+ * Section order IS the grid contract (#dashboard): single column stacks in
+ * DOM order; from 1100px Activity and Now playing pair in one row, and the
+ * wide sections (tickets, trends, jobs, stamp) span via .dashboard-panel-wide.
+ *
  * @param {object} data snapshot from src/web/data/dashboardData.js
  *   ({ tickets, activity, tickers, nowPlaying, freshness })
  * @param {object} [opts] UX v1.1 context: guildId + cached display names
@@ -320,8 +325,9 @@ function renderDashboardContent(data, opts = {}) {
   return html`
     <div class="dashboard">
       ${renderStatRow(d)} ${renderTicketsSection(d.tickets, ctx)} ${renderActivitySection(d.activity, ctx)}
+      ${renderNowPlayingSection(d.nowPlaying, ctx)}
       ${renderChartsSection(ctx)}
-      ${renderJobsSection(d.tickers, ctx)} ${renderNowPlayingSection(d.nowPlaying, ctx)}
+      ${renderJobsSection(d.tickers, ctx)}
       <p class="subheading dashboard-stamp">Aggregates cached at least 30 s per guild (§8.6 query budget).${stamp}</p>
     </div>`;
 }

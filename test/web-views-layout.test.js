@@ -938,10 +938,17 @@ describe("vendored assets + app.js wiring (#459 purge guard)", () => {
     const doc = String(renderLayout({ title: "T", content: "", nonce: "" }));
     assert.doesNotMatch(doc, /styles\.css/, "the shell does not link the retired stylesheet");
     assert.match(doc, /\/static\/forge\//, "the shell links the forge bundle");
-    // Base (:root) palette must be the DARK one, sitting BEFORE the first
-    // media query — this slice IS that range assertion (#642 keeps it).
+    // Base (:root) palette must be the DARK forge-graphite one, sitting
+    // BEFORE the first media query — this slice IS that range assertion
+    // (#642 keeps it). #palette-unification: every legacy alias resolves to
+    // its --bs-* token; the retired blue literals must not return.
     const rootBlock = css.slice(css.indexOf(":root"), css.indexOf("@media"));
-    assert.match(rootBlock, /--bg:\s*#191b1f/, "dark base background");
+    assert.match(rootBlock, /--bg:\s*var\(--bs-base/, "dark forge base background");
+    assert.doesNotMatch(
+      css,
+      /#191b1f|#5b9dff|#3d6fbf|#7aa2f7/,
+      "legacy blue/base palette retired — page rides the forged-graphite tokens"
+    );
     // #642: dark ONLY. The light palette is deleted, not repaired — the
     // stylesheet must not carry a light-scheme override anywhere.
     assert.ok(
