@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.39.1](https://github.com/metalsp0rk/boiler-snake/compare/v1.39.0...v1.39.1) (2026-10-30)
+
+
+### Bug Fixes
+
+* **web:** never render NaN for degraded event date values ([d1ce967](https://github.com/metalsp0rk/boiler-snake/commit/d1ce967075a6f43ba28d77eb41b3441676ce1395))
+* **web:** polish calendar, dashboard, and settings layouts and unify the console on the graphite palette ([f3e9320](https://github.com/metalsp0rk/boiler-snake/commit/f3e9320ae76c59456f29b6e8e285ca62b8462ffa))
+
 ## [1.39.0](https://github.com/metalsp0rk/boiler-snake/compare/v1.38.0...v1.39.0) (2026-10-29)
 
 
