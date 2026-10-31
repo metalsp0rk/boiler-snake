@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.39.2](https://github.com/metalsp0rk/boiler-snake/compare/v1.39.1...v1.39.2) (2026-10-31)
+
+
+### Bug Fixes
+
+* **web:** [#790](https://github.com/metalsp0rk/boiler-snake/issues/790) complete text-input framework parity and pin autofill off fuzzy lookups ([0770ec7](https://github.com/metalsp0rk/boiler-snake/commit/0770ec79b6b332d8193af5844af0e0e8f6c5a3a5))
+
 ## [1.39.1](https://github.com/metalsp0rk/boiler-snake/compare/v1.39.0...v1.39.1) (2026-10-30)
 
 
