@@ -17,6 +17,7 @@
  */
 
 const { html, raw } = require("../escape");
+const { lookupAttrs } = require("../_helpers");
 const { emptyState, userRef } = require("../components");
 const { formatNoteRef, formatWarnRef } = require("../../../core/theme");
 const { formatWeeklyRate } = require("../../../features/userActivity/service");
@@ -273,7 +274,7 @@ function renderUserSearchPage(req, { guilds, search, names = null, queryKind = n
   const content = html`
     <form class="search-form" method="get" action="${base}">
       <label for="q">User</label>
-      <input id="q" type="search" name="q" value="${search.query}" placeholder="name or user ID…" maxlength="64" data-lookup="users" data-lookup-url="/g/${communityId}/lookups/users"/>
+      <input id="q" type="search" name="q" value="${search.query}" placeholder="name or user ID…" maxlength="64" ${lookupAttrs("users", `/g/${communityId}/lookups/users`)}/>
       <button type="submit" class="btn">Search</button>
     </form>
     <p class="hint">ID search matches tracked users (exact or prefix). Name search matches members currently cached by the bot (it warms as you browse); tracked members are always found by ID. Results are capped at 50.</p>

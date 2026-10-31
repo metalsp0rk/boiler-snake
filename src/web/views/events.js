@@ -14,6 +14,7 @@
  */
 
 const { html } = require("./escape.js");
+const { lookupAttrs } = require("./_helpers.js");
 
 const pad2 = (n) => String(n).padStart(2, "0");
 
@@ -276,9 +277,7 @@ function renderEventsMonth({
               class="input"
               name="channel_id"
               maxlength="20"
-              autocomplete="off"
-              data-lookup="channels"
-              data-lookup-url="/g/${cid}/lookups/channels"
+              ${lookupAttrs("channels", `/g/${cid}/lookups/channels`)}
           /></label>
           <button type="submit" class="btn btn-primary">Save draft</button>
         </form>
@@ -427,7 +426,7 @@ function renderEventDetail({
           <h3>Manage a signup (organizer powers: bypass cutoff/whitelist)</h3>
           <form method="post" action="/g/${cid}/events/action" class="form-row events-form">
             ${csrf(csrfToken)}${act(ev.id, "signup-add")}
-            <label>User id <input class="input" name="user_id" maxlength="20" required autocomplete="off" data-lookup="users" data-lookup-url="/g/${cid}/lookups/users" /></label>
+            <label>User id <input class="input" name="user_id" maxlength="20" required ${lookupAttrs("users", `/g/${cid}/lookups/users`)} /></label>
             <label
               >Option
               <select class="input" name="option_id"
@@ -438,7 +437,7 @@ function renderEventDetail({
           </form>
           <form method="post" action="/g/${cid}/events/action" class="form-row events-form">
             ${csrf(csrfToken)}${act(ev.id, "signup-remove")}
-            <label>User id <input class="input" name="user_id" maxlength="20" required autocomplete="off" data-lookup="users" data-lookup-url="/g/${cid}/lookups/users" /></label>
+            <label>User id <input class="input" name="user_id" maxlength="20" required ${lookupAttrs("users", `/g/${cid}/lookups/users`)} /></label>
             <label
               >From option
               <select class="input" name="option_id"
@@ -458,7 +457,7 @@ function renderEventDetail({
               >Minutes before start
               <input class="input" name="minutes" type="number" min="1" max="20160" required
             /></label>
-            <label>Role to ping (optional) <input class="input" name="role_id" maxlength="20" autocomplete="off" data-lookup="roles" data-lookup-url="/g/${cid}/lookups/roles" /></label>
+            <label>Role to ping (optional) <input class="input" name="role_id" maxlength="20" ${lookupAttrs("roles", `/g/${cid}/lookups/roles`)} /></label>
             <label>Message (optional) <input class="input" name="body" maxlength="200" /></label>
             <button class="btn" type="submit">Add reminder</button>
           </form>
@@ -492,9 +491,7 @@ function renderEventDetail({
                 class="input"
                 name="attendee_role_id"
                 maxlength="20"
-                autocomplete="off"
-                data-lookup="roles"
-                data-lookup-url="/g/${cid}/lookups/roles"
+                ${lookupAttrs("roles", `/g/${cid}/lookups/roles`)}
                 value="${ev.attendee_role_id || ""}"
             /></label>
             <label

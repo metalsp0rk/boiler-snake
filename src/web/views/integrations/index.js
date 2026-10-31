@@ -59,6 +59,7 @@ const {
   formatAge,
   channelRef,
   section: sharedSection,
+  lookupAttrs,
 } = require("../_helpers");
 // banner left this file's imports with #608: only the promoted `section`
 // engine renders a notice now.
@@ -211,7 +212,7 @@ function flashBanner(flash) {
 function formField(label, name, { type = "text", placeholder = "", value = "", lookupUrl = "" } = {}) {
   // #645: channel id fields gain the CACHE-ONLY name typeahead (writes the
   // numeric id; pasting still works, the write routes stay the authority).
-  const lookup = lookupUrl ? html` data-lookup="channels" data-lookup-url="${lookupUrl}"` : html``;
+  const lookup = lookupUrl ? lookupAttrs("channels", lookupUrl) : html``;
   return html`<label>${label}<input type="${type}" name="${name}" placeholder="${placeholder}" value="${value}"${lookup}/></label>`;
 }
 

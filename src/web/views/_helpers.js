@@ -167,6 +167,35 @@ function pagerFor({ hrefFor, offset, pageSize, total, shown }) {
   return html`<p class="pager">${prev}showing ${from}–${to} of ${total}${next}</p>`;
 }
 
+/**
+ * Typeahead (fuzzy lookup) attribute bundle — the ONE emitter of the
+ * combobox markup contract (assets/lookup-install.js: data-lookup +
+ * data-lookup-url/users/roles). Ships `autocomplete="off"` in the SAME
+ * emission so the browser's autofill dropdown can never stack on top of
+ * our own suggestion list; hand-writing data-lookup in a view is pinned
+ * away by test/web-input-conventions.test.js.
+ *
+ * Attribute ORDER and ADJACENCY are load-bearing: test/web-lookups.test.js
+ * asserts the rendered `data-lookup="…" data-lookup-url="…"` substring.
+ *
+ * @param {"users"|"roles"|"channels"} kind
+ * @param {string} url same-origin lookup endpoint
+ */
+function lookupAttrs(kind, url) {
+  return html` data-lookup="${kind}" data-lookup-url="${url}" autocomplete="off"`;
+}
+
+/**
+ * Mixed person+role picker (tickets archive search): picking a person
+ * inserts the id, picking a role inserts its name. Same autocomplete
+ * guarantee as lookupAttrs.
+ * @param {string} usersUrl
+ * @param {string} rolesUrl
+ */
+function lookupAttrsMixed(usersUrl, rolesUrl) {
+  return html` data-lookup="mixed" data-lookup-users="${usersUrl}" data-lookup-roles="${rolesUrl}" autocomplete="off"`;
+}
+
 module.exports = {
   flashFromQuery,
   flashBanner,
@@ -176,5 +205,7 @@ module.exports = {
   channelRef,
   section,
   pagerFor,
+  lookupAttrs,
+  lookupAttrsMixed,
 };
 

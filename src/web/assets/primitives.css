@@ -656,6 +656,30 @@ sl-copy-button.bs-copy {
   font-size: 12px;
 }
 
+/* The installer anchors the popover on the input's <label> or parent node —
+   on the console's search/filter forms the FORM is the host. The column
+   stack above is for stacked label hosts; a form host must keep its own
+   row layout (primitives loads after page.css, so .lookup-host would
+   otherwise flip .search-form/.archive-search/.filter-form to a column
+   mid-typing and drop the Search button under the field). */
+.search-form.lookup-host,
+.archive-search.lookup-host {
+  flex-direction: row;
+  flex-wrap: wrap;
+  gap: var(--space-2, 0.5rem);
+  align-items: center;
+  color: inherit;
+  font-size: inherit;
+}
+.moderation .filter-form.lookup-host {
+  flex-direction: row;
+  flex-wrap: wrap;
+  gap: 0.5rem 0.75rem;
+  align-items: baseline;
+  color: inherit;
+  font-size: inherit;
+}
+
 .lookup-host input,
 .bs-field {
   min-height: 32px;

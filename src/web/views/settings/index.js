@@ -55,7 +55,7 @@ const { html } = require("../escape");
 // #470 (H1-8): num/formatAge shared with the other console views (#470 census:
 // identical private copies). The {kind,key} flash variant below is a
 // DIFFERENT contract from the done/error-slug family and stays as-is.
-const { num, formatAge, section, channelRef } = require("../_helpers");
+const { num, formatAge, section, channelRef, lookupAttrs } = require("../_helpers");
 const { emptyState, banner } = require("../components");
 const { visibilityTier } = require("../../../core/commandVisibility");
 const { DEFAULTS } = require("../../data/settingsData");
@@ -211,12 +211,10 @@ function numberField(name, bounds = {}) {
  * server parsers are the authority, this is an enhancement).
  */
 function channelIdField(name = "channel", ctx = null) {
-  const lookup = ctx
-    ? html` data-lookup="channels" data-lookup-url="${ctx.base}/lookups/channels"`
-    : html``;
+  const lookup = ctx ? lookupAttrs("channels", `${ctx.base}/lookups/channels`) : html``;
   return html`<input class="input input-narrow" type="text" name="${name}"${lookup}
     pattern="[0-9]{5,20}" inputmode="numeric" placeholder="123456789012345678"
-    autocomplete="off" spellcheck="false"/>`;
+    spellcheck="false"/>`;
 }
 
 /**
