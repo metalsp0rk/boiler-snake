@@ -37,6 +37,7 @@
  */
 
 const { html } = require("../escape");
+const { lookupAttrs } = require("../_helpers");
 const { emptyState, banner } = require("../components");
 const { formatWhen } = require("../users");
 const {
@@ -185,9 +186,9 @@ function csrfInput(csrfToken) {
 function roleIdInput(guildId) {
   const url = `/g/${encodeURIComponent(guildId)}/lookups/roles`;
   return html`<label>Role (name, mention, or ID)
-    <input type="text" name="role_id" autocomplete="off"
+    <input type="text" name="role_id"
       placeholder="type a role name…" required maxlength="100"
-      data-lookup="roles" data-lookup-url="${url}"/>
+      ${lookupAttrs("roles", url)}/>
   </label>`;
 }
 

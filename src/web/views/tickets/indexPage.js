@@ -33,7 +33,7 @@
  */
 
 const { html } = require("../escape");
-const { formatTs } = require("../_helpers"); // #470 H1-8 (byte-identical copies unified)
+const { formatTs, lookupAttrsMixed } = require("../_helpers"); // #470 H1-8 (byte-identical copies unified)
 const { renderLayout } = require("../layout");
 const { userRef } = require("../components");
 
@@ -206,7 +206,7 @@ function renderTicketIndexContent({
   // now matches creator/handler/ticket-members; picking a role inserts
   // its name (text match). No guild ⇒ no suggestions (nothing to resolve).
   const lookupAttrs = guildId && viewerMode === "staff"
-    ? html` data-lookup="mixed" data-lookup-users="/g/${guildId}/lookups/users" data-lookup-roles="/g/${guildId}/lookups/roles"`
+    ? lookupAttrsMixed(`/g/${guildId}/lookups/users`, `/g/${guildId}/lookups/roles`)
     : html``;
   const searchForm = html`
   <form class="archive-search" method="get" action="${baseUrl}">

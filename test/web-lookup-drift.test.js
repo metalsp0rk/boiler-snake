@@ -26,7 +26,10 @@ function inputTags(source) {
  * @returns {string[]} tags that should be lookups but are not wired
  */
 function unwiredLookups(source) {
-  const fileHasLookup = /data-lookup=/.test(source);
+  // The lookup wiring is emitted by views/_helpers#lookupAttrs(Mixed); a view
+  // may hold the bundle in a local (e.g. tickets' `${lookupAttrs}` const), so
+  // interpolation counts as wiring when the file imports the helpers module.
+  const fileHasHelper = /require\("[^"]*_helpers[^"]*"\)/.test(source);
   const problems = [];
   for (const tag of inputTags(source)) {
     if (/type="hidden"/.test(tag) || /type="number"/.test(tag) || /type="checkbox"/.test(tag)) continue;
@@ -34,7 +37,11 @@ function unwiredLookups(source) {
     const identifier = IDENTIFIER_NAME.test(tag);
     const lookup = /data-lookup\s*=/.test(tag);
     if (!search && !identifier && !lookup) continue;
-    const interpolated = /\$\{lookupAttrs\}/.test(tag) && fileHasLookup;
+    // Wired markup comes from either the local `${lookupAttrs}` variable or
+    // the single-source bundle emitter views/_helpers.js#lookupAttrs(Mixed).
+    const interpolated =
+      (/\$\{lookupAttrs\}/.test(tag) && fileHasHelper) ||
+      /\$\{lookupAttrs(?:Mixed)?\s*\(/.test(tag);
     if (interpolated) continue;
     if (!lookup) {
       problems.push(tag.replace(/\s+/g, " ").slice(0, 180));

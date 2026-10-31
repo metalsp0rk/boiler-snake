@@ -482,6 +482,16 @@ th {
   max-width: 24rem;
   min-width: 0;
   flex: 1 1 14rem;
+  /* Paint parity with .moderation .filter-form fields (the comment above
+     promises "same shape" — before this, the field rendered as a bare UA
+     box until the typeahead armed .lookup-host). */
+  background: var(--bg-sunken);
+  color: var(--fg);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 0.35rem 0.5rem;
+  font: inherit;
+  font-size: 0.9rem;
 }
 
 /* ---- identifier type-ahead popover (§8.15-15.10) -------------------------------------- */
@@ -993,7 +1003,8 @@ th {
   gap: 0.3rem;
 }
 .integ-write-form input:not([type="hidden"]),
-.integ-write-form select {
+.integ-write-form select,
+.integ-write-form textarea {
   padding: 0.3rem 0.45rem;
   border: 1px solid var(--line);
   border-radius: 0.35rem;
@@ -1001,6 +1012,9 @@ th {
   color: inherit;
   font: inherit;
   font-size: 0.85rem;
+  /* UA textareas kept a white well in the dark console; resize stays
+     vertical so phone layouts are unaffected. */
+  resize: vertical;
 }
 .integ-write-form input[name$="role_id"],
 .integ-write-form input[name="channel_id"],

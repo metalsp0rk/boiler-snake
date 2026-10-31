@@ -32,6 +32,7 @@ const {
   flashFromQuery,
   flashBanner,
   pagerFor,
+  lookupAttrs,
 } = require("../_helpers");
 const { emptyState, banner, userRef } = require("../components");
 const { formatWarnRef, formatNoteRef } = require("../../../core/theme");
@@ -116,7 +117,7 @@ function renderWarnIssueForm({ guildId, csrfToken, maxReason, maxEvidence, maxEx
       <form class="integ-write-form warn-issue-form" method="post" action="${actionPath}">
         ${csrfField(csrfToken)}
         <div class="integ-write-fields">
-          <label>User (name or ID)<input name="user_id" autocomplete="off" placeholder="type a name…" maxlength="100" data-lookup="users" data-lookup-url="/g/${encodeURIComponent(guildId)}/lookups/users"/></label>
+          <label>User (name or ID)<input name="user_id" placeholder="type a name…" maxlength="100" ${lookupAttrs("users", `/g/${encodeURIComponent(guildId)}/lookups/users`)}/></label>
           <label>Reason<textarea name="reason" rows="2" maxlength="${maxReason}" placeholder="why this warning is being issued"></textarea></label>
           <label>Note number (optional, N-…)<input name="note" type="number" min="1" step="1"/></label>
           <label>Message evidence link (optional)<input name="message" type="text" autocomplete="off" placeholder="https://discord.com/channels/…/…/…"/></label>
@@ -178,7 +179,7 @@ function renderNoteAddForm({ guildId, csrfToken, maxContent }) {
       <form class="integ-write-form note-add-form" method="post" action="${actionPath}">
         ${csrfField(csrfToken)}
         <div class="integ-write-fields">
-          <label>User (name or ID)<input name="user_id" autocomplete="off" placeholder="type a name…" maxlength="100" data-lookup="users" data-lookup-url="/g/${encodeURIComponent(guildId)}/lookups/users"/></label>
+          <label>User (name or ID)<input name="user_id" placeholder="type a name…" maxlength="100" ${lookupAttrs("users", `/g/${encodeURIComponent(guildId)}/lookups/users`)}/></label>
           <label>Note content<textarea name="content" rows="3" maxlength="${maxContent}" placeholder="context for staff — never shown to the member"></textarea></label>
         </div>
         <button type="submit" class="btn btn-write">Add note</button>
@@ -253,7 +254,7 @@ function filterForm(action, page, stateOptions, guildId) {
   return html`
     <form class="filter-form" method="get" action="${action}">
       <label for="f-u">User ID</label>
-      <input id="f-u" type="search" name="u" value="${page.userId || ""}" placeholder="subject user id…" maxlength="20" autocomplete="off" data-lookup="users" data-lookup-url="/g/${encodeURIComponent(guildId)}/lookups/users"/>
+      <input id="f-u" type="search" name="u" value="${page.userId || ""}" placeholder="subject user id…" maxlength="20" ${lookupAttrs("users", `/g/${encodeURIComponent(guildId)}/lookups/users`)}/>
       <label for="f-state">State</label>
       <select id="f-state" name="state">
         ${stateOptions.map(
