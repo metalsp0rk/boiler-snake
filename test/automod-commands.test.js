@@ -4,12 +4,15 @@
  *
  * Hand-built CommandContext (the fluxer-honeypot / staffNotes unit pattern) —
  * no gateway, no network. Covers: gates (staff read / admin mutations), the
- * status render (incl. budget sentinels + breaker reason), the rules-modal
- * flow (slash → modal → submit), the H2-15 confirm: idiom on
- * `safety resume`, the @everyone-view warning on `channel set` (read
- * only — the command must never rewrite overwrites), and the /automod refer
- * wiring (gates first, cross-option enforcement, ack + row + audit).
- * The refusal battery itself lives in test/automod-refer.test.js.
+ * status render (incl. budget sentinels + breaker reason), the rules
+ * EXTRACTION arms (`source` = store + one-time batch extract, `extract` =
+ * re-run the stored source, `clear` = text + source — the old manual
+ * `rules set` + `am:rules` modal surface is retired), the H2-15 confirm:
+ * idiom on `safety resume`, the @everyone-view warning on `channel set`
+ * (read only — the command must never rewrite overwrites), and the /automod
+ * refer wiring (gates first, cross-option enforcement, ack + row + audit).
+ * The refusal battery itself lives in test/automod-refer.test.js; the
+ * extraction module's own seams live in test/automod-rules-extract.test.js.
  */
 const { describe, it, after } = require("node:test");
 const assert = require("node:assert/strict");
@@ -21,6 +24,7 @@ const { api: db, cleanup } = loadDb();
 const { PermissionFlagsBits, PermissionsBitField } = require("discord.js");
 const automod = require("../src/features/automod");
 const service = require("../src/features/automod/settings");
+const rulesExtract = require("../src/features/automod/rulesExtract");
 const repo = require("../src/db/repositories/automodSettings");
 const { MSG_DENIED } = require("../src/core/theme");
 
@@ -28,6 +32,8 @@ after(() => cleanup());
 
 const MANAGE_GUILD = String(PermissionFlagsBits.ManageGuild);
 const EXTERNAL_GUILD = "925000000000000000";
+/** Rules channel the extraction-arm tests point `rules source` at. */
+const RULES_CH = "700000000000000074";
 
 let seq = 0;
 const freshCommunity = () => communityKey(`${EXTERNAL_GUILD}-725c-${++seq}`);
@@ -73,6 +79,37 @@ function makeRaw({ channelViews = {}, showModal } = {}) {
 }
 
 /**
+ * Raw-interaction fake whose guild carries a REAL-SHAPE rules channel — the
+ * object the extraction arms hand to rulesExtract as `deps.guild`. Message
+ * reads, pins, and the permission probe are all present so the arm contract
+ * (rawInteraction.guild → the extraction deps) is pinned by identity here;
+ * the provider round itself is scripted per test.
+ */
+function makeRulesRaw({ messages = [], pins = [], readable = true } = {}) {
+  const rulesChannel = {
+    id: RULES_CH,
+    permissionsFor: () => ({ has: () => readable }),
+    messages: {
+      fetch: async () => messages,
+      fetchPinned: async () => pins,
+    },
+  };
+  return {
+    rulesChannel,
+    raw: {
+      guild: {
+        id: EXTERNAL_GUILD,
+        roles: { everyone: { id: EXTERNAL_GUILD } },
+        members: { me: { id: "u-bot-725" } },
+        channels: {
+          cache: { get: (id) => (id === RULES_CH ? rulesChannel : null) },
+        },
+      },
+    },
+  };
+}
+
+/**
  * Hand-built CommandContext (mirrors the fluxer-honeypot-banrole fake).
  * @param {object} o
  */
@@ -89,6 +126,8 @@ function makeCtx({
   externalGuildId = EXTERNAL_GUILD,
 }) {
   const replies = [];
+  const editReplies = [];
+  const defers = [];
   const ctx = {
     platform: "discord",
     instanceKey: "discord",
@@ -121,12 +160,18 @@ function makeCtx({
     reply: async (payload) => {
       replies.push(payload);
     },
+    // The extraction arms defer + editReply — record each surface
+    // separately (and keep the shared replies stream for content()).
     editReply: async (payload) => {
+      editReplies.push(payload);
       replies.push(payload);
     },
-    defer: async () => {},
+    defer: async (payload) => {
+      ctx.deferred = true;
+      defers.push(payload ?? {});
+    },
   };
-  return { ctx, replies };
+  return { ctx, replies, editReplies, defers };
 }
 
 const content = (replies, i = 0) => String(replies[i]?.content ?? "");
@@ -189,6 +234,24 @@ describe("/automod status — staff read surface", () => {
     assert.match(c, /\*\*49\*\* of 50 left today/);
     assert.match(c, /\*\*paused\*\*/);
     assert.match(c, /reason: `auto-ban burst \(6 in 10m\)`/);
+  });
+
+  it("Rules line names the extraction source (and admits a cleared source honestly)", async () => {
+    const communityId = freshCommunity();
+    service.setRules(communityId, "No spam. Be kind.");
+    service.setRulesChannel(communityId, "700000000000000009");
+    const a = makeCtx({ commandName: "automod", communityId, sub: "status" });
+    await automod.handlers.automod(a.ctx, {});
+    assert.match(
+      content(a.replies),
+      /\*\*Rules:\*\* set \(\*\*17\*\* chars\) — extracted from <#700000000000000009> \(refresh: `\/automodconfig rules extract`\)/,
+    );
+
+    // Text still set but the source gone: never claim a channel that is not.
+    service.clearRulesChannel(communityId);
+    const b = makeCtx({ commandName: "automod", communityId, sub: "status" });
+    await automod.handlers.automod(b.ctx, {});
+    assert.match(content(b.replies), /\*\*Rules:\*\* set \(\*\*17\*\* chars\) — extracted from _a source since cleared_/);
   });
 
   it("budget sentinels: 0 renders unlimited, -1 renders blocked", async () => {
@@ -273,87 +336,319 @@ describe("/automodconfig — gates + mutations", () => {
     assert.match(content(replies), /Automod channel set/);
   });
 
-  it("rules set inline persists; over-cap refuses with the count", async () => {
-    const communityId = freshCommunity();
-    const ok = makeCtx({
-      communityId,
-      group: "rules",
-      sub: "set",
-      options: { text: "No ads." },
-    });
-    await automod.handlers.automodconfig(ok.ctx, {});
-    assert.match(content(ok.replies), /\*\*Automod rules set\*\* \(\*\*7\*\* of 4000 chars\)/);
-    assert.equal(db.getGuildSettings(communityId).automod_rules, "No ads.");
+  // ── rules source|extract|clear — the extraction arms (epic #723) ─────────
+  //
+  // The manual `rules set` slash option and the `am:rules` modal are
+  // retired: `source` stores the rules channel AND runs the one-time batch
+  // extraction, `extract` re-runs the stored source, `clear` resets both.
+  // The extraction is long-running, so its arms defer ephemerally and
+  // editReply the result. Where the provider round must be scripted,
+  // rulesExtract.extractRules is stubbed at the MODULE PROPERTY (config.js
+  // holds the module object and calls through it per arm) — the real
+  // config.js arms, store writes, audits, and shipped copy all still run.
+  // The extraction module's own behavior (provider contract, refusals,
+  // trim, lock) lives in test/automod-rules-extract.test.js.
 
-    const bad = makeCtx({
-      communityId,
-      group: "rules",
-      sub: "set",
-      options: { text: "x".repeat(4001) },
-    });
-    await automod.handlers.automodconfig(bad.ctx, {});
-    assert.match(content(bad.replies), /4001 characters/);
-  });
-
-  it("rules set WITHOUT text opens the modal (prefilled with the current text)", async () => {
-    const communityId = freshCommunity();
-    service.setRules(communityId, "Old rules");
-    const { modals, raw } = makeRaw();
-    const { ctx, replies } = makeCtx({
-      communityId,
-      group: "rules",
-      sub: "set",
-      options: {},
-      raw,
-    });
-    await automod.handlers.automodconfig(ctx, {});
-    assert.equal(modals.length, 1, "omitting the string shows the modal, not a save");
-    assert.equal(replies.length, 0);
-    const json = modals[0].toJSON();
-    assert.equal(json.custom_id, "am:rules");
-    assert.equal(
-      json.components[0].components[0].value,
-      "Old rules",
-      "modal prefills the existing rules (edit-in-place)",
-    );
-  });
-
-  it("rules modal submit persists (admin-gated on the raw interaction too)", async () => {
-    const communityId = freshCommunity();
-    // ensureCommunity maps the interaction's snowflake to the same integer.
-    const replies = [];
-    const interaction = {
-      customId: "am:rules",
-      guildId: EXTERNAL_GUILD,
-      user: { id: "u-admin-725" },
-      client: {},
-      memberPermissions: { has: (flag) => flag === PermissionFlagsBits.ManageGuild },
-      fields: { getTextInputValue: (id) => (id === "rules" ? "Kindness first." : "") },
-      reply: async (payload) => {
-        replies.push(payload);
+  /** Scripted extractRules seam: records args, returns the scripted
+   *  result. Always restore()d in a finally. */
+  function stubExtract(result) {
+    const calls = [];
+    const original = rulesExtract.extractRules;
+    rulesExtract.extractRules = async (args) => {
+      calls.push(args);
+      return typeof result === "function" ? result(args) : result;
+    };
+    return {
+      calls,
+      restore: () => {
+        rulesExtract.extractRules = original;
       },
     };
-    void communityId;
-    await automod.modalHandlers["am:rules"](interaction, { client: interaction.client });
-    assert.match(String(replies[0]?.content), /\*\*Automod rules set\*\*/);
-    assert.equal(
-      db.getGuildSettings(communityKey(EXTERNAL_GUILD)).automod_rules,
-      "Kindness first.",
-    );
+  }
 
-    // Non-admin submitter is refused and nothing saves.
-    const denied = {
-      ...interaction,
-      memberPermissions: { has: () => false },
-      fields: { getTextInputValue: () => "should not save" },
-      reply: async () => {},
+  /** Shipped-shaped extraction success over RULES_CH (config.js renders it). */
+  function extractionOk(over = {}) {
+    return {
+      ok: true,
+      rules: "1. No ads.",
+      rulesChars: 10,
+      messagesRead: 3,
+      pinsKept: 1,
+      kept: 2,
+      dropped: 0,
+      truncated: false,
+      pinsFailed: false,
+      historyFailed: false,
+      channelId: RULES_CH,
+      ...over,
     };
-    await automod.modalHandlers["am:rules"](denied, { client: interaction.client });
-    assert.equal(
-      db.getGuildSettings(communityKey(EXTERNAL_GUILD)).automod_rules,
-      "Kindness first.",
-      "denied submit changes nothing",
-    );
+  }
+
+  describe("rules source|extract|clear — extraction arms", () => {
+    it("rules source stores the channel, extracts, and editReplies the distilled copy (both audits)", async () => {
+      const communityId = freshCommunity();
+      const { raw, rulesChannel } = makeRulesRaw();
+      const { calls, restore } = stubExtract(extractionOk());
+      try {
+        const { ctx, replies, editReplies, defers } = makeCtx({
+          communityId,
+          group: "rules",
+          sub: "source",
+          options: { channel: { id: RULES_CH, type: 0 } },
+          raw,
+        });
+        await automod.handlers.automodconfig(ctx, {});
+
+        // The source stored through the real service BEFORE the batch ran.
+        assert.equal(
+          db.getGuildSettings(communityId).automod_rules_channel_id,
+          RULES_CH,
+        );
+
+        // Long-running arm: deferred ephemerally, result edited in.
+        assert.deepEqual(defers, [{ sensitive: true }]);
+        assert.equal(editReplies.length, 1, "one edit, no direct reply");
+        assert.equal(replies.length, 1);
+
+        // The batch ran over the raw guild the arm injected as deps.
+        assert.equal(calls.length, 1);
+        assert.equal(calls[0].communityId, communityId);
+        assert.equal(calls[0].guildId, EXTERNAL_GUILD);
+        assert.equal(calls[0].channelId, RULES_CH);
+        assert.equal(calls[0].deps.guild, raw.guild, "deps.guild rides the raw interaction guild");
+        assert.equal(calls[0].deps.guild.channels.cache.get(RULES_CH), rulesChannel);
+
+        const c = content(editReplies);
+        assert.match(
+          c,
+          /\*\*Automod rules extracted\*\* \(\*\*10\*\* of 4000 chars\) from <#700000000000000074> — 2 post\(s\) distilled \(1 pinned\)\./,
+        );
+        assert.match(c, /Refresh after channel edits with `\/automodconfig rules extract`\./);
+
+        const audits = db.listAdminAudit(communityId, { limit: 10 });
+        const src = audits.find((r) => r.action === "automod.rules_source_set");
+        assert.ok(src, "the source write is audited under its own verb");
+        assert.equal(JSON.parse(src.details_json).rules_channel_id, RULES_CH);
+        const ext = audits.find((r) => r.action === "automod.rules_extracted");
+        assert.ok(ext, "the batch run is audited under its own verb");
+        assert.deepEqual(JSON.parse(ext.details_json), {
+          rules_chars: 10,
+          rules_channel_id: RULES_CH,
+          posts_kept: 2,
+          posts_dropped: 0,
+          pins_kept: 1,
+          truncated: 0,
+        });
+      } finally {
+        restore();
+      }
+    });
+
+    it("rules source stores the REAL provider-config refusal through the live module (no stub)", async () => {
+      // No extractRules stub: the real rulesExtract runs over the fake
+      // guild (channel cache + permission probe + scripted messages) and
+      // refuses on the missing AI provider BEFORE any provider round —
+      // proof the arm wires deps.guild end-to-end.
+      const savedAi = process.env.AI_API_KEY;
+      const savedOpenAi = process.env.OPENAI_API_KEY;
+      delete process.env.AI_API_KEY;
+      delete process.env.OPENAI_API_KEY;
+      try {
+        const communityId = freshCommunity();
+        const { ctx, replies, defers } = makeCtx({
+          communityId,
+          group: "rules",
+          sub: "source",
+          options: { channel: { id: RULES_CH, type: 0 } },
+          raw: makeRulesRaw({ messages: [
+            { id: "1", content: "Server rules go here.", author: { username: "op" }, createdTimestamp: 1, pinned: false },
+          ] }).raw,
+        });
+        await automod.handlers.automodconfig(ctx, {});
+        assert.equal(db.getGuildSettings(communityId).automod_rules_channel_id, RULES_CH);
+        assert.deepEqual(defers, [{ sensitive: true }]);
+        assert.match(
+          content(replies),
+          /The AI provider is not configured \(AI_API_KEY\), so rules cannot be distilled/,
+        );
+        assert.equal(db.getGuildSettings(communityId).automod_rules, null, "refusal stores no rules");
+        const audits = db.listAdminAudit(communityId, { limit: 10 });
+        assert.ok(audits.some((r) => r.action === "automod.rules_source_set"));
+        assert.ok(!audits.some((r) => r.action === "automod.rules_extracted"));
+      } finally {
+        if (savedAi !== undefined) process.env.AI_API_KEY = savedAi;
+        if (savedOpenAi !== undefined) process.env.OPENAI_API_KEY = savedOpenAi;
+      }
+    });
+
+    it("extraction failure keeps the stored source and editReplies the specific cause", async () => {
+      const communityId = freshCommunity();
+      const failure = {
+        ok: false,
+        channelGone: true,
+        error:
+          `Rules channel <#${RULES_CH}> is gone or I cannot read it — it may have been deleted, ` +
+          "or the channel type does not carry messages. Point the source at a text channel with " +
+          "`/automodconfig rules source` again.",
+      };
+      const { restore } = stubExtract(failure);
+      try {
+        const { ctx, replies, defers } = makeCtx({
+          communityId,
+          group: "rules",
+          sub: "source",
+          options: { channel: { id: RULES_CH, type: 0 } },
+        });
+        await automod.handlers.automodconfig(ctx, {});
+        // Config hygiene first: the SOURCE survives the failed batch.
+        assert.equal(db.getGuildSettings(communityId).automod_rules_channel_id, RULES_CH);
+        assert.equal(defers.length, 1);
+        assert.equal(content(replies), failure.error, "the specific cause rides through verbatim");
+        const actions = db.listAdminAudit(communityId, { limit: 10 }).map((r) => r.action);
+        assert.ok(actions.includes("automod.rules_source_set"));
+        assert.ok(
+          !actions.includes("automod.rules_extracted"),
+          "nothing extracted, nothing claimed",
+        );
+      } finally {
+        restore();
+      }
+    });
+
+    it("rules extract WITHOUT a stored source refuses naming rules source (no deferral, no batch)", async () => {
+      const communityId = freshCommunity();
+      const { calls, restore } = stubExtract(extractionOk());
+      try {
+        const { ctx, replies, defers } = makeCtx({
+          communityId,
+          group: "rules",
+          sub: "extract",
+        });
+        await automod.handlers.automodconfig(ctx, {});
+        assert.equal(
+          content(replies),
+          "No rules channel is set — `/automodconfig rules source <channel>` stores it and runs " +
+            "the first extraction.",
+        );
+        assert.equal(defers.length, 0, "the refusal is an immediate reply, not a deferred edit");
+        assert.equal(calls.length, 0);
+      } finally {
+        restore();
+      }
+    });
+
+    it("rules extract re-runs the STORED source (deferred, audited under automod.rules_extracted)", async () => {
+      const communityId = freshCommunity();
+      service.setRulesChannel(communityId, RULES_CH);
+      const { calls, restore } = stubExtract(extractionOk());
+      try {
+        const { ctx, replies, defers } = makeCtx({
+          communityId,
+          group: "rules",
+          sub: "extract",
+        });
+        await automod.handlers.automodconfig(ctx, {});
+        assert.equal(calls.length, 1);
+        assert.equal(calls[0].channelId, RULES_CH, "the arm re-read the stored source");
+        assert.deepEqual(defers, [{ sensitive: true }]);
+        assert.match(content(replies), /\*\*Automod rules extracted\*\* \(\*\*10\*\* of 4000 chars\)/);
+        const ext = db
+          .listAdminAudit(communityId, { limit: 10 })
+          .find((r) => r.action === "automod.rules_extracted");
+        assert.ok(ext);
+        assert.equal(JSON.parse(ext.details_json).rules_channel_id, RULES_CH);
+      } finally {
+        restore();
+      }
+    });
+
+    it("the honest tail (trim disclosure + pins/history read failures) rides in the SAME edit", async () => {
+      const communityId = freshCommunity();
+      service.setRulesChannel(communityId, RULES_CH);
+      const { restore } = stubExtract(
+        extractionOk({ kept: 38, dropped: 7, truncated: true, pinsFailed: true, historyFailed: true }),
+      );
+      try {
+        const { ctx, replies } = makeCtx({ communityId, group: "rules", sub: "extract" });
+        await automod.handlers.automodconfig(ctx, {});
+        const c = content(replies);
+        assert.match(c, /— 38 post\(s\) distilled \(1 pinned\)\./);
+        assert.match(
+          c,
+          /\*\*Note:\*\* the channel held more than the extraction input cap — the oldest 7 post\(s\) were left out of the batch/,
+        );
+        assert.match(c, /\*\*Note:\*\* the pins read failed — only recent history was distilled\./);
+        assert.match(c, /\*\*Note:\*\* the history read stopped early \(see logs\)/);
+        const ext = db
+          .listAdminAudit(communityId, { limit: 10 })
+          .find((r) => r.action === "automod.rules_extracted");
+        assert.equal(JSON.parse(ext.details_json).truncated, 1, "the disclosure lands in the audit too");
+      } finally {
+        restore();
+      }
+    });
+
+    it("rules clear resets BOTH the text and the source, audited under both verbs", async () => {
+      const communityId = freshCommunity();
+      service.setRules(communityId, "1. No ads.");
+      service.setRulesChannel(communityId, RULES_CH);
+      const { ctx, replies } = makeCtx({ communityId, group: "rules", sub: "clear" });
+      await automod.handlers.automodconfig(ctx, {});
+      const row = db.getGuildSettings(communityId);
+      assert.equal(row.automod_rules, null);
+      assert.equal(row.automod_rules_channel_id, null);
+      assert.match(
+        content(replies),
+        /\*\*Automod rules cleared\*\* \(text \+ rules-channel source\)\. Cases will refuse naming the missing rules until `\/automodconfig rules source` runs again/,
+      );
+      const actions = db.listAdminAudit(communityId, { limit: 10 }).map((r) => r.action);
+      assert.ok(actions.includes("automod.rules_clear"), "the text clear is audited");
+      assert.ok(actions.includes("automod.rules_channel_clear"), "the source clear is audited");
+    });
+
+    it("rules clear reports PARTIAL failure honestly when the source clear fails", async () => {
+      const communityId = freshCommunity();
+      service.setRules(communityId, "1. No ads.");
+      service.setRulesChannel(communityId, RULES_CH);
+      const original = service.clearRulesChannel;
+      service.clearRulesChannel = () => ({ ok: false, error: "simulated store failure" });
+      try {
+        const { ctx, replies } = makeCtx({ communityId, group: "rules", sub: "clear" });
+        await automod.handlers.automodconfig(ctx, {});
+        assert.match(
+          content(replies),
+          /\*\*Automod rules text cleared\*\*, but the rules-channel source could NOT be unset: simulated store failure/,
+        );
+        const row = db.getGuildSettings(communityId);
+        assert.equal(row.automod_rules, null, "the text clear DID happen");
+        assert.equal(row.automod_rules_channel_id, RULES_CH, "the source honestly stayed");
+        const actions = db.listAdminAudit(communityId, { limit: 10 }).map((r) => r.action);
+        assert.ok(actions.includes("automod.rules_clear"));
+        assert.ok(
+          !actions.includes("automod.rules_channel_clear"),
+          "a failed clear is never audited as done",
+        );
+      } finally {
+        service.clearRulesChannel = original;
+      }
+    });
+
+    it("non-admin never reaches any rules arm (handler gate before the store)", async () => {
+      const communityId = freshCommunity();
+      for (const sub of ["source", "extract", "clear"]) {
+        const { ctx, replies, defers } = makeCtx({
+          communityId,
+          group: "rules",
+          sub,
+          options: { channel: { id: RULES_CH } },
+          manageGuild: false,
+        });
+        await automod.handlers.automodconfig(ctx, {});
+        assert.equal(content(replies), MSG_DENIED, `rules ${sub} denied`);
+        assert.equal(defers.length, 0);
+      }
+      assert.equal(db.getGuildSettings(communityId).automod_rules_channel_id, null);
+    });
   });
 
   it("enable on/off replies name the missing pieces while enabled", async () => {

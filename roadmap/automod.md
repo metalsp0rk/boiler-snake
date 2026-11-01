@@ -25,6 +25,8 @@ Staff refers a message or a user (/automod refer, or the message context menu;
 per-case read window)
         → master switch off        → the referral reply names that specific cause
         → rules text + automod channel required before a case runs
+          (rules text is EXTRACTED from the guild's rules CHANNEL via a
+          one-time batch read + distill — amended 2026-11-01)
         → assemble: guild rules, referral, bounded message window,
                     that user's warnings, that user's staff notes
         → harness runs (own prompt, tools, daily budget — never Gork's queue)
@@ -99,7 +101,7 @@ The staff-note tool is **always on**. It has **no mode flag** and cannot be disa
 
 | Input | Note |
 |-------|------|
-| Guild's written rules | Required before a case runs |
+| Guild's written rules | Required before a case runs. *Amended 2026-11-01 (rules sourcing):* the text comes from a per-guild rules **channel** via a one-time bounded batch read (pins + recent posts; 20,000-token input cap, over-cap trim disclosed) plus ONE LLM distillation into the ≤4000-char judge text; the manual typed path (`/automodconfig rules set` + its modal) is retired |
 | The referral | **#771:** the modal's **Problem** (required) and **Required context** (optional), verbatim case input |
 | Message window | Bounded — **#771 (design-change):** the window is **per case**, captured on the referral modal (defaults 100 back / 20 forward, each clamped to 0–500, paginated past Discord's 100-per-fetch cap; a mid-pagination failure refuses the run — never a half-read window). Rows created before #771 keep the historical Gork-owned 40/10 |
 | Warnings | That user's warnings |
@@ -168,7 +170,7 @@ Numbered to match epic #723. The sections above are the detail; they are not a s
 | 2 | **Three modes per action** (`off` / `suggest` / `auto`), default **suggest**; master switch default **off**. `off` = unoffered and unrunnable and never recommended on the card; `suggest` = staff Approve runs the auto executor, Dismiss records the decline; `auto` = executes and the card reports, no approve button. ([13.2](#132-modes--off--suggest--auto-per-action)) |
 | 3 | **Combinable action set:** no action, warning, delete message, open ticket, timeout, kick, ban. No-action = considered and not sanctioned (never bystanders); warning = the formal permanent record via `createWarning`; ticket = existing help tickets, subject included, member-visible text never carries staff-note bodies or staff-only history. ([13.3](#133-action-set)) |
 | 4 | **Staff note tool always on**, no mode flag, cannot be disabled. One note per considered user per case (no-action, suggestion, refusal, or execution); context-only participants get no note and no action tool call; enforced **at commit time**, not by prompt alone. ([13.4](#134-staff-note-tool--always-on)) |
-| 5 | **Judgment inputs:** guild rules, the referral, a bounded message window, that user's warnings, that user's staff notes. Lookup tools for another user the model is actually considering. *Amended #771:* the window is per case (modal-captured, 100/20 defaults, 0–500 clamps; legacy rows keep 40/10) and the referral carries the modal's Problem + Required context. ([13.5](#135-judgment-inputs)) |
+| 5 | **Judgment inputs:** guild rules, the referral, a bounded message window, that user's warnings, that user's staff notes. Lookup tools for another user the model is actually considering. *Amended #771:* the window is per case (modal-captured, 100/20 defaults, 0–500 clamps; legacy rows keep 40/10) and the referral carries the modal's Problem + Required context. *Amended 2026-11-01 (rules sourcing):* the guild rules are sourced from a per-guild rules **channel** — a one-time bounded batch read (pins + recent posts, 20,000-token input cap, refuse-over-cap, nothing stored on failure) plus a single LLM distillation into the ≤4000-char judge text; the manual typed path is retired. ([13.5](#135-judgment-inputs)) |
 | 6 | **Staff as subjects:** recommendations against staff are allowed; warn, delete, ticket, timeout, kick, and ban **refuse** to execute against a staff role or anyone the bot's role cannot moderate; the staff note records the consideration and the refusal. ([13.6](#136-staff-as-subjects-and-execution-guards)) |
 | 7 | **Separate from Gork:** own feature, prompt, tools, and daily budget; shared provider env (`AI_API_KEY`, `AI_BASE_URL`, `AI_MODEL`); a case never increments Gork's budget or enters Gork's queue. ([13.7](#137-harness--separate-from-gork)) |
 | 8 | **Discord only** for this milestone; Fluxer is explicit no-parity in the docs. ([13.8](#138-platform--discord-only)) |

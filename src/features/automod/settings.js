@@ -78,6 +78,7 @@ function readSettings(communityId, nowMs) {
         channelId: s.automod_channel_id || null,
         rules,
         rulesChars: rules.length,
+        rulesChannelId: s.automod_rules_channel_id || null,
         modes,
         timeoutCap: Number(s.automod_timeout_cap) || 3600,
         dailyCaseLimit: budget.limit,
@@ -127,13 +128,16 @@ function clearChannel(communityId) {
 /**
  * Set the guild rules text (required to run a case). Trimmed; the 4000-char
  * cap is REJECTED with the offending length — never silently truncated.
+ * Since the rules-channel change this is written by the EXTRACTION
+ * (rulesExtract.js), not by an operator typing it — the validation posture
+ * is deliberately unchanged: whatever lands here passed this gate.
  */
 function setRules(communityId, text) {
   const rules = text == null ? "" : String(text).trim();
   if (!rules) {
     return {
       ok: false,
-      error: "Rules text is required — a case cannot run without the guild rules to judge against. Type the text or omit the option to open the modal.",
+      error: "Rules text is required — a case cannot run without the guild rules to judge against.",
     };
   }
   if (rules.length > AUTOMOD_RULES_MAX_LEN) {
@@ -146,7 +150,7 @@ function setRules(communityId, text) {
     updateGuildSettings(communityId, { automod_rules: rules });
     return { ok: true, rules, rulesChars: rules.length };
   } catch (err) {
-    return fail("rules set", communityId, err);
+    return fail("rules store", communityId, err);
   }
 }
 
@@ -157,6 +161,38 @@ function clearRules(communityId) {
     return { ok: true };
   } catch (err) {
     return fail("rules clear", communityId, err);
+  }
+}
+
+/**
+ * Set the RULES CHANNEL id — the source the one-time batch extraction reads
+ * (rulesExtract.js). Validated as a non-empty id string like setChannel;
+ * existence/readability are checked by the extraction's own Discord-side
+ * pre-flight, not here.
+ */
+function setRulesChannel(communityId, channelId) {
+  const id = channelId == null ? "" : String(channelId).trim();
+  if (!id) {
+    return {
+      ok: false,
+      error: "No channel provided — pick the channel that holds the server rules.",
+    };
+  }
+  try {
+    updateGuildSettings(communityId, { automod_rules_channel_id: id });
+    return { ok: true, rulesChannelId: id };
+  } catch (err) {
+    return fail("rules channel set", communityId, err);
+  }
+}
+
+/** Clear the rules-channel source (the rules TEXT is cleared separately). */
+function clearRulesChannel(communityId) {
+  try {
+    updateGuildSettings(communityId, { automod_rules_channel_id: null });
+    return { ok: true };
+  } catch (err) {
+    return fail("rules channel clear", communityId, err);
   }
 }
 
@@ -268,6 +304,8 @@ module.exports = {
   clearChannel,
   setRules,
   clearRules,
+  setRulesChannel,
+  clearRulesChannel,
   setEnabled,
   setMode,
   setTimeoutCap,

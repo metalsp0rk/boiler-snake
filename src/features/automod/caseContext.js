@@ -544,7 +544,7 @@ async function buildCaseContext({
         "rules",
         ids,
         `**Automod rules:** the guild rules text is empty — it was cleared (or never set) after case A-${row.case_number} was recorded. ` +
-          "The judge has nothing to judge against; an admin must run `/automodconfig rules set` before this case can run.",
+          "The judge has nothing to judge against; an admin must run `/automodconfig rules source <channel>` before this case can run.",
       );
     }
 
