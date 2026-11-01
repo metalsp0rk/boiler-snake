@@ -1,14 +1,11 @@
 /**
- * Auto-moderation config command constants (#725, epic #723).
+ * Auto-moderation config command constants (#725 + rules-channel extraction, epic #723).
  *
  * customId grammar follows the tickets/staffNotes prefix convention
  * (registry matches longest prefix). The `am:` namespace is automod-only.
+ * The retired rules-text modal (`am:rules`, old `/automodconfig rules set`)
+ * is gone: rules are distilled from the rules channel, never typed by hand.
  */
-
-/** Modal customId: rules-text submit (`/automodconfig rules set` without text) */
-const MODAL_RULES = "am:rules";
-/** Text input customId inside the rules modal */
-const MODAL_FIELD_RULES = "rules";
 
 /* ── Case card (#730, epic #723) ────────────────────────────────────────────
  * The case card is the ONE staff-channel post per case (the harness
@@ -76,6 +73,49 @@ const {
   AUTOMOD_REFER_NOTE_MAX_LEN,
   AUTOMOD_REFER_CONTEXT_MAX_LEN,
 } = require("../../db/repositories/automodCases");
+// Gork-owned read caps stay read-only there (caseContext precedent); the
+// rules-distill transcript budget converts with the same ratio.
+const { GORK_TOKEN_CHAR_RATIO } = require("../gork/constants");
+
+/* ── Rules-channel extraction (one-time batch distill, epic #723) ──────────
+ * The rules text the judge reads is no longer typed by hand: the operator
+ * points `automod_rules_channel_id` at the guild's rules channel and the bot
+ * runs a BOUNDED batch read (history + pins) whose corpus one LLM call
+ * distills into judge-ready rules (≤ AUTOMOD_RULES_MAX_LEN, stored in the
+ * same automod_rules column the whole pipeline already reads). Fixed
+ * constants like the harness knobs — deliberately NOT env, NOT per-guild
+ * (report to the settings issue first if a knob must become configurable).
+ * The provider stays the shared AI_* trio via src/core/ai.js (locked
+ * decision 7 — no Gork setting, queue, or budget is touched). */
+
+/**
+ * INPUT token cap for the distill call (operator-settled: 20,000 tokens).
+ * Converted to a transcript char cap with Gork's conservative
+ * chars-per-token estimate (gork-owned, imported read-only exactly like the
+ * READ_DISCORD_* window family in caseContext.js).
+ */
+const AUTOMOD_RULES_DISTILL_INPUT_TOKENS = 20_000;
+/** Char headroom inside the token cap for the distill prompt itself. */
+const AUTOMOD_RULES_DISTILL_PROMPT_RESERVE_CHARS = 2_000;
+/** Transcript char cap: tokens × 4 − prompt reserve (78,000 chars).
+ *  Over-cap corpus is trimmed OLDEST-FIRST and the reply DISCLOSES it —
+ *  never a silent cut. */
+const AUTOMOD_RULES_DISTILL_TRANSCRIPT_MAX_CHARS =
+  AUTOMOD_RULES_DISTILL_INPUT_TOKENS * GORK_TOKEN_CHAR_RATIO -
+  AUTOMOD_RULES_DISTILL_PROMPT_RESERVE_CHARS;
+
+/** Hard ceiling on history messages fetched from the rules channel. */
+const AUTOMOD_RULES_FETCH_MAX_MESSAGES = 200;
+/** Page size per `channel.messages.fetch` round (Discord's per-call max). */
+const AUTOMOD_RULES_FETCH_PAGE_SIZE = 100;
+/** Pinned rules fetched at most (pins are the strongest rules signal). */
+const AUTOMOD_RULES_PINS_MAX = 50;
+/** A single rules message keeps its full Discord length (2000) — rules
+ *  announcements are long by nature; cutting at 500 would drop real rules. */
+const AUTOMOD_RULES_MESSAGE_MAX_CHARS = 2000;
+/** Wall-clock deadline for the one-shot distill call (shorter than a case
+ *  run on purpose: one read, one answer, no tool rounds). */
+const AUTOMOD_RULES_DISTILL_TIMEOUT_MS = 60_000;
 
 /**
  * Standard denial for Fluxer dispatches reaching this Discord-only surface
@@ -358,8 +398,6 @@ const MODE_CHOICES = AUTOMOD_MODES.map((m) => ({ name: m, value: m }));
 const ACTION_CHOICES = AUTOMOD_ACTIONS.map((a) => ({ name: a, value: a }));
 
 module.exports = {
-  MODAL_RULES,
-  MODAL_FIELD_RULES,
   // Case card (#730): button customId prefixes + the button clamp.
   CARD_APPROVE_PREFIX,
   CARD_DISMISS_PREFIX,
@@ -401,6 +439,16 @@ module.exports = {
   AUTOMOD_RUN_TIMEOUT_MS,
   AUTOMOD_DECISION_LOG_MAX_ENTRIES,
   AUTOMOD_TOOL_RESULT_MAX_CHARS,
+  // Rules-channel extraction: the input token cap + char conversion, the
+  // bounded fetch sizes, the distill deadline. Fixed constants (same law).
+  AUTOMOD_RULES_DISTILL_INPUT_TOKENS,
+  AUTOMOD_RULES_DISTILL_PROMPT_RESERVE_CHARS,
+  AUTOMOD_RULES_DISTILL_TRANSCRIPT_MAX_CHARS,
+  AUTOMOD_RULES_FETCH_MAX_MESSAGES,
+  AUTOMOD_RULES_FETCH_PAGE_SIZE,
+  AUTOMOD_RULES_PINS_MAX,
+  AUTOMOD_RULES_MESSAGE_MAX_CHARS,
+  AUTOMOD_RULES_DISTILL_TIMEOUT_MS,
   // Staff notes (#731): the one-note law's shipped copy + assembly caps.
   AUTOMOD_NOTE_HARNESS_FILLED,
   AUTOMOD_NOTE_DROPPED_LABEL,

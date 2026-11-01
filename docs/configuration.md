@@ -340,7 +340,8 @@ Each Discord server (guild) has its own settings stored in SQLite.
 | `gork_*` | various | The Gork assistant family (`gork_enabled`, `gork_keyword` `@gork`, `gork_role_id`, `gork_context_window` 10, `gork_cooldown_sec`, `gork_search_enabled`, `gork_ste_enabled`, `gork_memory_*`, `gork_daily_limit`, `gork_log_channel_id`, …) — inventoried on [Gork](gork.md) |
 | `automod_enabled` | `0` | Auto-moderation master switch (`/automodconfig enable`; referrals refuse naming this cause while off) — [Auto-moderation](automod.md) |
 | `automod_channel_id` | *(none)* | Moderation queue / case-card channel (`/automodconfig channel set`, or its admin alias `/set-moderation-queue set` (#771); `@everyone`-view is warned, never rewritten) |
-| `automod_rules` | *(none)* | Rules text the judge applies, cap 4000 chars (`/automodconfig rules set`, modal when omitted) |
+| `automod_rules` | *(none)* | Distilled judge rules text, cap 4000 chars — written by the rules-channel extraction (over-cap refuses; never truncated) |
+| `automod_rules_channel_id` | *(none)* | The rules **source** channel the extraction reads — read-only for the judge pipeline (cases judge the distilled text); set/cleared via `/automodconfig rules source\|clear` |
 | `automod_mode_*` | `suggest` | Per-action modes `off`/`suggest`/`auto` for `no_action`, `warn`, `delete_message`, `ticket`, `timeout`, `kick`, `ban` (`/automodconfig mode`) — staff notes have NO mode (always on) |
 | `automod_timeout_cap` | 3600 | Max automod-run timeout in seconds, 60–2,419,200 (28 days) (`/automodconfig timeout-cap`) |
 | `automod_daily_case_limit` | 50 | Daily case budget per server: `-1` blocked, `0` unlimited, `1–100000` (`/automodconfig budget`) — separate from `gork_daily_limit` |

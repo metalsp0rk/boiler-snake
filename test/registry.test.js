@@ -222,9 +222,16 @@ describe("buildDefaultRegistry", () => {
     assert.equal(typeof registry.getModalHandler("note:edit:12"), "function");
   });
 
-  it("registers the automod rules modal handler (#725)", () => {
+  it("routes the automod referral modal; the rules-text modal is retired", () => {
     const registry = buildDefaultRegistry();
-    assert.equal(typeof registry.getModalHandler("am:rules"), "function");
+    // #771: the referral intake form (longest-prefix `am:refer:<token>`).
+    assert.equal(
+      typeof registry.getModalHandler("am:refer:0123456789abcdef0123456789abcdef"),
+      "function",
+    );
+    // Epic #723 rules-sourcing change: `am:rules` (the old rules-text modal)
+    // is GONE — rules are extracted from the rules channel, never typed.
+    assert.equal(registry.getModalHandler("am:rules"), undefined);
   });
 });
 

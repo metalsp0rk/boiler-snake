@@ -36,9 +36,13 @@ there is no automod-specific provider knob).
    judgment text). `/automodconfig channel set` warns when `@everyone` can
    currently view the picked channel — it never rewrites the channel's
    permissions itself.
-2. **Set the rules text** the judge applies: `/automodconfig rules set`
-   (omit the text option to write longer text in a modal). Cap 4000
-   characters, enforced with an error (never truncated).
+2. **Point at the rules channel**: `/automodconfig rules source <#rules>`
+   stores the channel AND runs the one-time batch extraction immediately —
+   the result reply reports the distilled char count and how many posts were
+   read. Refresh after channel edits with `/automodconfig rules extract`.
+   The distilled text caps at 4000 characters, enforced with an error
+   (never truncated; a failure stores nothing). Rules are **never typed by
+   hand** — see [Rules extraction](#rules-extraction).
 3. **Enable**: `/automodconfig enable on`. Until then every referral refuses,
    naming the master switch as the specific cause.
 4. **Turn actions on deliberately.** Every mode starts at `suggest` — the
@@ -50,11 +54,57 @@ Rules and a channel are **required to run a case**; clearing either while the
 master switch stays on is allowed — referrals then refuse naming the missing
 piece.
 
+## Rules extraction
+
+Rules are **never typed by hand** — that is the design posture. The operator
+points the guild at its rules channel and the bot distils the judge's rules
+text from it in a **one-time batch operation**: it fires when the source
+channel is set (`/automodconfig rules source <#rules>`) and re-runs on
+`/automodconfig rules extract`.
+
+- **Bounded batch read** — the channel's pinned posts (≤ **50**) plus recent
+  history (≤ **200** messages in two 100-message pages), pins deduped
+  against history. Never the whole channel; bot- and staff-posted rules
+  count alike.
+- **20,000-token input cap, trimming disclosed** — an over-cap corpus is
+  trimmed OLDEST NON-PIN FIRST and the reply **discloses** how many posts
+  were left out; nothing is cut silently.
+- **One LLM distillation** — a single provider call (the shared `AI_*` trio,
+  same as [Harness](#harness)) condenses the corpus into the numbered
+  ≤ **4000-char** judge text stored in `automod_rules`. The corpus rides as
+  fenced UNTRUSTED DATA (embedded "instructions" are distilled past, never
+  followed); the distiller merges duplicates, drops chatter, and never
+  invents rules.
+- **Extraction failures store nothing** — an empty or over-cap provider
+  answer refuses with the specific cause (never a silent truncation); the
+  previous rules text stands until a fresh extraction succeeds.
+
+The success reply is the report (tests pin the shape):
+
+```text
+**Automod rules extracted** (**1842** of 4000 chars) from <#1234567890123456789> — 12 post(s) distilled (3 pinned).
+Cases judge against this text. Refresh after channel edits with `/automodconfig rules extract`.
+```
+
+Over-cap trimming, a failed pins read, or an early-stopped history read add
+their own `**Note:**` disclosure lines — a degraded batch is reported, never
+hidden.
+
+The bot needs **View Channel + Read Message History** in the rules channel
+(checked fail-closed before anything is read). Honest failure causes, each
+replying its specific cause and fix: the channel is **gone** (deleted, or a
+type without messages), the bot **cannot read it** (missing
+View Channel / Read Message History or unreadable overwrites), the AI
+**provider is down or unconfigured**, or the distilled answer came back
+**over the 4000-char cap**. The downstream pipeline keeps judging the
+distilled TEXT — the judge never reads the channel itself.
+
 ## Commands
 
 ### `/automod status` (staff)
 
-Read-only view: **Enabled**, **Channel**, **Rules** (set/not set + length),
+Read-only view: **Enabled**, **Channel**, **Rules** (set/not set + length +
+the source channel with the `rules extract` refresh hint),
 all seven **Modes** (staff notes are shown as *always on* — they have no
 mode by design), **Timeout cap**, **Daily budget** (real remaining count
 today, `0` → unlimited, `-1` → blocked), and **Safety** (breaker state incl.
@@ -124,8 +174,9 @@ BEFORE the modal even opens
 |------------|--------------|
 | `channel set channel:` | Set the case-card channel. **Warns in the reply when `@everyone` can view it** (overwrite read only — never rewritten). |
 | `channel clear` | Unset the channel (cases refuse until set; allowed while enabled). |
-| `rules set [text]` | Set the rules text (max 4000 chars — over-length refuses with the count). **Omit `text` to open a modal**, same idea as `/note add`. |
-| `rules clear` | Clear the rules text (allowed while enabled). |
+| `rules source channel:` | Point at the guild's rules channel (**required** channel option; the picker offers text and announcement channels) and run the one-time batch extraction NOW — rules are never typed by hand ([Rules extraction](#rules-extraction)). |
+| `rules extract` | Re-run the rules extraction from the stored rules channel (refresh after channel edits). |
+| `rules clear` | Clear the rules text **and** the rules-channel source (allowed while enabled; cases refuse until the next extraction). |
 | `enable on\|off` | Master switch (default **off**). |
 | `mode action:… mode:off\|suggest\|auto` | Per-action mode for `no_action`, `warn`, `delete_message`, `ticket`, `timeout`, `kick`, `ban`. Default **suggest**. There is no mode for the staff-note tool — it is always on. |
 | `timeout-cap seconds:` | Max automod-run timeout: **60 s … 2,419,200 s (28 days = Discord's maximum)**, default 3600. Out of range refuses with the offending value; it is never silently clamped. |
@@ -185,7 +236,7 @@ The exact replies (tests pin them byte-for-byte):
 **Automod rules empty** (gate 4)
 
 ```text
-**Automod rules:** not set — the judge needs the guild rules text. An admin must run `/automodconfig rules set` first.
+**Automod rules:** not set — the judge needs the guild rules to judge against. An admin must run `/automodconfig rules source <channel>` first (the rules are extracted from the server's rules channel).
 ```
 
 **Daily budget blocked / exhausted** (gates 5–6)
@@ -1285,7 +1336,8 @@ escalating three go live again (#725).
 ## Storage
 
 All settings live as the `automod_*` column family on `guild_settings`
-(migration `067_automod_guild_settings`) — see
+(migrations `067_automod_guild_settings` + `073_automod_rules_channel` for
+the rules-channel source) — see
 [Database](database.md#4-guild-settings). Repository:
 `src/db/repositories/automodSettings.js`; service:
 `src/features/automod/settings.js` (returns `{ ok:false, error }` — handlers

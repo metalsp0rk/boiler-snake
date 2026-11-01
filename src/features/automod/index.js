@@ -3,7 +3,7 @@
  * harness (#725 settings/config slice + #726 referral intake; epic #723).
  *
  * Slash: /automod status | refer (staff) · /automodconfig
- *        channel set|clear · rules set|clear · enable on|off ·
+ *        channel set|clear · rules source|extract|clear · enable on|off ·
  *        mode <action> <off|suggest|auto> · timeout-cap · budget ·
  *        safety resume (confirm:)  (admin, ManageGuild in handler too) ·
  *        /set-moderation-queue set|clear (#771 §6, admin alias over the
@@ -11,10 +11,11 @@
  * Context menu (#726): "Refer to automod" on a message (staff gate first in
  *        the handler; api "interaction" — the target only exists on the raw
  *        interaction, so it is deliberately absent from handlerApi below).
- * Modals: am:rules — long rules text (same idea as /note add's modal) ·
- *        am:refer:<token> — the #771 referral intake form (problem +
+ * Modals: am:refer:<token> — the #771 referral intake form (problem +
  *        required context + per-case read window; both intake surfaces
- *        open it BEFORE the case exists).
+ *        open it BEFORE the case exists). (The old `am:rules` rules-text
+ *        modal is retired: rules are EXTRACTED from the rules channel in a
+ *        one-time batch — ./rulesExtract.js — never typed by hand.)
  * Buttons (#730): am:card:approve:<rowId> / am:card:dismiss:<rowId> on the
  *        harness case card — staff-gated arms in ./card.js execute suggested
  *        actions through the shared executor and rebuild the card from the
@@ -50,7 +51,6 @@ const { commands } = require("./commands");
 const { referContextMenu } = require("./contextMenu");
 const {
   NOT_ON_FLUXER,
-  MODAL_RULES,
   MODAL_REFER_PREFIX,
   CARD_APPROVE_PREFIX,
   CARD_DISMISS_PREFIX,
@@ -64,6 +64,7 @@ const config = require("./config");
 const refer = require("./refer");
 const referModal = require("./referModal");
 const settings = require("./settings");
+const rulesExtract = require("./rulesExtract");
 const harness = require("./harness");
 const card = require("./card");
 
@@ -170,7 +171,8 @@ async function handleAutomodConfig(commandCtx, featureCtx) {
     if (sub === "set") return config.handleChannelSet(commandCtx);
     if (sub === "clear") return config.handleChannelClear(commandCtx);
   } else if (group === "rules") {
-    if (sub === "set") return config.handleRulesSet(commandCtx);
+    if (sub === "source") return config.handleRulesSource(commandCtx);
+    if (sub === "extract") return config.handleRulesExtract(commandCtx);
     if (sub === "clear") return config.handleRulesClear(commandCtx);
   } else if (group === "safety") {
     if (sub === "resume") return config.handleSafetyResume(commandCtx);
@@ -236,7 +238,7 @@ module.exports = {
     "Refer to automod": refer.handleReferContextMenu,
   },
   // Router API flag (roadmap/fluxer.md § Handler migration rule): both slash
-  // handlers receive a CommandContext; the rules modal and the context-menu
+  // handlers receive a CommandContext; the referral modal and the context-menu
   // intake stay on the raw interaction arm (Discord-only surfaces).
   handlerApi: {
     automod: "context",
@@ -244,8 +246,9 @@ module.exports = {
     "set-moderation-queue": "context",
   },
   modalHandlers: {
-    [MODAL_RULES]: config.handleRulesModal,
     // #771: the referral intake form (`am:refer:<token>`, longest-prefix).
+    // The retired rules-text modal (`am:rules`) has no successor — the rules
+    // batch extraction needs no operator typing (see ./rulesExtract.js).
     [MODAL_REFER_PREFIX]: referModal.handleReferModal,
   },
   // #730: the case-card buttons. The router matches customId by longest
@@ -270,13 +273,14 @@ module.exports = {
   // Exported for unit tests + later automod issues (#727 case context and
   // #728 harness build on the referral service + the automod_cases rows;
   // #730's card (builders + button arms) rebuilds from the ledger rows;
-  // #739 owns the breaker trip write).
+  // #739 owns the breaker trip write; the rules-channel extraction owns
+  // its own batch module).
   settings,
   refer,
   harness,
   card,
+  rulesExtract,
   status: require("./status"),
   constants: require("./constants"),
   buildStatusPayload,
-  buildRulesModal: config.buildRulesModal,
 };

@@ -79,7 +79,13 @@ describe("automod settings service — validation returns {ok:false,error}", () 
 
     const blank = service.setRules(cid, "   ");
     assert.equal(blank.ok, false);
-    assert.match(blank.error, /Rules text is required/);
+    // Pinned EXACTLY: the extraction change retired the type-it-in/modal copy
+    // ("…Type the text or omit the option to open the modal." is gone) —
+    // docs/automod.md quotes this sentence verbatim (#471).
+    assert.equal(
+      blank.error,
+      "Rules text is required — a case cannot run without the guild rules to judge against.",
+    );
 
     const ok = service.setRules(cid, "  No spam, no hate.  ");
     assert.equal(ok.ok, true);
@@ -169,8 +175,78 @@ describe("automod settings service — validation returns {ok:false,error}", () 
     assert.equal(typeof s.modes.no_action, "string");
     assert.equal(s.channelId, null);
     assert.equal(s.rulesChars, 0);
+    assert.equal(s.rulesChannelId, null, "073: no rules source by default");
     assert.equal(s.casesRemaining, 50);
     assert.equal(s.paused, false);
+  });
+});
+
+describe("automod rules-channel source (073 + extraction change)", () => {
+  it("setRulesChannel persists (trimmed) and readSettings mirrors rulesChannelId", () => {
+    const cid = freshCommunity();
+    const ok = service.setRulesChannel(cid, "  900000000000000001  ");
+    assert.equal(ok.ok, true);
+    assert.equal(ok.rulesChannelId, "900000000000000001");
+    assert.equal(db.getGuildSettings(cid).automod_rules_channel_id, "900000000000000001");
+    assert.equal(service.readSettings(cid).settings.rulesChannelId, "900000000000000001");
+
+    // Re-source overwrites (one source, last writer wins).
+    assert.equal(service.setRulesChannel(cid, "900000000000000002").ok, true);
+    assert.equal(service.readSettings(cid).settings.rulesChannelId, "900000000000000002");
+  });
+
+  it("empty rules-channel id is refused with the specific copy and stores nothing", () => {
+    const cid = freshCommunity();
+    service.setRulesChannel(cid, "900000000000000003");
+    for (const bad of [null, undefined, "", "   ", "\t\n"]) {
+      const refused = service.setRulesChannel(cid, bad);
+      assert.equal(refused.ok, false, `refuses ${JSON.stringify(bad)}`);
+      assert.equal(
+        refused.error,
+        "No channel provided — pick the channel that holds the server rules.",
+      );
+    }
+    assert.equal(
+      db.getGuildSettings(cid).automod_rules_channel_id,
+      "900000000000000003",
+      "refusals never touch the stored source",
+    );
+  });
+
+  it("clearRulesChannel unsets the source ONLY (text and switch stay as they were)", () => {
+    const cid = freshCommunity();
+    service.setEnabled(cid, true);
+    service.setRules(cid, "1. No ads.");
+    service.setRulesChannel(cid, "900000000000000004");
+
+    const cleared = service.clearRulesChannel(cid);
+    assert.equal(cleared.ok, true);
+    const row = db.getGuildSettings(cid);
+    assert.equal(row.automod_rules_channel_id, null);
+    assert.equal(row.automod_rules, "1. No ads.", "clearing the SOURCE never erases the rules text");
+    assert.equal(Number(row.automod_enabled), 1, "clearing is allowed while ENABLED (config hygiene law)");
+    assert.equal(service.readSettings(cid).settings.rulesChannelId, null);
+  });
+
+  it("clearRules clears the TEXT only (the source survives for the next extract)", () => {
+    const cid = freshCommunity();
+    service.setRules(cid, "1. No ads.");
+    service.setRulesChannel(cid, "900000000000000005");
+    assert.equal(service.clearRules(cid).ok, true);
+    const row = db.getGuildSettings(cid);
+    assert.equal(row.automod_rules, null);
+    assert.equal(row.automod_rules_channel_id, "900000000000000005", "independent knobs, independent clears");
+  });
+
+  it("migration 073 column defaults NULL on rows that predate it (old automod_rules stay valid)", () => {
+    // A guild that only ever set the TEXT (the retired manual path): the
+    // row exists with automod_rules but never had a source — NULL reads
+    // honestly, no backfill happened.
+    const cid = freshCommunity();
+    db.updateGuildSettings(cid, { automod_rules: "Legacy hand-typed rules." });
+    const s = service.readSettings(cid).settings;
+    assert.equal(s.rules, "Legacy hand-typed rules.");
+    assert.equal(s.rulesChannelId, null, "legacy text guilds have NO source");
   });
 });
 

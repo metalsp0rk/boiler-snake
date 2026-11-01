@@ -93,8 +93,9 @@ function refusalChannelUnpostable(channelId) {
 }
 
 const REFUSAL_RULES_EMPTY =
-  "**Automod rules:** not set — the judge needs the guild rules text. An " +
-  "admin must run `/automodconfig rules set` first.";
+  "**Automod rules:** not set — the judge needs the guild rules to judge against. " +
+  "An admin must run `/automodconfig rules source <channel>` first (the rules are " +
+  "extracted from the server's rules channel).";
 
 const REFUSAL_BUDGET_BLOCKED =
   "**Daily budget:** blocked (`-1`) — every referral is refused until an " +

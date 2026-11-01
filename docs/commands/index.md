@@ -1504,8 +1504,9 @@ Manage Server in the picker AND in the handler. Every mutation records an
 ```bash
 /automodconfig channel set channel:#automod   # warns if @everyone can view (never rewrites)
 /automodconfig channel clear
-/automodconfig rules set [text]               # omit text → modal (like /note add); cap 4000
-/automodconfig rules clear
+/automodconfig rules source channel:#rules      # stores the channel + runs the one-time batch extraction now
+/automodconfig rules extract                    # re-run after rules-channel edits
+/automodconfig rules clear                      # clears the rules text AND the source channel
 /automodconfig enable on|off                  # master switch (default off)
 /automodconfig mode action:<a> mode:off|suggest|auto
 /automodconfig timeout-cap seconds:3600       # 60 … 2419200 (28 days), never silently clamped
@@ -1516,7 +1517,7 @@ Manage Server in the picker AND in the handler. Every mutation records an
 | Subcommand | Effect |
 |------------|--------|
 | `channel set\|clear` | Case-card channel. `set` replies with a **Warning** when `@everyone` can view the channel — overwrites are read, NEVER rewritten. Clearing while enabled is allowed (referrals name the missing piece). |
-| `rules set\|clear` | Rules text the judge applies (required to run a case). Over-cap input refuses with the offending character count. |
+| `rules source\|extract\|clear` | The judge's rules text (required to run a case) is **extracted, never typed**: `source channel:` (required; text/announcement channels only — *"The channel that holds the server rules (I need read access)"*) stores the rules channel and runs the one-time batch extraction, `extract` re-runs it against the stored source, `clear` resets text + source. Distilled cap 4000 chars — an over-cap result refuses and stores nothing. |
 | `enable on\|off` | Master switch, default **off**. Enabling does not arm any action — modes stay `suggest`. |
 | `mode` | Per-action mode for `no_action`, `warn`, `delete_message`, `ticket`, `timeout`, `kick`, `ban` (`off` / `suggest` / `auto`, default `suggest`). No mode exists for the staff-note tool — always on. |
 | `timeout-cap` | Max automod-run timeout, 60 s – 2,419,200 s (Discord's 28-day ceiling); default 3600. |

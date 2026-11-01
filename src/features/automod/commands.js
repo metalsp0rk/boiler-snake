@@ -23,7 +23,6 @@ const {
   ChannelType,
 } = require("discord.js");
 const {
-  AUTOMOD_RULES_MAX_LEN,
   AUTOMOD_TIMEOUT_CAP_MIN,
   AUTOMOD_TIMEOUT_CAP_MAX,
   AUTOMOD_BUDGET_MIN,
@@ -106,31 +105,43 @@ const commands = [
             ),
         ),
     )
-    // rules set|clear
+    // rules source|extract|clear — the rules text is EXTRACTED from the
+    // guild's rules channel in a one-time batch (never typed by hand):
+    // `source` stores the channel AND runs the extraction, `extract` re-runs
+    // it against the stored channel, `clear` removes both the text and the
+    // source. The judge still reads the distilled text (automod_rules).
     .addSubcommandGroup((group) =>
       group
         .setName("rules")
-        .setDescription("Set or clear the guild rules text the judge applies (admin).")
+        .setDescription("Rules channel source: set it, extract, or clear (admin).")
         .addSubcommand((sc) =>
           sc
-            .setName("set")
-            .setDescription(
-              `Set the rules text (max ${AUTOMOD_RULES_MAX_LEN}; omit to open a modal).`,
-            )
-            .addStringOption((opt) =>
+            .setName("source")
+            .setDescription("Set the rules channel and extract the rules from it now.")
+            .addChannelOption((opt) =>
               opt
-                .setName("text")
-                .setDescription(
-                  `Rules text (omit to open a modal for longer text)`,
+                .setName("channel")
+                .setDescription("The channel that holds the server rules (I need read access)")
+                .addChannelTypes(
+                  ChannelType.GuildText,
+                  ChannelType.GuildAnnouncement,
                 )
-                .setRequired(false)
-                .setMaxLength(AUTOMOD_RULES_MAX_LEN),
+                .setRequired(true),
+            ),
+        )
+        .addSubcommand((sc) =>
+          sc
+            .setName("extract")
+            .setDescription(
+              "Re-run the rules extraction from the stored rules channel (refresh after channel edits).",
             ),
         )
         .addSubcommand((sc) =>
           sc
             .setName("clear")
-            .setDescription("Clear the rules text (cases refuse until it is set)."),
+            .setDescription(
+              "Clear the rules text AND the rules-channel source (cases refuse until re-extraction).",
+            ),
         ),
     )
     // enable on|off

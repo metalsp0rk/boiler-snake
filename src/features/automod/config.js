@@ -1,5 +1,6 @@
 /**
- * /automodconfig — admin mutation arms (#725, epic #723).
+ * /automodconfig — admin mutation arms (#725 + rules-channel extraction,
+ * epic #723).
  *
  * Every arm: ManageGuild in the HANDLER as well as the picker (issue text),
  * the service returns { ok:false, error } with the specific cause (never a
@@ -13,29 +14,20 @@
  *  - `safety resume` follows the gork/H2-15 confirm: idiom — without
  *    confirm it previews exactly what re-arms (the actions currently set to
  *    auto), because re-arming auto kick/ban/timeout is the irreversible path.
+ *
+ * The rules arms never write rules text directly: `source` stores the rules
+ * channel and runs the one-time batch extraction (./rulesExtract.js),
+ * `extract` re-runs it, `clear` resets both. The extraction is long-running
+ * (bounded channel read + one provider call) — its arms defer and editReply.
  */
 
-const {
-  ActionRowBuilder,
-  ModalBuilder,
-  TextInputBuilder,
-  TextInputStyle,
-  PermissionsBitField,
-} = require("discord.js");
-const { requireAdmin } = require("../../core/permissions");
-const { replyEphemeral } = require("../../core/interaction");
+const { PermissionsBitField } = require("discord.js");
 const { recordSlashAudit } = require("../../core/auditTrail");
 const { logConfigChange } = require("../logs/auditLog");
-const { getDiscordOutbound } = require("../../platform/discord/outbound");
 const { ensureCommunity } = require("../../platform/community");
-const { showModalFromContext } = require("../../platform/context");
-const {
-  MODAL_RULES,
-  MODAL_FIELD_RULES,
-  AUTOMOD_ACTIONS,
-  AUTOMOD_RULES_MAX_LEN,
-} = require("./constants");
+const { AUTOMOD_ACTIONS, AUTOMOD_RULES_MAX_LEN } = require("./constants");
 const service = require("./settings");
+const rulesExtract = require("./rulesExtract");
 const { formatBudgetLine } = require("./status");
 
 /**
@@ -201,133 +193,134 @@ async function handleQueueClear(commandCtx) {
   });
 }
 
-// ── rules set|clear ─────────────────────────────────────────────────────────
+// ── rules source|extract|clear ─────────────────────────────────────────────
 
 /**
- * Modal to write the guild rules text (same idea as `/note add`'s modal —
- * long text does not belong in a slash option).
- * @param {string} [existing] prefill (edit-in-place)
- * @returns {ModalBuilder}
+ * Success copy shared by both extraction arms. Every honest tail rides in
+ * the ONE reply: what was read, whether the corpus was trimmed (never a
+ * silent cut), and any partial read that degraded the batch.
  */
-function buildRulesModal(existing = "") {
-  const input = new TextInputBuilder()
-    .setCustomId(MODAL_FIELD_RULES)
-    .setLabel("Guild rules text (judge input)")
-    .setStyle(TextInputStyle.Paragraph)
-    .setRequired(true)
-    .setMaxLength(AUTOMOD_RULES_MAX_LEN)
-    .setPlaceholder("The written rules the auto-judge applies to each case");
-  if (existing) {
-    input.setValue(String(existing).slice(0, AUTOMOD_RULES_MAX_LEN));
-  }
-
-  return new ModalBuilder()
-    .setCustomId(MODAL_RULES)
-    .setTitle("Set automod rules text")
-    .addComponents(new ActionRowBuilder().addComponents(input));
-}
-
-/** Shared success tail for slash + modal rules submits. */
-function rulesSuccessContent(result) {
-  return (
-    `**Automod rules set** (**${result.rulesChars}** of ${AUTOMOD_RULES_MAX_LEN} chars). ` +
-    "Cases judge against this text."
-  );
-}
-
-async function handleRulesSet(commandCtx) {
-  const text = commandCtx.options.getString("text");
-
-  // Omit the string → modal (sanctioned showModalFromContext path; Fluxer
-  // never gets here — the whole automod surface is Discord-only).
-  if (text == null) {
-    const read = service.readSettings(commandCtx.communityId);
-    if (!read.ok) return replyError(commandCtx, read.error);
-    const shown = await showModalFromContext(
-      commandCtx,
-      buildRulesModal(read.settings.rules),
+function rulesExtractContent(result) {
+  const lines = [
+    `**Automod rules extracted** (**${result.rulesChars}** of ${AUTOMOD_RULES_MAX_LEN} chars) ` +
+      `from <#${result.channelId}> — ${result.kept} post(s) distilled` +
+      `${result.pinsKept > 0 ? ` (${result.pinsKept} pinned)` : ""}.`,
+    "Cases judge against this text. Refresh after channel edits with " +
+      "`/automodconfig rules extract`.",
+  ];
+  if (result.truncated) {
+    lines.push(
+      `**Note:** the channel held more than the extraction input cap — the oldest ` +
+        `${result.dropped} post(s) were left out of the batch. Re-run after trimming the channel ` +
+        "if you expect those to matter.",
     );
-    if (!shown) {
-      await commandCtx.reply({
-        content:
-          "Pass the rules with the `text` option — this platform can't open the rules modal.",
-        sensitive: true,
-      });
-    }
+  }
+  if (result.pinsFailed) {
+    lines.push("**Note:** the pins read failed — only recent history was distilled.");
+  }
+  if (result.historyFailed) {
+    lines.push("**Note:** the history read stopped early (see logs) — older posts may be missing.");
+  }
+  return lines.join("\n");
+}
+
+/**
+ * ONE extraction body for BOTH arms (`source` stores then extracts,
+ * `extract` re-runs the stored source). Long-running by design — a bounded
+ * channel read + one provider call — so the arm defers ephemerally and
+ * edits the result in. Failures store NOTHING (the service refuses over
+ * cap) and reply with the specific cause verbatim.
+ */
+async function runRulesExtraction(commandCtx, channelId, { auditAction, commandLabel }) {
+  await commandCtx.defer({ sensitive: true });
+  const result = await rulesExtract.extractRules({
+    communityId: commandCtx.communityId,
+    guildId: commandCtx.externalGuildId,
+    channelId,
+    deps: { guild: commandCtx.rawInteraction?.guild ?? null },
+  });
+  if (!result.ok) {
+    await commandCtx.editReply({ content: result.error });
     return;
   }
 
-  const result = service.setRules(commandCtx.communityId, text);
+  auditMutation(commandCtx, auditAction, {
+    rules_chars: result.rulesChars,
+    rules_channel_id: result.channelId,
+    posts_kept: result.kept,
+    posts_dropped: result.dropped,
+    pins_kept: result.pinsKept,
+    truncated: result.truncated ? 1 : 0,
+  });
+  await auditEmbed(commandCtx, "Automod rules extracted", commandLabel, [
+    `Rules text replaced (${result.rulesChars} chars) — distilled from <#${result.channelId}>.`,
+  ]);
+  await commandCtx.editReply({ content: rulesExtractContent(result) });
+}
+
+async function handleRulesSource(commandCtx) {
+  const channel = commandCtx.options.getChannel("channel", true);
+  const result = service.setRulesChannel(commandCtx.communityId, channel.id);
   if (!result.ok) return replyError(commandCtx, result.error);
 
-  auditMutation(commandCtx, "automod.rules_set", { rules_chars: result.rulesChars });
-  await auditEmbed(commandCtx, "Automod rules set", "/automodconfig rules set", [
-    `Rules text replaced (${result.rulesChars} chars).`,
+  auditMutation(commandCtx, "automod.rules_source_set", { rules_channel_id: channel.id });
+  await auditEmbed(commandCtx, "Automod rules source set", "/automodconfig rules source", [
+    `Rules channel: <#${channel.id}> (${channel.id}) — extraction runs now.`,
   ]);
-  await commandCtx.reply({ content: rulesSuccessContent(result), sensitive: true });
+
+  // The one-time batch operation fires immediately on set: the operator
+  // sees the distilled result in the SAME interaction. If it fails the
+  // SOURCE stays stored (config hygiene first) and the reply names the
+  // specific cause plus the refresh path.
+  return runRulesExtraction(commandCtx, channel.id, {
+    auditAction: "automod.rules_extracted",
+    commandLabel: "/automodconfig rules source",
+  });
+}
+
+async function handleRulesExtract(commandCtx) {
+  const read = service.readSettings(commandCtx.communityId);
+  if (!read.ok) return replyError(commandCtx, read.error);
+  const channelId = read.settings.rulesChannelId;
+  if (!channelId) {
+    return replyError(
+      commandCtx,
+      "No rules channel is set — `/automodconfig rules source <channel>` stores it and runs " +
+        "the first extraction.",
+    );
+  }
+  return runRulesExtraction(commandCtx, channelId, {
+    auditAction: "automod.rules_extracted",
+    commandLabel: "/automodconfig rules extract",
+  });
 }
 
 async function handleRulesClear(commandCtx) {
-  const result = service.clearRules(commandCtx.communityId);
-  if (!result.ok) return replyError(commandCtx, result.error);
-
+  const text = service.clearRules(commandCtx.communityId);
+  if (!text.ok) return replyError(commandCtx, text.error);
   auditMutation(commandCtx, "automod.rules_clear");
+
+  const source = service.clearRulesChannel(commandCtx.communityId);
+  if (source.ok) auditMutation(commandCtx, "automod.rules_channel_clear");
+
   await auditEmbed(commandCtx, "Automod rules cleared", "/automodconfig rules clear", [
-    "Rules text cleared — referrals refuse until it is set again.",
+    "Rules text cleared — referrals refuse until the next extraction.",
+    source.ok
+      ? "Rules-channel source cleared too."
+      : `Rules-channel source NOT cleared: ${source.error}`,
   ]);
 
+  // Partial failure reports PARTIAL success (error rule 5), never a lie
+  // about the whole setting being gone.
   await commandCtx.reply({
-    content:
-      "**Automod rules cleared.** Cases will refuse naming the missing rules until " +
-      "`/automodconfig rules set` runs again — the master switch was left as it was.",
+    content: source.ok
+      ? "**Automod rules cleared** (text + rules-channel source). Cases will refuse naming " +
+        "the missing rules until `/automodconfig rules source` runs again — the master switch " +
+        "was left as it was."
+      : `**Automod rules text cleared**, but the rules-channel source could NOT be unset: ` +
+        `${source.error}`,
     sensitive: true,
   });
-}
-
-/**
- * Modal submit: persist the rules text (`am:rules`, `/automodconfig rules set`
- * without the option). Interaction arm — mirrors the staffNotes modal shape:
- * gate → resolve community → service → audit → replyEphemeral.
- * @param {import("discord.js").ModalSubmitInteraction} interaction
- * @param {object} [ctx]
- */
-async function handleRulesModal(interaction, ctx) {
-  if (!(await requireAdmin(interaction))) return;
-
-  let text = "";
-  try {
-    text = interaction.fields.getTextInputValue(MODAL_FIELD_RULES);
-  } catch {
-    text = "";
-  }
-
-  const communityId = resolveCommunityId(interaction);
-  const result = service.setRules(communityId, text);
-  if (!result.ok) {
-    await replyEphemeral(interaction, { content: result.error });
-    return;
-  }
-
-  recordSlashAudit({
-    interaction,
-    communityId,
-    action: "automod.rules_set",
-    targetType: "guild",
-    targetId: String(interaction.guildId),
-    details: { rules_chars: result.rulesChars, source: "modal" },
-  });
-  await logConfigChange(
-    getDiscordOutbound(ctx?.client || interaction.client),
-    interaction.guildId,
-    {
-      title: "Automod rules set",
-      command: "/automodconfig rules set (modal)",
-      actor: interaction.user,
-      changes: [`Rules text replaced (${result.rulesChars} chars).`],
-    },
-  ).catch(() => {});
-
-  await replyEphemeral(interaction, { content: rulesSuccessContent(result) });
 }
 
 // ── enable on|off ───────────────────────────────────────────────────────────
@@ -368,7 +361,7 @@ async function handleEnable(commandCtx) {
         ? "\n**Missing for cases:**" +
           (s.channelId ? "" : " channel (`/automodconfig channel set`)") +
           (s.channelId && !s.rules ? " ·" : "") +
-          (s.rules ? "" : " rules (`/automodconfig rules set`)")
+          (s.rules ? "" : " rules (`/automodconfig rules source`)")
         : ""),
     sensitive: true,
   });
@@ -509,15 +502,16 @@ module.exports = {
   // #771 §6 — /set-moderation-queue alias arms (same core, own audit verbs).
   handleQueueSet,
   handleQueueClear,
-  handleRulesSet,
+  // Rules-channel extraction arms (source = store + batch extract, extract =
+  // re-run the stored source, clear = text + source).
+  handleRulesSource,
+  handleRulesExtract,
   handleRulesClear,
-  handleRulesModal,
   handleEnable,
   handleMode,
   handleTimeoutCap,
   handleBudget,
   handleSafetyResume,
-  buildRulesModal,
   everyoneCanView,
   resolveCommunityId,
 };

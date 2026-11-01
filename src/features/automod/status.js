@@ -52,12 +52,16 @@ function buildStatusPayload(communityId, nowMs) {
   if (!read.ok) return read;
   const s = read.settings;
 
-  const channel = s.channelId
+    const channel = s.channelId
     ? `<#${s.channelId}>`
     : "_not set_ — every case needs it (`/automodconfig channel set`)";
   const rules = s.rules
-    ? `set (**${s.rulesChars}** chars — \`/automodconfig rules set\` to replace)`
-    : "_not set_ — every case needs it (`/automodconfig rules set`)";
+    ? `set (**${s.rulesChars}** chars) — extracted from ` +
+      (s.rulesChannelId
+        ? `<#${s.rulesChannelId}> (refresh: \`/automodconfig rules extract\`)`
+        : "_a source since cleared_ (re-set it: `/automodconfig rules source`)")
+    : "_not set_ — every case needs it (`/automodconfig rules source <channel>` " +
+      "extracts the rules from the rules channel)";
   const modes = AUTOMOD_ACTIONS.map((a) => `\`${a}\`: **${s.modes[a]}**`).join(" · ");
   const safety = s.paused
     ? `**paused** since ${tsFull(s.pausedAt)} (${tsRelative(s.pausedAt)})${

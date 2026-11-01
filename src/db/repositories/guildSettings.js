@@ -282,6 +282,9 @@ function updateGuildSettings(communityId, patch) {
     "automod_enabled",
     "automod_channel_id",
     "automod_rules",
+    // Rules-channel source (migration 073): where extraction READS from;
+    // the distilled text still lands in automod_rules above.
+    "automod_rules_channel_id",
     "automod_mode_no_action",
     "automod_mode_warn",
     "automod_mode_delete_message",
