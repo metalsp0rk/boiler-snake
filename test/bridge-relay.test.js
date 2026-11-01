@@ -1764,6 +1764,36 @@ describe("bridge relay worker (PR 5)", () => {
       assert.equal(build(message).replyHeader, "↪ in reply to alice: attachment");
     });
 
+    it("#795: a djs-shaped (Collection) cache entry still names the attachment and display name", () => {
+      // Post-#795 reality: the pipeline normalizes onto a duck-clone, so the
+      // channel-cache entry the reply reader hits is PRISTINE discord.js
+      // (Maps/Collections). relay.js normalizes the cache hit itself; this
+      // feeds exactly that shape — pre-fix it degraded to "…: message".
+      const referenced = {
+        id: "111",
+        content: "",
+        author: { id: "u1", username: "alice" },
+        member: { displayName: "Alice (nick)" },
+        attachments: new Map([["a1", { id: "a1", name: "shot.png", url: "https://cdn.test/shot.png" }]]),
+        stickers: new Map(),
+        mentions: {
+          users: new Map([["u2", { id: "u2", username: "bob" }]]),
+          roles: new Map(),
+          channels: new Map(),
+          everyone: false,
+        },
+      };
+      const message = v14DiscordReply({
+        reference: { channelId: "100", guildId: "5", messageId: "111", type: 0 },
+        cache: new Map([["111", referenced]]),
+      });
+      assert.equal(
+        build(message).replyHeader,
+        "↪ in reply to Alice (nick): attachment",
+        "#795: cache-hit normalization keeps the §10.5 normalized shapes",
+      );
+    });
+
     it("keeps the Fluxer raw wire shapes working (message_reference + referenced_message)", () => {
       const message = {
         id: "3000000000000000001",
