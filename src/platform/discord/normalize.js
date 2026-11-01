@@ -2,12 +2,18 @@
  * Discord message normalizer (roadmap/fluxer.md § Normalized gateway events).
  *
  * `normalizeDiscordMessage` overlays the platform-neutral NormalizedMessage
- * fields onto the raw discord.js Message the gateway delivered — it MUTATES and
- * returns the SAME object (identity contract: features like honeypot set
- * `message.deleted` on the object the pipeline received, and integration tests
- * assert on the raw mock). Every Discord duck field (guild, author, channel,
- * member, delete(), deleted, …) stays readable: features NOT yet migrated keep
- * using them exactly as before.
+ * fields onto the raw discord.js Message the gateway delivered. For REAL
+ * discord.js Messages the overlay lands on a duck-clone (`Message#_clone` —
+ * discord.js' own prototype-preserving shallow snapshot), NEVER on the live
+ * cache entry (#795): discord.js re-reads `message.mentions.users` when it
+ * patches a cached message on MESSAGE_UPDATE, and the normalized id-array
+ * shape made it build `new User(client, "<snowflake>")` — an escaped
+ * unhandledRejection on every later edit of a mention-bearing message
+ * (prod 1.39.1 crash-net signature). Plain test mocks expose no `_clone`
+ * and keep the original mutate-in-place identity contract (integration
+ * tests assert on the raw mock). Either way every Discord duck field
+ * (guild, author, channel, member, delete(), deleted, …) stays readable:
+ * features NOT yet migrated keep using them exactly as before.
  *
  * @typedef {import("../context").ResolvedUser} ResolvedUser
  */
@@ -52,8 +58,10 @@ function collectIds(collection) {
  *   prefix branch, even when the content starts with "!". PR 6's Fluxer adapter
  *   is the only producer of non-null parsePrefix.
  *
- * Idempotent: running it twice on the same object produces the same field
- * values (plain assignment + the idempotent ensureCommunity).
+ * Idempotent: re-normalizing a normalized object (mock or clone) produces
+ * the same field values (plain assignment + the idempotent ensureCommunity).
+ * Re-normalizing a clone re-clones (the duck-typed `_clone` resolves through
+ * the prototype chain); the depth is bounded by pipeline passes (≤ 2/event).
  *
  * Every return satisfies the shared required-field contract enforced at the
  * pipeline boundary by src/platform/normalizedMessageContract.js ("contract
@@ -68,13 +76,22 @@ function collectIds(collection) {
  * @param {object} message raw discord.js Message (or a test mock exposing the
  *   same duck fields: id, content, guild, guildId, channel, channelId, author,
  *   mentions, attachments, createdAt/createdTimestamp)
- * @returns {object} the SAME message, with the normalized fields set as own
- *   properties and every Discord duck field left intact
+ * @returns {object} the normalized view — the SAME object for plain mocks, a
+ *   duck-clone for real discord.js Messages (#795) — with the normalized
+ *   fields set as own properties and every Discord duck field readable
  */
 function normalizeDiscordMessage(message) {
   if (!message || typeof message !== "object") {
     throw new TypeError("normalizeDiscordMessage: message required");
   }
+
+  // #795: never rewrite discord.js-owned shapes on the LIVE cache entry.
+  // Overwriting `mentions`/`attachments` there with the neutral id/array
+  // views poisoned the instance discord.js patches in place on the next
+  // MESSAGE_UPDATE (User._patch over a bare id string → escaped
+  // unhandledRejection). Real Messages normalize on a duck-clone; mocks
+  // expose no `_clone` and keep mutating in place as before.
+  if (typeof message._clone === "function") message = message._clone();
 
   const externalGuildId = toIdString(message.guild?.id ?? message.guildId);
 

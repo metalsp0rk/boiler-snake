@@ -47,6 +47,7 @@ const { isBridgeEnabled, buildPausedNotice, createPauseLatch } = require("./conf
 const { createFluxerBridgeOutbound } = require("./fluxerOutbound");
 const { createDiscordBridgeOutbound } = require("./discordOutbound");
 const { getCommunityById } = require("../../platform/community");
+const { normalizeDiscordMessage } = require("../../platform/discord/normalize");
 
 /** Destination-id map TTL (spec §10.4: TTL 10 minutes). */
 const DESTINATION_TTL_MS = 10 * 60 * 1000;
@@ -593,6 +594,18 @@ function buildRelayPayload(message, { bridge, direction, srcCommunityId, lookup 
     const refMessageId = v14Reference.messageId ?? v14Reference.message_id ?? null;
     if (refMessageId != null) {
       referenced = message.channel?.messages?.cache?.get(refMessageId) ?? null;
+      // #795: the pipeline normalizes onto a duck-clone, so the cache entry
+      // is pristine discord.js — and buildReplyHeader reads normalized
+      // shapes (authorDisplayName, id-array mentions, array attachments).
+      // Normalize this best-effort reader too; a throw (or absence) just
+      // degrades the header, the way a cache miss already does.
+      if (referenced) {
+        try {
+          referenced = normalizeDiscordMessage(referenced);
+        } catch {
+          /* keep the raw duck — header degrades, relay never blocks */
+        }
+      }
     }
   }
   const replyHeader = reference ? buildReplyHeader(referenced, lookup) : null;

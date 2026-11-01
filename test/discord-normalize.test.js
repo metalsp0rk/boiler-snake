@@ -1,9 +1,11 @@
 /**
  * Unit tests for normalizeDiscordMessage (src/platform/discord/normalize.js).
- * Discord fakes come from test/helpers/discord (require-safe). The guild case
- * resolves communityId through the communities table, so — same contract as
- * registry.test.js — loadDb() runs BEFORE every `src/` require below, binding
- * this process to a private temp SQLite file.
+ * Discord fakes come from test/helpers/discord (require-safe) — EXCEPT the
+ * #795 block below, which drives the REAL discord.js classes on purpose: the
+ * bug lives in discord.js' own patch path, so mocks cannot pin it. The guild
+ * case resolves communityId through the communities table, so — same contract
+ * as registry.test.js — loadDb() runs BEFORE every `src/` require below,
+ * binding this process to a private temp SQLite file.
  */
 const { describe, it, after } = require("node:test");
 const assert = require("node:assert/strict");
@@ -224,5 +226,132 @@ describe("platform/discord/normalize — normalizeDiscordMessage", () => {
     assert.deepEqual(message.stickers, []);
     assert.equal(message.authorDisplayName, "member2");
     assert.equal(message.parsePrefix, null);
+  });
+});
+
+/**
+ * #795 (prod 1.39.1): normalizeDiscordMessage rewrote `mentions.users` (and
+ * friends) on the LIVE discord.js cache entry. The next MESSAGE_UPDATE
+ * patched that instance in place and re-fed the id-array into
+ * MessageMentions → `new User(client, "<snowflake>")` → escaped
+ * unhandledRejection (`Cannot use 'in' operator to search for 'username'`),
+ * repeating for every later edit of the message. These tests replay the real
+ * gateway frames (no login) and pin the duck-clone contract.
+ */
+describe("platform/discord/normalize — #795 discord.js cache safety", () => {
+  const REAL_MENTION = { id: "854378445940981811", username: "m", discriminator: "0002" };
+
+  /** Real client/guild/channel + a cached Message with a real mentioned User. */
+  function makeRealMessage() {
+    const { Client, Partials, ChannelType } = require("discord.js");
+    const client = new Client({
+      intents: [],
+      partials: [Partials.Message, Partials.Channel, Partials.User],
+    });
+    client.guilds._add({ id: "10", name: "g", unavailable: false });
+    client.channels._add({ id: "20", guild_id: "10", name: "c", type: ChannelType.GuildText });
+    const cached = client.channels.cache
+      .get("20")
+      .messages._add({
+        id: "30",
+        channel_id: "20",
+        guild_id: "10",
+        content: "ping <@854378445940981811>",
+        author: { id: "5", username: "a", discriminator: "0001" },
+        mentions: [REAL_MENTION],
+        timestamp: "2026-11-01T07:20:00.000Z",
+      });
+    return { client, cached };
+  }
+
+  it("normalizes a real discord.js Message onto a duck-clone, not the cache entry", () => {
+    const { client, cached } = makeRealMessage();
+    const { Collection, Message } = require("discord.js");
+    try {
+      const out = normalizeDiscordMessage(cached);
+
+      // Clone contract: the pipeline view is normalized…
+      assert.notEqual(out, cached, "real Messages normalize on a clone (#795)");
+      assert.ok(out instanceof Message, "the clone keeps the discord.js prototype chain");
+      assert.deepEqual(out.mentions, {
+        users: ["854378445940981811"],
+        roles: [],
+        channels: [],
+        everyone: false,
+      });
+      assert.deepEqual(out.attachments, []);
+      assert.equal(out.platform, "discord");
+      assert.equal(out.id, "30");
+      assert.equal(out.externalGuildId, "10");
+      // …with the full duck profile intact.
+      assert.equal(out.author.id, "5");
+      assert.equal(typeof out.delete, "function");
+
+      // …while the live cache entry keeps discord.js-owned shapes.
+      assert.ok(cached.mentions.users instanceof Collection);
+      assert.equal(cached.mentions.users.get("854378445940981811").username, "m");
+      assert.ok(cached.attachments instanceof Collection);
+    } finally {
+      client.destroy();
+    }
+  });
+
+  it("the cached entry survives the MESSAGE_UPDATE patch that crashed prod", () => {
+    const { client, cached } = makeRealMessage();
+    const { Collection } = require("discord.js");
+    try {
+      normalizeDiscordMessage(cached);
+
+      // Verbatim prod trigger: a bare edit payload through the real action
+      // (getPayload → _add → existing._patch — the frame that used to throw).
+      const { updated } = client.actions.MessageUpdate.handle({
+        id: "30",
+        channel_id: "20",
+        guild_id: "10",
+        content: "ping <@854378445940981811> (edited)",
+        edited_timestamp: "2026-11-01T07:21:00.000Z",
+      });
+
+      assert.ok(updated, "the edit patch reached handlers (no User._patch throw)");
+      assert.equal(updated.content, "ping <@854378445940981811> (edited)");
+      assert.ok(cached.mentions.users instanceof Collection, "mentions stay djs-shaped");
+      assert.equal(cached.mentions.users.get("854378445940981811").username, "m");
+    } finally {
+      client.destroy();
+    }
+  });
+
+  it("normalizes a minimal partial instance (Partials.Message getPayload shape)", () => {
+    const { client } = makeRealMessage();
+    try {
+      // With Partials.Message enabled, Action.getPayload constructs exactly
+      // this: a Message built from the bare {id, channel_id, guild_id} patch
+      // data. Normalizing one must stay contract-shaped and never throw.
+      const partial = client.channels.cache
+        .get("20")
+        .messages._add({ id: "31", channel_id: "20", guild_id: "10" });
+      const out = normalizeDiscordMessage(partial);
+      assert.equal(out.platform, "discord");
+      assert.equal(out.externalGuildId, "10");
+      assert.ok(Number.isSafeInteger(out.communityId));
+      assert.equal(out.authorId, null);
+      assert.equal(out.content, "");
+      assert.deepEqual(out.mentions, { users: [], roles: [], channels: [], everyone: false });
+    } finally {
+      client.destroy();
+    }
+  });
+
+  it("re-normalizing the clone is idempotent (MessageUpdate pipeline pass)", () => {
+    const { client, cached } = makeRealMessage();
+    try {
+      const once = normalizeDiscordMessage(cached);
+      const twice = normalizeDiscordMessage(once);
+      assert.deepEqual(twice.mentions.users, ["854378445940981811"]);
+      assert.deepEqual(twice.attachments, []);
+      assert.equal(twice.content, once.content);
+    } finally {
+      client.destroy();
+    }
   });
 });
