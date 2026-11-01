@@ -60,6 +60,21 @@ merge **oldest-first**, re-run the starved run of the PR whose turn it is
 proper long-term fix — a GitHub merge queue on `main` — is an admin
 repo-setting decision tracked in #506 (option 1).
 
+### Mock blips and boot retries (#792)
+
+The host-global mock (port 3100 per runner instance) can blip — a restart
+or brief unavailability — while a suite file is starting. The harness does
+NOT give up on the first failure: `createE2eEnv()` waits (~5s grace) on
+`/_mock/health` before provisioning, retries a blipped provision once
+(provisioning is idempotent), and retries `boot()` up to **2** times with
+2s/5s backoff — each retry first waiting for the mock to answer
+`/_mock/health` again. `[e2e] boot() recovered on attempt N/3` lines in
+the job log mean the suite rode through a blip; the run is healthy, not
+flaky. A mock that never comes back still fails fast and specific: the
+initial probe throws the usual "start it with" hint after ~5s, and a boot
+that fails all 3 attempts names the namespace and the attempt count. The
+starved-run rerun SOP above still applies to genuine failures.
+
 ## What the suite covers
 
 | Suite | Namespace | Covers |

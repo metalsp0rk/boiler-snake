@@ -29,6 +29,31 @@ const MOCK_MISSING_HINT =
   "  scripts/e2e/start-mock.sh\n" +
   "(override the address with FAUXCORD_URL)";
 
+// #792: the host-global fauxcord mock (one shared port 3100, serialized
+// runner pool) blips — restarts mid-suite — and a single failed boot used to
+// cancel the whole suite file over it. The harness now waits for the mock to
+// come back and retries boot, while a PERMANENT outage still fails fast
+// (initial health grace ≈ 5s; a mock that never recovers across retries adds
+// only the bounded backoff/health waits below on top).
+const INITIAL_HEALTH_GRACE_MS = 5_000;
+const HEALTH_RECOVERY_WAIT_MS = 4_000; // per retry: wait for /_mock/health
+const BOOT_MAX_RETRIES = 2; // total attempts = BOOT_MAX_RETRIES + 1
+const BOOT_BACKOFF_MS = [2_000, 5_000]; // before retry N (1-based)
+
+/**
+ * Poll `mock.healthy()` until the deadline. Resolves true once the mock
+ * answers /_mock/health, false when the grace elapses (never rejects —
+ * a dead mock is an expected branch here, not a test error).
+ */
+async function waitForHealthy(mock, timeoutMs, { everyMs = 250 } = {}) {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    if (await mock.healthy()) return true;
+    if (Date.now() >= deadline) return false;
+    await new Promise((resolve) => setTimeout(resolve, everyMs));
+  }
+}
+
 /**
  * Create and boot one E2E namespace.
  *
@@ -49,11 +74,37 @@ async function createE2eEnv(options) {
   const ids = namespaceIds(ns);
   const mock = new MockEnv({ base, ids });
 
-  if (!(await mock.healthy())) {
-    throw new Error(`[e2e] ${MOCK_MISSING_HINT}\n(target: ${base})`);
+  // Initial probe with a short grace: a mock mid-restart answers again
+  // within seconds; a permanently absent one still fails fast here with
+  // the usual MOCK_MISSING_HINT copy (#792).
+  if (!(await waitForHealthy(mock, INITIAL_HEALTH_GRACE_MS))) {
+    throw new Error(
+      `[e2e] ${MOCK_MISSING_HINT}\n(target: ${base}, unhealthy for ${INITIAL_HEALTH_GRACE_MS}ms)`,
+    );
   }
 
-  await mock.provision(provisionSpec);
+  // Provisioning is idempotent (MockEnv#provision removes any previous
+  // setup for this token first), so one blip-retry cannot double-provision.
+  try {
+    await mock.provision(provisionSpec);
+  } catch (err) {
+    const first = err?.message || err;
+    console.warn(
+      `[e2e] provision failed (namespace ${ns}): ${first} — ` +
+        "waiting for the mock to recover and retrying once",
+    );
+    if (!(await waitForHealthy(mock, HEALTH_RECOVERY_WAIT_MS))) {
+      console.warn(`[e2e] mock still unhealthy (namespace ${ns}) — retrying provision anyway`);
+    }
+    try {
+      await mock.provision(provisionSpec);
+    } catch (err2) {
+      throw new Error(
+        `[e2e] provision failed after 2 attempts (namespace ${ns}): ${err2?.message || err2} ` +
+          `(first attempt: ${first})`,
+      );
+    }
+  }
 
   // Production env BEFORE requiring anything that opens the DB (repo config
   // reads process.env at require time; dotenv never overrides set values).
@@ -96,10 +147,42 @@ async function createE2eEnv(options) {
   }
 
   const { boot } = require(path.join(REPO_ROOT, "src/platform/boot"));
-  const started = await boot({ featureGateWatchdogMs: 8000 });
+  // Retry contract (#792): a boot where NO endpoint came up leaves nothing
+  // behind to unwind — the feature gate never opened (no feature hooks or
+  // tickers ran), the dead client is destroyed by boot() itself, and the
+  // named shutdown handles are replaced (not stacked) by the next boot().
+  // So a healthy retry is just another boot() — and a still-failing one
+  // keeps the same terminal semantics as before, now with attempts noted.
+  const attempts = BOOT_MAX_RETRIES + 1;
+  let started = null;
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    started = await boot({ featureGateWatchdogMs: 8000 });
+    if (started.ok) {
+      if (attempt > 1) {
+        console.warn(
+          `[e2e] boot() recovered on attempt ${attempt}/${attempts} (namespace ${ns}) — ` +
+            "the mock blipped; continuing",
+        );
+      }
+      break;
+    }
+    if (attempt === attempts) break;
+    const backoffMs = BOOT_BACKOFF_MS[attempt - 1];
+    console.warn(
+      `[e2e] boot() failed against mock (namespace ${ns}, attempt ${attempt}/${attempts}): ` +
+        `${JSON.stringify(started.exitCode)} — backing off ${backoffMs}ms and retrying`,
+    );
+    await new Promise((resolve) => setTimeout(resolve, backoffMs));
+    if (!(await waitForHealthy(mock, HEALTH_RECOVERY_WAIT_MS))) {
+      console.warn(
+        `[e2e] mock still unhealthy (namespace ${ns}, attempt ${attempt}) — retrying boot anyway`,
+      );
+    }
+  }
   if (!started.ok) {
     throw new Error(
-      `[e2e] boot() failed against mock (namespace ${ns}): ${JSON.stringify(started.exitCode)}`,
+      `[e2e] boot() failed against mock (namespace ${ns}) after ${attempts} attempts: ` +
+        `${JSON.stringify(started.exitCode)}`,
     );
   }
   const supervisor = started.supervisor;
