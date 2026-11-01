@@ -73,6 +73,9 @@ describe("commandVisibility", () => {
     // builders register and the router will dispatch on.
     assert.equal(visibilityTier("Report Post"), TIERS.staff);
     assert.equal(visibilityTier("Report User"), TIERS.staff);
+    // #794: "Open ticket for user" — the /ticket for twin rides the same
+    // staff picker posture (the SUBCOMMAND itself stays on the `ticket` tier).
+    assert.equal(visibilityTier("Open ticket for user"), TIERS.staff);
     // #726: the auto-mod referral context menu — same staff posture (the
     // /automod refer SUBCOMMAND rides the `automod` staff tier above; only
     // the top-level menu name needs its own entry).
@@ -94,6 +97,8 @@ describe("commandVisibility", () => {
     assert.ok(names.includes("Report User"));
     // #726: the referral context menu syncs with the same posture.
     assert.ok(names.includes("Refer to automod"));
+    // #794: the proxy-ticket menu syncs with the same posture.
+    assert.ok(names.includes("Open ticket for user"));
     // #725: the staff-tier status command syncs; the admin config command must not.
     assert.ok(names.includes("automod"));
     assert.ok(!names.includes("automodconfig"));
@@ -152,6 +157,16 @@ describe("commandVisibility", () => {
     assert.ok(referMenu, "Refer to automod missing from the default registry");
     assert.equal(referMenu.type, ApplicationCommandType.Message);
     assert.equal(referMenu.default_member_permissions, manageGuild);
+
+    // #794: "Open ticket for user" — USER menu (twin of /ticket for), same
+    // ManageGuild picker as the report user menu.
+    const openForMenu = byName.get("Open ticket for user");
+    assert.ok(
+      openForMenu,
+      "Open ticket for user missing from the default registry",
+    );
+    assert.equal(openForMenu.type, ApplicationCommandType.User);
+    assert.equal(openForMenu.default_member_permissions, manageGuild);
   });
 });
 

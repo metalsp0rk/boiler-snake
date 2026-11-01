@@ -109,6 +109,11 @@ const COMMAND_VISIBILITY = Object.freeze({
   // security source of truth.
   "Report Post": TIERS.staff,
   "Report User": TIERS.staff,
+  // #794: staff proxy-ticket Apps menu — the context-menu twin of the
+  // `/ticket for` SUBCOMMAND (which rides the `ticket` tier above; only the
+  // menu name needs its own entry). Same staff picker posture as the report
+  // menus; key = exact display name from src/features/tickets/commands.js.
+  "Open ticket for user": TIERS.staff,
   // #726 (epic #723): the auto-mod referral context menu — same staff picker
   // posture as the report menus (ManageGuild default + staff_roles allow
   // overwrites after `/staff syncpermissions`; the handler's requireStaff

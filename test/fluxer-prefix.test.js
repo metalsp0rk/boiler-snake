@@ -486,12 +486,16 @@ describe("fluxer/commands — chat-input-only type filter (#745 decision 14)", (
     // The prod leak this filter closes: buildFluxerCommandTree indexed ALL
     // registry commands, so "Report Post"/"Report User" would surface in
     // !help-style listings (dispatch renders help blocks FROM the tree).
+    // #794: "Open ticket for user" joins the skip list — same Discord-native
+    // posture, no !ticket prefix twin (the slash /ticket for arm owns that).
     const tree = buildFluxerCommandTree(registryCommands);
     assert.ok(tree.has("ticket"), "chat-input commands still index");
     assert.ok(!tree.has("report post"));
     assert.ok(!tree.has("report user"));
+    assert.ok(!tree.has("open ticket for user"), "#794 user menu skipped");
     // And they are not prefix commands either.
     assert.equal(parsePrefix("!report post", OPTS), null);
     assert.equal(parsePrefix("!report user", OPTS), null);
+    assert.equal(parsePrefix("!open ticket for user", OPTS), null);
   });
 });

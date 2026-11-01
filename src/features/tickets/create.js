@@ -7,8 +7,10 @@ const {
   claimTicketCreateSlot,
   releaseTicketCreateSlot,
 } = require("../../db");
-const { replyEphemeral } = require("../../core/interaction");
+const { replyEphemeral, safeErrorReply } = require("../../core/interaction");
 const { recordSlashAudit } = require("../../core/auditTrail");
+const { requireStaff } = require("../../core/permissions");
+const { getDiscordOutbound } = require("../../platform/discord/outbound");
 // Discord edge: (platform, instanceKey, snowflake) → integer community id,
 // resolved once per entry point (roadmap/fluxer.md § Repository boundary).
 const { ensureCommunity } = require("../../platform/community");
@@ -302,6 +304,113 @@ async function handleCreateTicketModal(interaction, ctx) {
  * @param {import("../../platform/context").CommandContext} commandCtx
  * @param {object} [ctx]
  */
+/**
+ * Shared staff proxy-ticket pipeline (#794): runs AFTER the caller deferred.
+ * Both the `/ticket for` chat-input arm (handleFor) and the "Open ticket for
+ * user" Apps-menu arm (handleOpenForUserMenu) run this exact core — same
+ * ticket row, overwrites, audit shape, target DM, and success/failure copy.
+ *
+ * Arm-agnostic by construction: everything Discord- or Fluxer-specific
+ * arrives through the params (guild/client only matter to openTicketChannel's
+ * Discord branch; platform/externalGuildId/outbound drive the DM + jump URL).
+ *
+ * @param {object} params
+ * @param {object} params.guild discord.js Guild (Discord branch of openTicketChannel)
+ * @param {object} params.client Discord client (openTicketChannel's own client)
+ * @param {number} params.communityId integer community key resolved at the edge
+ * @param {string} params.actorUserId staff user id (audits + opened_by_staff_id)
+ * @param {{ id: string, bot?: boolean }} params.target member the ticket is opened for
+ * @param {string|null} params.reason optional reason (menus carry none)
+ * @param {string} params.platform "discord" on both arms today (the Fluxer
+ *   chat arm never reaches this core — handleFor answers NOT_ON_FLUXER first)
+ * @param {string} params.externalGuildId guild snowflake for the jump URL
+ * @param {object} params.outbound OutboundClient (fetchGuild/sendDm/webappBaseUrl)
+ * @param {(payload: { content: string, sensitive?: boolean }) => Promise<void>} params.editReply
+ *   reply edit on the calling arm — visibility was already pinned by the
+ *   caller's ephemeral defer, so `sensitive` here is informational.
+ */
+async function openForCore(params) {
+  const {
+    guild,
+    client,
+    communityId,
+    actorUserId,
+    target,
+    reason,
+    platform,
+    externalGuildId,
+    outbound,
+    editReply,
+  } = params;
+
+  try {
+    const { ticket, channel, skippedStaffRoles } = await openTicketChannel({
+      guild,
+      client,
+      creatorUserId: target.id,
+      reason,
+      openedByStaffId: actorUserId,
+      communityId,
+    });
+
+    recordSlashAudit({
+      communityId,
+      actorUserId,
+      action: "tickets.create",
+      targetType: "ticket",
+      targetId: String(ticket.id),
+      details: {
+        ticket_number: ticket.ticket_number,
+        channel_id: channel?.id ?? null,
+        subject_user_id: target.id,
+        reason: reason ?? null,
+      },
+    });
+
+    // Best-effort DM via outbound (log + surface failures — AGENTS.md rule
+    // 3/5). Guild display name through outbound.fetchGuild (cache-first),
+    // same label as the old guild.name.
+    const guildInfo = await outbound.fetchGuild(communityId);
+    const guildName = guildInfo?.name || "this server";
+    // Ticket link is platform-aware (gap #2): the discord.com URL was a
+    // dead link on Fluxer (and auto-embedded a Discord marketing card).
+    // No usable base (null) → the DM names the channel without a link.
+    const ticketLink = buildMessageJumpUrl({
+      platform,
+      guildId: externalGuildId,
+      channelId: channel.id,
+      webappBaseUrl: outbound.webappBaseUrl,
+    });
+    const dm = await outbound.sendDm(target.id, {
+      content:
+        `A support ticket was opened for you in **${guildName}**` +
+        (ticketLink ? `: ${ticketLink}` : " (see the ticket channel listed in the server)."),
+    });
+    let dmNote = "";
+    if (!dm.ok) {
+      console.warn(
+        `[tickets] DM to ${target.id} for ticket ${formatTicketRef(ticket.ticket_number)} failed: ${dm.error}`,
+      );
+      dmNote = `\n_Could not DM the member: ${dm.error}_`;
+    }
+
+    let msg = `Ticket **${formatTicketRef(ticket.ticket_number)}** opened for <@${target.id}>: ${channel}`;
+    if (skippedStaffRoles?.length) {
+      msg += formatStaffRoleAccessNote(skippedStaffRoles);
+    }
+    await editReply({ content: msg + dmNote });
+  } catch (err) {
+    console.error("[tickets] for failed:", err);
+    await editReply({
+      content:
+        err?.code === "BOT_PERMISSIONS" || err?.code === "CHANNEL_CREATE"
+          ? err.message
+          : `Failed to open ticket: ${formatChannelCreateError(err)}`,
+      sensitive: true,
+    });
+  }
+}
+
 async function handleFor(commandCtx, ctx) {
   const target = commandCtx.options.getUser("user", true);
   const reason = commandCtx.options.getString("reason");
@@ -326,74 +435,89 @@ async function handleFor(commandCtx, ctx) {
 
   await commandCtx.defer({ sensitive: true });
 
+  await openForCore({
+    guild: raw.guild,
+    // Helper pipeline takes the raw Discord client (PR 7 cutover: from the
+    // supervisor; raw interactions always carry .client as fallback).
+    client: ctx?.supervisor?.discord || raw.client,
+    communityId: commandCtx.communityId,
+    actorUserId: commandCtx.userId,
+    target,
+    reason,
+    platform: commandCtx.platform,
+    externalGuildId: commandCtx.externalGuildId,
+    outbound: commandCtx.outbound,
+    editReply: (payload) => commandCtx.editReply(payload),
+  });
+}
+
+/**
+ * "Open ticket for user" USER context menu (#794) — right-click a member →
+ * Apps → the context-menu twin of `/ticket for`: staff open a proxy ticket
+ * for the member without typing the subcommand. Gate order mirrors the slash
+ * arm as it runs through dispatch (index.js): requireStaff FIRST, then the
+ * bot-target refusal; a self-target stays allowed exactly like the slash arm
+ * (handleFor has no self gate). The menu carries no options, so `reason` is
+ * null. Discord-only (roadmap § What stays Discord-only): the #750 Fluxer
+ * tree filter skips non-CHAT_INPUT commands — explicit no-parity.
+ *
+ * @param {import("discord.js").UserContextMenuCommandInteraction} interaction
+ * @param {object} [ctx] router context (supervisor resolves the Discord client)
+ */
+async function handleOpenForUserMenu(interaction, ctx) {
   try {
-    const communityId = commandCtx.communityId;
-    const { ticket, channel, skippedStaffRoles } = await openTicketChannel({
-      guild: raw.guild,
-      // Helper pipeline takes the raw Discord client (PR 7 cutover: from the
-      // supervisor; raw interactions always carry .client as fallback).
-      client: ctx?.supervisor?.discord || raw.client,
-      creatorUserId: target.id,
-      reason,
-      openedByStaffId: commandCtx.userId,
-      communityId,
-    });
+    if (!(await requireStaff(interaction))) return;
 
-    recordSlashAudit({
-      communityId,
-      actorUserId: commandCtx.userId,
-      action: "tickets.create",
-      targetType: "ticket",
-      targetId: String(ticket.id),
-      details: {
-        ticket_number: ticket.ticket_number,
-        channel_id: channel?.id ?? null,
-        subject_user_id: target.id,
-        reason: reason ?? null,
-      },
-    });
-
-    // Best-effort DM via outbound (check ok; log + surface failures —
-    // AGENTS.md § Error Handling 3/5). Guild display name through
-    // outbound.fetchGuild (cache-first), same label as the old guild.name.
-    const guild = await commandCtx.outbound.fetchGuild(communityId);
-    const guildName = guild?.name || "this server";
-    // Ticket link is platform-aware (gap #2): the discord.com URL was a
-    // dead link on Fluxer (and auto-embedded a Discord marketing card).
-    // No usable base (null) → the DM names the channel without a link.
-    const ticketLink = buildMessageJumpUrl({
-      platform: commandCtx.platform,
-      guildId: commandCtx.externalGuildId,
-      channelId: channel.id,
-      webappBaseUrl: commandCtx.outbound.webappBaseUrl,
-    });
-    const dm = await commandCtx.outbound.sendDm(target.id, {
-      content:
-        `A support ticket was opened for you in **${guildName}**` +
-        (ticketLink ? `: ${ticketLink}` : " (see the ticket channel listed in the server)."),
-    });
-    let dmNote = "";
-    if (!dm.ok) {
-      console.warn(
-        `[tickets] DM to ${target.id} for ticket ${formatTicketRef(ticket.ticket_number)} failed: ${dm.error}`,
+    // Literal registered target-option name "user" (lowercase) — same
+    // verification as the #745 report arms (UserContextMenuCommandInteraction
+    // → options.getUser('user')).
+    const target = interaction.options?.getUser?.("user") ?? null;
+    if (!target) {
+      await replyEphemeral(
+        interaction,
+        "Could not resolve the member — they may have left the server. Nothing was opened.",
       );
-      dmNote = `\n_Could not DM the member: ${dm.error}_`;
+      return;
     }
 
-    let msg = `Ticket **${formatTicketRef(ticket.ticket_number)}** opened for <@${target.id}>: ${channel}`;
-    if (skippedStaffRoles?.length) {
-      msg += formatStaffRoleAccessNote(skippedStaffRoles);
+    // Mirrors handleFor's bot gate copy verbatim.
+    if (target.bot) {
+      await replyEphemeral(interaction, "Cannot open a ticket for a bot.");
+      return;
     }
-    await commandCtx.editReply({ content: msg + dmNote });
-  } catch (err) {
-    console.error("[tickets] for failed:", err);
-    await commandCtx.editReply({
-      content:
-        err?.code === "BOT_PERMISSIONS" || err?.code === "CHANNEL_CREATE"
-          ? err.message
-          : `Failed to open ticket: ${formatChannelCreateError(err)}`,
-      sensitive: true,
+
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+
+    const externalGuildId = String(interaction.guildId);
+    const communityId = ensureCommunity({
+      platform: "discord",
+      instanceKey: "discord",
+      externalGuildId,
     });
+    const client = ctx?.supervisor?.discord || interaction.client;
+    await openForCore({
+      guild: interaction.guild,
+      client,
+      communityId,
+      actorUserId: interaction.user?.id != null ? String(interaction.user.id) : "",
+      target,
+      reason: null,
+      platform: "discord",
+      externalGuildId,
+      outbound: getDiscordOutbound(client),
+      // Content-only on purpose: the ephemeral defer above already pins
+      // visibility, and toDiscordPayload is off-limits to handlers
+      // (src/platform/discord/context.js). Dropping the core's
+      // informational `sensitive` flag keeps the raw payload Discord-clean.
+      editReply: ({ content }) => interaction.editReply({ content }),
+    });
+  } catch (err) {
+    console.error(
+      "[tickets] open-for menu failed:",
+      `guild=${interaction?.guildId ?? "?"} user=${interaction?.user?.id ?? "?"} cmd=${interaction?.commandName ?? "?"}`,
+      err?.message || err,
+    );
+    await safeErrorReply(interaction);
   }
 }
 
@@ -403,4 +527,5 @@ module.exports = {
   handleOpenTicketButton,
   handleCreateTicketModal,
   handleFor,
+  handleOpenForUserMenu,
 };

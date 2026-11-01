@@ -2,7 +2,7 @@
 
 Private per-server support tickets: members open a channel with staff, staff respond, then **non-sensitive** tickets are closed and **archived** (HTML transcript + summary in a staff channel). **Sensitive** tickets are never content-archived—closing deletes the channel and posts a metadata-only stub.
 
-**On Fluxer:** the ticket *text* subcommands run as prefix commands — `!ticket create reason "…"` works (on Fluxer `reason` is required inline; there is no modal surface), as do `!ticket list`, `!ticket settings`, and the staff config verbs (`setcategory`, `setarchive`, `setratelimit`). What stays Discord-only: the panel system, its buttons and modals, and the ticket-channel lifecycle arms (`for`, `close`, `archive`, `claim`, `transfer`, `adduser`/`removeuser`, `addstaff`/`removestaff`, `sensitive`/`unsensitive`, `info`, `summarize`), and the **Report Post** / **Report User** context menus (right-click → Apps — Discord-native with no `!ticket` equivalent, see [Report flow](#report-flow-context-menu-commands)) — those answer `That command is not available on Fluxer yet.` Opening a ticket channel is an elevated write: on Fluxer it is gated behind the community's `elevated_permissions` flag, and with the flag off the failure reply names the cause. See [Fluxer instances](fluxer.md).
+**On Fluxer:** the ticket *text* subcommands run as prefix commands — `!ticket create reason "…"` works (on Fluxer `reason` is required inline; there is no modal surface), as do `!ticket list`, `!ticket settings`, and the staff config verbs (`setcategory`, `setarchive`, `setratelimit`). What stays Discord-only: the panel system, its buttons and modals, and the ticket-channel lifecycle arms (`for`, `close`, `archive`, `claim`, `transfer`, `adduser`/`removeuser`, `addstaff`/`removestaff`, `sensitive`/`unsensitive`, `info`, `summarize`), and the **Report Post** / **Report User** context menus (right-click → Apps — Discord-native with no `!ticket` equivalent, see [Report flow](#report-flow-context-menu-commands)) plus the **#794 Open ticket for user** member menu (see [Staff proxy ticket](#staff-proxy-ticket-open-ticket-for-user-menu)) — those answer `That command is not available on Fluxer yet.` Opening a ticket channel is an elevated write: on Fluxer it is gated behind the community's `elevated_permissions` flag, and with the flag off the failure reply names the cause. See [Fluxer instances](fluxer.md).
 
 ## How it works
 
@@ -120,7 +120,7 @@ Without an API key, archives use a stats + close-reason fallback summary. The sa
 
 | Command | Description |
 |---------|-------------|
-| `/ticket for user [reason]` | Open a ticket for a member (not rate-limited) |
+| `/ticket for user [reason]` | Open a ticket for a member (not rate-limited). Apps-menu twin: right-click the member → **Apps → Open ticket for user** (#794, Discord-only) — see [Staff proxy ticket](#staff-proxy-ticket-open-ticket-for-user-menu) |
 | `/ticket claim` | Become staff owner (in ticket channel) |
 | `/ticket transfer staff` | Reassign staff owner |
 | `/ticket adduser` / `removeuser` | Member participants |
@@ -134,6 +134,7 @@ Without an API key, archives use a stats + close-reason fallback summary. The sa
 | `/ticket summarize` | On-demand AI summary of the current ticket conversation (open or soft-closed, pre-archive). Without `AI_API_KEY` (or if the API is unreachable) it replies with a stats-only fallback and says so |
 | **Report Post** (right-click a message → Apps) | Staff-only report ticket with the message captured as evidence; optional delete of the original **after** the evidence posts (Discord-only) — [Report flow](#report-flow-context-menu-commands) |
 | **Report User** (right-click a member → Apps) | Staff-only report ticket with a reported-user card; never deletes anything (Discord-only) — [Report flow](#report-flow-context-menu-commands) |
+| **Open ticket for user** (right-click a member → Apps) | Staff proxy ticket: opens a ticket FOR the member exactly like `/ticket for` — DM, audit, `opened_by_staff_id` included (Discord-only) — [Staff proxy ticket](#staff-proxy-ticket-open-ticket-for-user-menu) |
 
 Lifecycle commands work **inside the ticket channel** even if command-channel restrictions are set.
 
@@ -215,7 +216,17 @@ Context menus are **Discord-native** — there is no `!ticket report` twin, and 
 
 ### Deploy
 
-Re-run `npm run register` after deploying: registration PUTs the command list **per guild** (there is no global-registration path; `DEV_GUILD_ID` narrows it to one guild while developing), so **Report Post / Report User** stay invisible in Discord's Apps submenu until pushed.
+Re-run `npm run register` after deploying: registration PUTs the command list **per guild** (there is no global-registration path; `DEV_GUILD_ID` narrows it to one guild while developing), so **Report Post / Report User** and **#794 Open ticket for user** stay invisible in Discord's Apps submenu until pushed.
+
+## Staff proxy ticket ("Open ticket for user" menu)
+
+Staff right-click a **member** → Apps → **Open ticket for user** (#794): the Discord-native context-menu twin of `/ticket for`, for opening a ticket *for* a member without typing the subcommand. No options, no modal — the invoke runs the slash arm's pipeline directly: the ticket channel opens with the member as requester and the invoking staff recorded as `opened_by_staff_id` (immediate named access), the audit row carries `tickets.create` with `subject_user_id`, and the member gets the same "A support ticket was opened for you in **Server**" DM with the ticket link. The staff reply is the same ephemeral confirmation: `Ticket **#12** opened for <@member>: <#ticket-channel>`.
+
+Refused up front (ephemeral, nothing opened): a non-staff invoker gets the standard denial; an unresolvable member (left the server) gets `Could not resolve the member — they may have left the server. Nothing was opened.`; a bot target gets `Cannot open a ticket for a bot.` — all identical gates/copy to `/ticket for`. Opening one for YOURSELF is allowed exactly like the slash arm. The Apps menu has no `reason` option (context menus carry none) — need one? Use `/ticket for user:` instead; the rest is byte-identical.
+
+Registers at the **staff picker tier** like the report menus: Manage Server default hides the entry from regulars, `/staff syncpermissions` pushes `staff_roles` allow overwrites ([Staff roles](staff-roles.md)); the handler re-checks the staff gate on every invoke — the picker tier is cosmetic, the handler is the source of truth.
+
+**Fluxer: explicit no-parity.** Context menus are Discord-native; the Fluxer command tree filter (#750) keeps this menu out of `!help` listings, and there is no prefix twin. `/ticket for` is itself Discord-only on Fluxer (`That command is not available on Fluxer yet.` — same roadmap § "What stays Discord-only" entry), so staff proxy-ticketing has no Fluxer path by design. See [Fluxer instances](fluxer.md).
 
 ## Sensitive tickets
 
