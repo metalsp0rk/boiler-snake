@@ -19,7 +19,7 @@ const features = require("../src/features");
 after(cleanup);
 
 describe("command definitions via registry", () => {
-  it("exports 40 slash commands + 3 context menus with unique names", () => {
+  it("exports 40 slash commands + 4 context menus with unique names", () => {
     const { commands } = buildDefaultRegistry();
     // #745: 37 slash builders + "Report Post"/"Report User" context menus.
     // #725: + /automod and /automodconfig (auto-moderation epic #723).
@@ -27,7 +27,9 @@ describe("command definitions via registry", () => {
     // SUBCOMMAND of the existing /automod builder — top-level count moves
     // only by the one menu).
     // #771: + /set-moderation-queue (admin alias over the automod channel).
-    assert.equal(commands.length, 43);
+    // #794: + "Open ticket for user" context menu (twin of the EXISTING
+    // /ticket for subcommand — one new top-level menu, no new slash).
+    assert.equal(commands.length, 44);
     const names = commands.map((c) => c.name);
     assert.equal(new Set(names).size, names.length);
     assert.ok(names.includes("eventreminder"));
@@ -63,6 +65,8 @@ describe("command definitions via registry", () => {
     assert.ok(names.includes("Report User"));
     // #726: auto-mod referral context menu (exact display name).
     assert.ok(names.includes("Refer to automod"));
+    // #794: staff proxy-ticket context menu (twin of /ticket for).
+    assert.ok(names.includes("Open ticket for user"));
     // #725: auto-moderation settings + config commands.
     assert.ok(names.includes("automod"));
     assert.ok(names.includes("automodconfig"));
@@ -86,8 +90,15 @@ describe("buildDefaultRegistry", () => {
     // message/user only exists there); they must NOT be flagged "context".
     // #726: "Refer to automod" the same — options.getMessage() is the only
     // way to reach the referred message.
+    // #794: "Open ticket for user" the same — options.getUser("user") is the
+    // only way to reach the menu target.
     const registry = buildDefaultRegistry();
-    for (const name of ["Report Post", "Report User", "Refer to automod"]) {
+    for (const name of [
+      "Report Post",
+      "Report User",
+      "Refer to automod",
+      "Open ticket for user",
+    ]) {
       assert.equal(typeof registry.getHandler(name), "function", name);
       assert.equal(registry.getHandlerApi(name), "interaction", name);
     }

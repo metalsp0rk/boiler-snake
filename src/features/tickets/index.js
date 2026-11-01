@@ -11,6 +11,9 @@
  *          (the two tk:rep:* arms are the #745 Report Post / Report User submits)
  * Context menus (#745): "Report Post" / "Report User" invoke handlers
  *          snapshot the target and show tk:rep:m:<token> / tk:rep:u:<token>
+ * Context menus (#794): "Open ticket for user" — staff proxy ticket from
+ *          the member Apps submenu; runs the /ticket for core directly
+ *          (no modal), same gates, audit, and DM as the slash arm
  */
 
 const { Events } = require("discord.js");
@@ -44,6 +47,7 @@ const {
   handleFor,
   handleOpenTicketButton,
   handleCreateTicketModal,
+  handleOpenForUserMenu,
 } = require("./create");
 const {
   handleReportMessage,
@@ -196,13 +200,18 @@ module.exports = {
     // handlers to the interaction arm.
     "Report Post": handleReportMessage,
     "Report User": handleReportUser,
+    // #794: staff proxy-ticket menu — the context-menu twin of `/ticket for`.
+    // Interaction api for the same reason as the report menus: the target
+    // user only exists on the raw interaction (options.getUser("user")).
+    "Open ticket for user": handleOpenForUserMenu,
   },
   // Router API flag (roadmap/fluxer.md § Handler migration rule): the slash
   // handler receives a CommandContext. Button/modal arms (tk:open, tk:sn,
   // tk:create, tk:snm) stay on the raw interaction — roadmap
-  // § What stays Discord-only. "Report Post" / "Report User" (#745) are
-  // deliberately absent: context-menu invokes keep the default "interaction"
-  // api — the target only exists on the raw interaction.
+  // § What stays Discord-only. "Report Post" / "Report User" (#745) and
+  // "Open ticket for user" (#794) are deliberately absent: context-menu
+  // invokes keep the default "interaction" api — the target only exists on
+  // the raw interaction.
   handlerApi: {
     ticket: "context",
   },

@@ -280,6 +280,16 @@ Replies are ephemeral; the confirmation is `Ticket **#12** opened: <#ticket-chan
 
 **Deploy**: re-run `npm run register` after deploy — registration PUTs commands **per guild** (no global path), so the new Apps entries stay invisible until pushed.
 
+### "Open ticket for user" - Staff proxy ticket (user context menu, staff)
+
+Discord **context-menu** command — no slash. Open via **right-click (long-press) → Apps → Open ticket for user** on a member: the context-menu twin of the `/ticket for` subcommand (#794). No options and no modal — the invoke runs the slash arm's pipeline directly: the member is the requester, the invoking staff is `opened_by_staff_id` (immediate named access + audit `subject_user_id`), and the member gets the standard "ticket opened for you" DM with the ticket link. Ephemeral confirmation: `Ticket **#12** opened for <@member>: <#ticket-channel>`.
+
+Refusals (ephemeral, nothing opened): non-staff invoker — standard denial; unresolvable member — `Could not resolve the member — they may have left the server. Nothing was opened.`; bot target — `Cannot open a ticket for a bot.` A self-target is allowed exactly like `/ticket for`. The menu carries no `reason` option — use `/ticket for user: reason:` when one is needed.
+
+**Permission**: staff-tier picker — **Manage Server** default hides the entry from regulars; `/staff syncpermissions` adds allow overwrites for configured `staff_roles` (the handler re-checks the staff gate on every invoke — that gate is the source of truth). Discord-only — Fluxer is explicit no-parity (the `/ticket for` arm is itself Discord-only). Full flow: [Staff proxy ticket](../tickets.md#staff-proxy-ticket-open-ticket-for-user-menu).
+
+**Deploy**: re-run `npm run register` after deploy (per-guild PUTs — the Apps entry stays invisible until pushed).
+
 ### `/settings` - Show Guild Configuration
 
 Display current XP rates, decay settings, role mappings, and allowed command channels.
@@ -1589,6 +1599,7 @@ the handler; Discord-only (Fluxer answers the standard not-yet line). See
 | `/userinfo` **Activity** tab | Senior staff | Yes |
 | `/ticket for\|claim\|transfer\|adduser\|removeuser\|addstaff\|removestaff\|sensitive\|unsensitive\|close\|archive\|list\|info\|summarize` | Staff gate | Yes |
 | Report Post / Report User (message / user **context menus**, right-click → Apps) | Staff gate (staff-tier picker: Manage Server default + `staff_roles` overwrites after `/staff syncpermissions`) | Yes |
+| `Open ticket for user` (user **context menu**, right-click → Apps, #794) | Staff gate (staff-tier picker: Manage Server default + `staff_roles` overwrites after `/staff syncpermissions`) | Yes |
 | `/staff role list` | Staff gate | Yes |
 | `/staff settings` | Staff gate | Yes |
 | `/staffsettings roles\|overview` | Staff gate | Yes |
@@ -1705,6 +1716,7 @@ STAFF GATE (Manage Server OR any staff role):
 /ticket sensitive|unsensitive|close|archive
 /ticket panel create|list|edit|delete | setcategory|setarchive|setratelimit
 "Report Post" / "Report User"  → Right-click message/member → Apps (staff report ticket)
+"Open ticket for user"         → Right-click member → Apps (staff proxy ticket, twin of /ticket for, #794)
 "Refer to automod"             → Right-click message → Apps (record automod case A-n, staff, #726)
 /bridge create|connect|disconnect|retry|status|list → Cross-platform channel bridge (staff)
 /staff role list | /staff settings

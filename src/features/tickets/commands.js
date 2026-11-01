@@ -362,6 +362,17 @@ const commands = [
     .setName("Report User")
     .setType(ApplicationCommandType.User)
     .setDefaultMemberPermissions(staffPerms),
+  // #794: right-click member → Apps → "Open ticket for user" — the
+  // context-menu twin of the `/ticket for` subcommand (staff proxy ticket,
+  // no reason option: the menu carries none). Same staff-picker posture as
+  // the report menus; the display name is byte-identical across this builder,
+  // the visibility map, and the feature handlers key (create.js
+  // handleOpenForUserMenu is the handler; its requireStaff gate stays the
+  // security source of truth).
+  new ContextMenuCommandBuilder()
+    .setName("Open ticket for user")
+    .setType(ApplicationCommandType.User)
+    .setDefaultMemberPermissions(staffPerms),
 ];
 
 module.exports = { commands };
