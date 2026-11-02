@@ -29,10 +29,15 @@ describe("command definitions via registry", () => {
     // #771: + /set-moderation-queue (admin alias over the automod channel).
     // #794: + "Open ticket for user" context menu (twin of the EXISTING
     // /ticket for subcommand — one new top-level menu, no new slash).
-    assert.equal(commands.length, 44);
+    // #772: + /ban, /bannotify and the "Ban member" context menu
+    // (ban lifecycle: two new slashes + one menu).
+    assert.equal(commands.length, 47);
     const names = commands.map((c) => c.name);
     assert.equal(new Set(names).size, names.length);
     assert.ok(names.includes("eventreminder"));
+    assert.ok(names.includes("ban"), "#772 staff ban surface");
+    assert.ok(names.includes("bannotify"), "#772 ban notification toggles");
+    assert.ok(names.includes("Ban member"), "#772 ban context menu");
     // /event split (APPLICATION_COMMAND_TOO_LARGE): all four names registered.
     assert.ok(names.includes("event"));
     assert.ok(names.includes("eventsignup"));
@@ -145,6 +150,9 @@ describe("buildDefaultRegistry", () => {
       // #725: auto-moderation status + config ride the CommandContext arm.
       "automod",
       "automodconfig",
+      // #772: staff ban surface + notification toggles ride the same arm.
+      "ban",
+      "bannotify",
     ];
     for (const name of migrated) {
       assert.equal(registry.getHandlerApi(name), "context", name);
@@ -187,6 +195,8 @@ describe("buildDefaultRegistry", () => {
       "commandPermissions",
       "staffNotes",
       "warnings",
+      // #772: ban lifecycle (records, lifecycle DMs, auto-unban ticker).
+      "banLifecycle",
       "userinfo",
       "userActivity",
       "retention",
@@ -202,7 +212,7 @@ describe("buildDefaultRegistry", () => {
     ]) {
       assert.ok(names.includes(expected), `missing feature ${expected}`);
     }
-    assert.equal(features.length, 29);
+    assert.equal(features.length, 30);
   });
 
   it("registers userinfo button handler", () => {
