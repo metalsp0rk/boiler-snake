@@ -91,6 +91,18 @@ function normalizeGorkFlag(value) {
 }
 
 /**
+ * Coerce a ban-lifecycle notice toggle (#772 `ban_dm` / `welcome_back_dm`)
+ * to a 0/1 integer (same tri-state as normalizeGorkFlag: only an explicit
+ * off — false / 0 / "0" / "off" — turns a notice off, so a stray "off"
+ * string can never land as truthy TEXT under the readers'
+ * `Number(x ?? 1) !== 0` idiom).
+ */
+function normalizeBanNotifyFlag(value) {
+  if (value === false || value === 0 || value === "0" || value === "off") return 0;
+  return 1;
+}
+
+/**
  * Normalize the community-default gork daily budget (roadmap §7.17.2, decision
  * 31): tri-state integer clamped to -1..1000. -1 = blocked (kill switch),
  * 0 = unlimited (the default — the feature is opt-in), 1..1000 = successful
@@ -244,6 +256,12 @@ function updateGuildSettings(communityId, patch) {
     "warn_dm_members",
     "warn_log_channel_id",
     "warn_expiry_days",
+    // Ban lifecycle notices (#772, migration 074) — same DM-toggle family as
+    // warn_dm_members, default ON (non-destructive notices). The write-belt
+    // below normalizes any reasonable on/off input to 0/1; readers use the
+    // `Number(s.ban_dm ?? 1) !== 0` idiom.
+    "ban_dm",
+    "welcome_back_dm",
     "ticket_category_id",
     "ticket_archive_channel_id",
     "ticket_rate_limit_minutes",
@@ -410,6 +428,12 @@ function updateGuildSettings(communityId, patch) {
   // the column (same tri-state as normalizeGorkKeyword).
   if (safePatch.automod_enabled !== undefined) {
     safePatch.automod_enabled = safePatch.automod_enabled ? 1 : 0;
+  }
+  if (safePatch.ban_dm !== undefined) {
+    safePatch.ban_dm = normalizeBanNotifyFlag(safePatch.ban_dm);
+  }
+  if (safePatch.welcome_back_dm !== undefined) {
+    safePatch.welcome_back_dm = normalizeBanNotifyFlag(safePatch.welcome_back_dm);
   }
   if (typeof safePatch.automod_rules === "string") {
     safePatch.automod_rules = safePatch.automod_rules.slice(0, AUTOMOD_RULES_MAX_LEN);

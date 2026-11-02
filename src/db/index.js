@@ -45,6 +45,7 @@ const fluxerOAuthTransactions = require("./repositories/fluxerOAuthTransactions"
 const bridges = require("./repositories/bridges");
 const userLinks = require("./repositories/userLinks");
 const events = require("./repositories/events");
+const banRecords = require("./repositories/banRecords");
 
 module.exports = {
   db,
@@ -699,4 +700,27 @@ module.exports = {
   recordEventCrosspostMessage: events.recordEventCrosspostMessage,
   listEventCrosspostMessagesForEvent: events.listEventCrosspostMessagesForEvent,
   deleteEventCrosspostMessagesForEvent: events.deleteEventCrosspostMessagesForEvent,
+
+  // ban lifecycle (#772, migration 074: ban_records + ban_dm/welcome_back_dm
+  // toggles). One row per ban cycle; the expiry ticker claims unbans, the
+  // unban/rejoin events settle them. Append-only status machine — #773 keys
+  // appeals `appeal:<record.id>` on these stable ids.
+  BAN_RECORD_STATUSES: banRecords.BAN_RECORD_STATUSES,
+  BAN_SOURCES: banRecords.BAN_SOURCES,
+  MAX_BAN_REASON: banRecords.MAX_BAN_REASON,
+  UNBAN_CLAIM_LEASE_MS: banRecords.UNBAN_CLAIM_LEASE_MS,
+  nextBanNumber: banRecords.nextBanNumber,
+  createBanRecord: banRecords.createBanRecord,
+  getBanRecord: banRecords.getBanRecord,
+  findActiveBanRecord: banRecords.findActiveBanRecord,
+  listDueExpiredBans: banRecords.listDueExpiredBans,
+  listReconcilableActiveBans: banRecords.listReconcilableActiveBans,
+  claimUnban: banRecords.claimUnban,
+  finalizeUnban: banRecords.finalizeUnban,
+  markUnbannedManual: banRecords.markUnbannedManual,
+  claimWelcome: banRecords.claimWelcome,
+  markPendingRejoin: banRecords.markPendingRejoin,
+  markWelcomed: banRecords.markWelcomed,
+  recordBanDmSent: banRecords.recordBanDmSent,
+  recordWelcomeDmSent: banRecords.recordWelcomeDmSent,
 };

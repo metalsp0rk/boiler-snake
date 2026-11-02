@@ -563,6 +563,10 @@ function createGuild(opts = {}) {
   // #737: guild.members.kick() collector (automod kick tool via the
   // platform outbound's kickMember helper) — same buffer law as bans.
   const kicks = [];
+  // #772: guild.members.unban() collector (ban lifecycle via the platform
+  // outbound's unbanMember helper) — same buffer law as bans/kicks: stable
+  // array identity, push-only (integration tests clear it with length = 0).
+  const unbans = [];
   const voiceStates = new Map();
   let roleSeq = 1;
 
@@ -594,6 +598,58 @@ function createGuild(opts = {}) {
       kick: async (userId, kickOpts) => {
         kicks.push({ userId, ...kickOpts });
         return { userId };
+      },
+      // v14.27 GuildMemberManager#unban(user, reason) → GuildBanManager#remove:
+      // always REST, no cache pre-check. DELETE on an already-unbanned user
+      // is 404 Unknown Ban (10026) — NOT idempotent (mockFidelity #449 law:
+      // the mock must reject where real discord.js rejects) — so an unknown
+      // id throws the DiscordAPIError shape instead of silently succeeding.
+      unban: async (userId, reason) => {
+        const unbanUserId = String(userId);
+        const idx = bans.findIndex((b) => String(b.userId) === unbanUserId);
+        if (idx === -1) {
+          throw Object.assign(new Error("DiscordAPIError[10026]: Unknown Ban"), {
+            code: 10026,
+            status: 404,
+          });
+        }
+        bans.splice(idx, 1);
+        unbans.push({ user: { id: unbanUserId }, reason: reason ?? null });
+        // Real unban resolves User|null (null even on SUCCESS) — nothing
+        // sane keys off it; return the User-ish id form.
+        return { id: unbanUserId };
+      },
+    },
+    // #772 minimal GuildBanManager read surface over the same _bans store
+    // (verified v14.27: NO fanOut()/fetchCache — fetch(user) throws 10026 on
+    // miss, fetch({limit}) is ONE bounded page, default limit 1000).
+    bans: {
+      fetch: async (arg) => {
+        const toGuildBan = (entry) => ({
+          guild,
+          user: { id: String(entry.userId), bot: false },
+          reason: entry.reason ?? null,
+          partial: false,
+        });
+        const single = typeof arg === "string" ? arg : arg?.user;
+        if (single != null) {
+          const entry = bans.find((b) => String(b.userId) === String(single));
+          if (!entry) {
+            throw Object.assign(new Error("DiscordAPIError[10026]: Unknown Ban"), {
+              code: 10026,
+              status: 404,
+            });
+          }
+          return toGuildBan(entry);
+        }
+        const rawLimit = Number(arg?.limit);
+        const limit =
+          Number.isFinite(rawLimit) && rawLimit > 0 ? Math.floor(rawLimit) : 1000;
+        const out = asCollectionLike(new Map());
+        for (const entry of bans.slice(0, limit)) {
+          out.set(String(entry.userId), toGuildBan(entry));
+        }
+        return out;
       },
     },
     channels: {
@@ -674,6 +730,7 @@ function createGuild(opts = {}) {
     },
     _bans: bans,
     _kicks: kicks,
+    _unbans: unbans,
     addMember(member) {
       membersById.set(member.id, member);
       return member;

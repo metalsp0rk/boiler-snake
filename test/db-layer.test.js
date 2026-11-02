@@ -122,7 +122,7 @@ describe("db layer", () => {
     const { runMigrations } = require("../src/db/migrate");
     api.db.pragma("user_version = 0"); // #202 guard: force the FULL replay, not the fast-skip
     assert.doesNotThrow(() => runMigrations());
-    assert.equal(Number(api.db.pragma("user_version", { simple: true })), 73);
+    assert.equal(Number(api.db.pragma("user_version", { simple: true })), 74);
   });
 
   describe("gork settings (migration 021 + clamps)", () => {
@@ -627,6 +627,67 @@ describe("db layer", () => {
     });
   });
 
+  describe("ban lifecycle notice toggles (migration 074 + #772)", () => {
+    it("074_ban_lifecycle is registered and lands ban_records with both belts", () => {
+      const { migrations } = require("../src/db/migrate");
+      assert.ok(
+        migrations.some((m) => m.id === "074_ban_lifecycle"),
+        "074_ban_lifecycle must be registered in migrate.js"
+      );
+      const table = api.db
+        .prepare(
+          `SELECT name FROM sqlite_master WHERE type='table' AND name='ban_records'`
+        )
+        .get();
+      assert.ok(table, "ban_records table must exist");
+      for (const idx of ["uq_ban_records_number", "uq_ban_records_active"]) {
+        assert.ok(
+          api.db
+            .prepare(
+              `SELECT name FROM sqlite_master WHERE type='index' AND name=?`
+            )
+            .get(idx),
+          `${idx} must exist (B-n allocation belt / one-active-ban belt)`
+        );
+      }
+      const cols = new Set(
+        api.db.prepare(`PRAGMA table_info(guild_settings)`).all().map((c) => c.name)
+      );
+      assert.ok(cols.has("ban_dm"), "missing column: ban_dm");
+      assert.ok(cols.has("welcome_back_dm"), "missing column: welcome_back_dm");
+    });
+
+    it("fresh guild row defaults both notice toggles to 1 (default ON)", () => {
+      const s = api.getGuildSettings(communityKey("g-ban-notify-fresh"));
+      assert.equal(s.ban_dm, 1);
+      assert.equal(s.welcome_back_dm, 1);
+    });
+
+    it("ban_dm / welcome_back_dm coerce to 0/1, persist, and preserve siblings", () => {
+      const g = communityKey("g-ban-notify-toggle");
+      api.updateGuildSettings(g, { warn_dm_members: 0 });
+      const expectFlag = (key, value, expected) => {
+        const s = api.updateGuildSettings(g, { [key]: value });
+        assert.equal(s[key], expected, `${key} ${String(value)} -> ${expected}`);
+      };
+      expectFlag("ban_dm", 0, 0);
+      expectFlag("ban_dm", "off", 0);
+      expectFlag("ban_dm", false, 0);
+      expectFlag("ban_dm", 1, 1);
+      expectFlag("ban_dm", "on", 1);
+      expectFlag("welcome_back_dm", "off", 0);
+      expectFlag("welcome_back_dm", true, 1);
+      api.updateGuildSettings(g, { ban_dm: 0 });
+      const s = api.getGuildSettings(g);
+      assert.equal(s.ban_dm, 0, "value must persist across reads");
+      assert.equal(
+        s.warn_dm_members,
+        0,
+        "ban toggles must not clobber the warn DM sibling"
+      );
+    });
+  });
+
   describe("facade export shape (audit P2, #207)", () => {
     // The facade surface is repository functions plus this explicit set of
     // constants/handles. A typo'd mapping silently exports `undefined` —
@@ -674,6 +735,10 @@ describe("db layer", () => {
       "AUTOMOD_REFER_CONTEXT_MAX_LEN", // #771: required-context cap (1000)
       "AUTOMOD_ACTION_STATES", // #729: automod_case_actions row state machine
       "AUTOMOD_CONSIDERED_STATES", // #731: every recorded state counts as considered
+      "BAN_RECORD_STATUSES", // #772: ban_records status vocabulary (074) — append-only machine
+      "BAN_SOURCES", // #772: staff | automod ban provenance
+      "MAX_BAN_REASON", // #772: ban reason cap (1000)
+      "UNBAN_CLAIM_LEASE_MS", // #772: steal window for a crashed auto-unban claim
     ]);
 
     it("exports no undefined value", () => {
