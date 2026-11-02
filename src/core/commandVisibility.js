@@ -102,6 +102,12 @@ const COMMAND_VISIBILITY = Object.freeze({
   // ban/welcome DM fires, so they are admin config, not staff config.
   ban: TIERS.admin,
   bannotify: TIERS.admin,
+  // #773: `/banappeals` rides the same admin posture as `/ban` + `/bannotify`
+  // — its toggle decides whether EVERY tracked ban DM carries the Appeal
+  // button and files staff tickets, so it is admin config, not staff config
+  // (ManageGuild picker, NO staff_roles allow overwrites; the handler's
+  // requireAdminFromContext stays the security source of truth).
+  banappeals: TIERS.admin,
   // #599: read-only twin of `/staff role list` + `/staff settings` (roles |
   // overview) so junior/senior staff can check their own staff-role status
   // and the staff settings without Manage Server. Handler gate is the staff

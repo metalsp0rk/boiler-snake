@@ -252,6 +252,30 @@ function getAppealByTicketChannel(communityId, ticketChannelId) {
 }
 
 /**
+ * The appeal bound to a ban cycle (intake ALREADY_FILED read, #773 §1: one
+ * appeal per cycle means AT MOST one row — the UNIQUE(ban_record_id) belt
+ * from 075 is the schema truth this read rides). Community-scoped by design
+ * like getAppealByTicketChannel: every caller resolves its community first
+ * (the guildless intake resolves it through the ban record).
+ *
+ * @param {number} communityId
+ * @param {number|string} banRecordId stable ban_records id
+ * @returns {object|null}
+ */
+function getAppealByBanRecord(communityId, banRecordId) {
+  assertCommunityId(communityId);
+  const { id } = banRecordIdOrError(banRecordId);
+  if (!id) return null;
+  return (
+    db
+      .prepare(
+        `SELECT * FROM ban_appeals WHERE community_id=? AND ban_record_id=?`,
+      )
+      .get(communityId, id) || null
+  );
+}
+
+/**
  * Attach the staff ticket channel (first attach wins — an appeal gets
  * exactly one ticket; a racing second attach reads `won:false` plus the LIVE
  * row and keeps the channel that is actually on the record).
@@ -480,6 +504,7 @@ module.exports = {
   MAX_DENIAL_REASON,
   fileAppeal,
   getAppealById,
+  getAppealByBanRecord,
   getAppealByTicketChannel,
   attachAppealTicketChannel,
   openAppeal,

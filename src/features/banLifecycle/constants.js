@@ -8,9 +8,11 @@
  *
  * customId grammar follows the tickets/automod prefix convention (the router
  * matches the longest registered prefix); the `bl:` namespace is ban-
- * lifecycle-only. #773 (appeals) adds its own `bl:appeal:`-prefixed ids
- * beside these — the ban DM already accepts a components pass-through
- * (dmCopy.buildBanDm) so that button needs no copy change.
+ * lifecycle-only. #773 (appeals) lives OUTSIDE it with its own grammar: the
+ * guildless DM lane `appeal:<banRecordId>` / `appeal:s:<banRecordId>` and
+ * the in-ticket `ap:*` family (see src/features/banAppeals/constants.js —
+ * the ban DM already accepts a components pass-through (dmCopy.buildBanDm)
+ * so the appeal button needs no copy change here).
  */
 
 /* ── Command surface ──────────────────────────────────────────────────────── */

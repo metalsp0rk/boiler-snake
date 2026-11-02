@@ -38,7 +38,8 @@ describe("commandVisibility", () => {
   let registeredNames;
 
   /**
-   * Registry payloads merged with the #772 banLifecycle builders.
+   * Registry payloads merged with the #772 banLifecycle + #773 banAppeals
+   * builders.
    *
    * The /ban + /bannotify + "Ban member" builders and their visibility
    * tiers land in the command-surface subtask; the feature's registration
@@ -50,16 +51,20 @@ describe("commandVisibility", () => {
    * default registry itself and the name-dedupe below makes this merge a
    * no-op — the assertion only ever tightens.
    *
+   * #773: /banappeals (src/features/banAppeals/commands.js) merges in the
+   * same way — its boot wiring lands with the appeals feature subtask.
+   *
    * @returns {object[]} toJSON-normalized command payloads (unique names)
    */
   function mergedCommandPayloads() {
     const { buildDefaultRegistry } = require("../src/commands/registry");
     const { commands: banBuilders } = require("../src/features/banLifecycle/commands");
+    const { commands: appealBuilders } = require("../src/features/banAppeals/commands");
     const payloads = buildDefaultRegistry().commands.map((c) =>
       typeof c.toJSON === "function" ? c.toJSON() : c
     );
     const seen = new Set(payloads.map((c) => c.name));
-    for (const builder of banBuilders) {
+    for (const builder of [...banBuilders, ...appealBuilders]) {
       const json = builder.toJSON();
       if (!seen.has(json.name)) {
         payloads.push(json);
@@ -119,6 +124,10 @@ describe("commandVisibility", () => {
     assert.equal(visibilityTier("ban"), TIERS.admin);
     assert.equal(visibilityTier("bannotify"), TIERS.admin);
     assert.equal(visibilityTier("Ban member"), TIERS.admin);
+    // #773: /banappeals rides the same admin posture as /ban + /bannotify —
+    // its toggle gates whether every tracked ban DM carries the Appeal
+    // button, so it is admin config, not staff config.
+    assert.equal(visibilityTier("banappeals"), TIERS.admin);
   });
 
   it("staff sync list excludes public and admin", () => {
@@ -148,6 +157,9 @@ describe("commandVisibility", () => {
     assert.ok(!names.includes("ban"));
     assert.ok(!names.includes("bannotify"));
     assert.ok(!names.includes("Ban member"));
+    // #773: same exclusion for the appeals toggle (admin-tier, like the
+    // ban surface whose DM it gates).
+    assert.ok(!names.includes("banappeals"));
     assert.ok(isStaffSyncCommand("activityconfig"));
     assert.ok(!isStaffSyncCommand("leaderboard"));
   });

@@ -736,6 +736,7 @@ module.exports = {
   MAX_DENIAL_REASON: banAppeals.MAX_DENIAL_REASON,
   fileAppeal: banAppeals.fileAppeal,
   getAppealById: banAppeals.getAppealById,
+  getAppealByBanRecord: banAppeals.getAppealByBanRecord,
   getAppealByTicketChannel: banAppeals.getAppealByTicketChannel,
   attachAppealTicketChannel: banAppeals.attachAppealTicketChannel,
   openAppeal: banAppeals.openAppeal,
