@@ -978,6 +978,103 @@ function createDiscordOutbound(client) {
     },
 
     /**
+     * Mint a PERMANENT, unlimited-use invite to one guild channel (#773 ban
+     * appeals: the clemency outcome DMs this to the returning user). Discord
+     * only by contract — the Fluxer outbound has no createInvite surface and
+     * none is added there; #773 recorded the explicit NO-PARITY decision
+     * (appeal re-entry invites are a Discord-only affordance).
+     *
+     * Verified discord.js 14.27 contract (BaseGuildTextChannel#createInvite →
+     * guild.invites.create → POST /channels/{id}/invites): the REST DEFAULT
+     * for max_age is 86400, so an EXPLICIT maxAge: 0 is mandatory for a
+     * permanent invite; maxUses: 0 means unlimited; unique: false REUSES an
+     * existing similar invite when possible (retry-idempotent). The response
+     * is a fresh Invite with .code and .url (`https://discord.gg/${code}`);
+     * no manager-cache write. Needs CREATE_INSTANT_INVITE in the channel
+     * (403 → 50013). Guild-channel families only — categories and DM-shaped
+     * channels have no createInvite at runtime and refuse here.
+     *
+     * @param {number} communityId
+     * @param {string} channelId
+     * @param {{ reason?: string }} [options] X-Audit-Log-Reason for the invite
+     * @returns {Promise<{ ok: true, invite: { code: string, url: string } }|{ ok: false, error: string, code?: string }>}
+     */
+    async createInvite(communityId, channelId, options = {}) {
+      assertCommunityId(communityId);
+      if (channelId == null || String(channelId) === "") {
+        return { ok: false, error: "createInvite: a channelId is required" };
+      }
+      try {
+        const found = await lookupGuild(client, communityId, "createInvite");
+        if (found.error) return { ok: false, error: found.error };
+        const id = String(channelId);
+        // Guild-scoped channel resolution (fetchMessage's law): cache first,
+        // REST fallback; a channel outside the community's guild is "not found".
+        let channel = found.guild.channels?.cache?.get?.(id) ?? null;
+        if (!channel) {
+          try {
+            channel = (await found.guild.channels.fetch(id)) ?? null;
+          } catch (err) {
+            return {
+              ok: false,
+              error: `createInvite: channel ${id} in community ${communityId} lookup failed: ${causeOf(err)}`,
+              ...(codeOf(err) != null ? { code: codeOf(err) } : {}),
+            };
+          }
+        }
+        if (!channel) {
+          return {
+            ok: false,
+            error: `createInvite: channel ${id} not found in community ${communityId}`,
+          };
+        }
+        // v14.27 shape law: createInvite lives on the guild-channel families
+        // (text/voice/thread), never on categories or DM shapes — a channel
+        // without the method CANNOT mint an invite, whatever its id suggests.
+        if (typeof channel.createInvite !== "function") {
+          return {
+            ok: false,
+            error: `createInvite: channel ${id} in community ${communityId} (type ${channel.type}) does not support invites — pick a text or voice channel`,
+          };
+        }
+        const invite = await channel.createInvite({
+          maxAge: 0, // explicit 0 = PERMANENT (the REST default is 86400!)
+          maxUses: 0, // 0 = unlimited uses
+          unique: false, // reuse an existing invite when possible
+          reason: String(options?.reason ?? ""),
+        });
+        const code = invite?.code ? String(invite.code) : null;
+        if (!code) {
+          // Never hand a DM a fabricated link — no code, no invite.
+          return {
+            ok: false,
+            error: `createInvite: channel ${id} in community ${communityId} returned an invite without a code`,
+          };
+        }
+        return {
+          ok: true,
+          invite: {
+            code,
+            url: invite.url ? String(invite.url) : `https://discord.gg/${code}`,
+          },
+        };
+      } catch (err) {
+        if (apiCodeOf(err) === 50013) {
+          return {
+            ok: false,
+            code: codeOf(err),
+            error: `createInvite: channel ${channelId} in community ${communityId} failed: Missing Access — the bot needs **Create Instant Invite** in that channel (Discord 50013: ${causeOf(err)})`,
+          };
+        }
+        return {
+          ok: false,
+          error: `createInvite: channel ${channelId} in community ${communityId} failed: ${causeOf(err)}`,
+          code: codeOf(err),
+        };
+      }
+    },
+
+    /**
      * History page for activity backfill and gork read_history.
      * @param {string} channelId
      * @param {{ before?: string, after?: string, limit: number }} query

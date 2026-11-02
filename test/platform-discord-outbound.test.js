@@ -104,6 +104,7 @@ describe("platform/discord/outbound", () => {
       "unbanMember",
       "fetchBan",
       "listBans",
+      "createInvite",
       "fetchMessages",
       "fetchMessage",
     ]) {
@@ -913,6 +914,169 @@ describe("platform/discord/outbound", () => {
     });
   });
 
+  // #773 appeals (subtask 02): the clemency outcome's invite path. Policy
+  // args are pinned on the mock's VERBATIM record (guild._invites) —
+  // v14.27 law: the REST max_age DEFAULT is 86400, so only an explicit
+  // maxAge: 0 is permanent. Self-cleaning: patches restore in `finally`,
+  // buffer assertions use length deltas, injected doubles are removed.
+  describe("appeal invite outbound (createInvite)", () => {
+    it("mints a PERMANENT, unlimited-use invite and pins the policy args verbatim", async () => {
+      const before = guild._invites.length;
+      const res = await outbound.createInvite(communityId, IDS.channelGeneral, {
+        reason: "appeal granted",
+      });
+      assert.equal(res.ok, true);
+      assert.ok(res.invite.code, "invite carries the Discord code");
+      assert.equal(res.invite.url, `https://discord.gg/${res.invite.code}`);
+      assert.equal(guild._invites.length, before + 1, "one invite recorded");
+      const entry = guild._invites.at(-1);
+      assert.equal(entry.channelId, IDS.channelGeneral);
+      // ALL FOUR keys explicit — omitting maxAge would ship a 24h invite.
+      assert.deepEqual(entry.options, {
+        maxAge: 0,
+        maxUses: 0,
+        unique: false,
+        reason: "appeal granted",
+      });
+    });
+
+    it("omitted options still ride the full policy set (reason defaults to empty)", async () => {
+      await outbound.createInvite(communityId, IDS.channelGeneral);
+      assert.deepEqual(guild._invites.at(-1).options, {
+        maxAge: 0,
+        maxUses: 0,
+        unique: false,
+        reason: "",
+      });
+    });
+
+    it("rejects a missing channelId before any lookup, with a specific error", async () => {
+      const res = await outbound.createInvite(communityId, "");
+      assert.equal(res.ok, false);
+      assert.match(res.error, /^createInvite: a channelId is required$/);
+    });
+
+    it("names the missing communities row for an unknown id (the trio's contract)", async () => {
+      assert.deepEqual(await outbound.createInvite(987_654, IDS.channelGeneral), {
+        ok: false,
+        error: "createInvite: no communities row for id 987654",
+      });
+    });
+
+    it("reports the guild as not available when the client lost it", async () => {
+      const blind = require("../src/platform/discord/outbound").createDiscordOutbound(createClient());
+      const res = await blind.createInvite(communityId, IDS.channelGeneral, { reason: "appeal" });
+      assert.equal(res.ok, false);
+      assert.match(
+        res.error,
+        /^createInvite: guild .* for community \d+ is not available to the bot/,
+      );
+      assert.equal(res.code, undefined, "a resolution failure carries no API code");
+    });
+
+    it("refuses a channel that is not in the guild with a specific not-found", async () => {
+      const res = await outbound.createInvite(communityId, "channel-that-does-not-exist");
+      assert.equal(res.ok, false);
+      assert.match(
+        res.error,
+        /^createInvite: channel channel-that-does-not-exist not found in community \d+$/,
+      );
+    });
+
+    it("surfaces a channel-lookup transport fault with cause + code", async () => {
+      const realFetch = guild.channels.fetch;
+      guild.channels.fetch = async () => {
+        throw Object.assign(new Error("Internal Server Error"), { status: 500 });
+      };
+      try {
+        const res = await outbound.createInvite(communityId, "channel-transient");
+        assert.equal(res.ok, false);
+        assert.match(
+          res.error,
+          /createInvite: channel channel-transient in community \d+ lookup failed: Internal Server Error/,
+        );
+      } finally {
+        guild.channels.fetch = realFetch;
+      }
+    });
+
+    it("refuses a non-invite-capable channel (category shape) specifically", async () => {
+      guild.addChannel({ id: "category-not-text", type: 4 });
+      try {
+        const res = await outbound.createInvite(communityId, "category-not-text");
+        assert.equal(res.ok, false);
+        assert.match(
+          res.error,
+          /createInvite: channel category-not-text in community \d+ \(type 4\) does not support invites/,
+        );
+        assert.ok(
+          !guild._invites.some((e) => e.channelId === "category-not-text"),
+          "the refusal never reaches the invite buffer",
+        );
+      } finally {
+        guild.channels.cache.delete("category-not-text");
+      }
+    });
+
+    it("translates 50013 into the Create Instant Invite cause", async () => {
+      const realCreateInvite = textChannel.createInvite;
+      textChannel.createInvite = async () => {
+        throw Object.assign(new Error("Missing Access"), { code: 50013, status: 403 });
+      };
+      try {
+        const res = await outbound.createInvite(communityId, IDS.channelGeneral, {
+          reason: "appeal granted",
+        });
+        assert.equal(res.ok, false);
+        assert.equal(String(res.code), "50013");
+        assert.match(
+          res.error,
+          /createInvite: channel .* in community \d+ failed: Missing Access — the bot needs \*\*Create Instant Invite\*\*/,
+        );
+        assert.match(res.error, /Missing Access/); // the verbatim cause rides through
+      } finally {
+        textChannel.createInvite = realCreateInvite;
+      }
+    });
+
+    it("keeps generic API causes with their code (50013 is not the only named failure)", async () => {
+      const realCreateInvite = textChannel.createInvite;
+      textChannel.createInvite = async () => {
+        throw Object.assign(new Error("Maximum number of invites reached"), {
+          code: 30002,
+          status: 400,
+        });
+      };
+      try {
+        const res = await outbound.createInvite(communityId, IDS.channelGeneral);
+        assert.equal(res.ok, false);
+        assert.equal(String(res.code), "30002");
+        assert.match(
+          res.error,
+          /createInvite: channel .* in community \d+ failed: Maximum number of invites reached/,
+        );
+        assert.ok(!res.error.includes("Missing Access"), "only 50013 gets the permission sentence");
+      } finally {
+        textChannel.createInvite = realCreateInvite;
+      }
+    });
+
+    it("refuses an invite response without a code — never fabricates a link", async () => {
+      const realCreateInvite = textChannel.createInvite;
+      textChannel.createInvite = async () => ({ code: null, url: "https://discord.gg/fake" });
+      try {
+        const res = await outbound.createInvite(communityId, IDS.channelGeneral);
+        assert.equal(res.ok, false);
+        assert.match(
+          res.error,
+          /createInvite: channel .* in community \d+ returned an invite without a code/,
+        );
+      } finally {
+        textChannel.createInvite = realCreateInvite;
+      }
+    });
+  });
+
   describe("community id discipline", () => {
     it("snowflake strings throw the assertCommunityId programmer error", async () => {
       const message = "community id required, got string";
@@ -928,6 +1092,7 @@ describe("platform/discord/outbound", () => {
       await assert.rejects(() => outbound.unbanMember(SNOWFLAKE, "u1", "x"), { message });
       await assert.rejects(() => outbound.fetchBan(SNOWFLAKE, "u1"), { message });
       await assert.rejects(() => outbound.listBans(SNOWFLAKE), { message });
+      await assert.rejects(() => outbound.createInvite(SNOWFLAKE, "c1"), { message });
       await assert.rejects(
         () => outbound.editMessage({ communityId: SNOWFLAKE, channelId: "c1", messageId: "m1" }, {}),
         { message },
@@ -981,6 +1146,7 @@ describe("platform/discord/outbound", () => {
         ["unbanMember", () => dead.unbanMember(communityId, "u1", "expired")],
         ["fetchBan", () => dead.fetchBan(communityId, "u1")],
         ["listBans", () => dead.listBans(communityId, { limit: 100 })],
+        ["createInvite", () => dead.createInvite(communityId, "c1", { reason: "appeal" })],
         ["fetchMessages", () => dead.fetchMessages("c1", { limit: 100 })],
         ["fetchMessage", () => dead.fetchMessage(communityId, "c1", "m1")],
       ];
