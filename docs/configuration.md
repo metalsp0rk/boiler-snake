@@ -347,6 +347,8 @@ Each Discord server (guild) has its own settings stored in SQLite.
 | `automod_daily_case_limit` | 50 | Daily case budget per server: `-1` blocked, `0` unlimited, `1–100000` (`/automodconfig budget`) — separate from `gork_daily_limit` |
 | `automod_cases_today` / `automod_cases_day` | 0 / *(none)* | UTC-day case counter behind `/automod status` budget remaining (consume-on-accept; rolls at the UTC day boundary) |
 | `automod_paused_at` / `automod_pause_reason` | *(none)* | Persisted circuit-breaker pause — clears via `/automodconfig safety resume` (two-step `confirm:`) |
+| `ban_dm` | `1` | DM the member BEFORE a tracked ban runs, with the expiry stamps (`/bannotify ban`; `0` = bans skip the DM, the ban is unchanged) — [Ban Lifecycle](ban-lifecycle.md) |
+| `welcome_back_dm` | `1` | Exactly one welcome-back DM per unban cycle, auto-expiry or manual (`/bannotify welcome`; `0` = silence, parked rejoin retries stay parked) — [Ban Lifecycle](ban-lifecycle.md) |
 
 The table above covers the knobs staff configure directly; `guild_settings` carries more columns (full live DDL: [Database](database.md#4-guild-settings-guild-settings)). Most have a configuring command documented on the owning feature page — `/settings` is the read-side view.
 

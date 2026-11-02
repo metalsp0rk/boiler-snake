@@ -64,6 +64,7 @@ src/
 │   ├── commandPermissions/  # OAuth slash visibility sync (no slash of its own)
 │   ├── staffNotes/          # /note staff-only private notes
 │   ├── warnings/            # /warn + /setwarn formal disciplinary records
+│   ├── banLifecycle/        # /ban tracked-ban lifecycle: ban DM, expiry auto-unban, welcome DM + /bannotify
 │   ├── userinfo/            # /userinfo staff card + note/warn/activity buttons
 │   ├── userActivity/        # /activityconfig + channel message counters + backfill
 │   ├── retention/           # hourly sweeps pruning the growth-only tables (#192)
@@ -337,6 +338,7 @@ Used by message XP, reaction XP, voice ticker, and admin `/grantxp`:
 | **staffRoles** | `/staff` role list; junior (command gate) vs senior (ticket channel overwrites); ManageGuild for mutations |
 | **staffNotes** | `/note` private staff notes (`requireStaff`) |
 | **warnings** | `/warn` add/void/list; `/warn mine` public; `/setwarn` staff gate |
+| **banLifecycle** | `/ban` + **Ban member** menu + `/bannotify` (#772, admin/ManageGuild): ONE ban service (guards → ban DM first → ban → B-n record), `ban-expiry` ticker auto-unban + welcome-back DM + rejoin retry; automod `ban` tool executes through it; Discord-only (Fluxer no-parity) |
 | **userinfo** | Staff member card; note/warn buttons; Activity tab needs **senior** staff |
 | **userActivity** | Live per-channel counts; `/activityconfig` ignore/status/backfill (staff); feeds `/userinfo` Activity |
 | **tickets** | Support channels, sensitive mode, panel button→modal, HTML archive HTTP; senior roles get auto ticket view |
@@ -348,7 +350,7 @@ Used by message XP, reaction XP, voice ticker, and admin `/grantxp`:
 | **bridge** | Discord↔Fluxer channel pairs: webhook copies + durable outbox (CAS claim), source-side edit/delete relay, SSRF-guarded media — jobs `bridge-relay` + `bridge-relay-ttl` |
 | **linking** | One Discord ↔ one Fluxer identity (`!link` codes), per-direction XP/roster mirroring; link-code sweeper job |
 
-Tickers (voice, youtube, twitch, twitch-eventsub, githubReleases, eventReminders, events (due posts, reminders, series cursor, auto-archive, cleanup — one `events` cron job with named steps), warnings expiry, decay, honeypot sweep, XP cooldown sweep, audit message-cache, retention sweeps, link-code sweeper, bridge relay + TTL) register named jobs on `src/core/scheduler.js`. The scheduler skips overlapping runs, always logs tick failures as `[scheduler] <name> tick failed:`, and exposes `snapshot()` (`lastTickAt`, `intervalMs`, `running`) for dashboards. Feature `start()` still decides *whether* a job is armed (e.g. YouTube skips without `YOUTUBE_API_KEY`). Invoke `runVoiceTick` / `runYoutubeTick` / … directly in tests — do not start timers.
+Tickers (voice, youtube, twitch, twitch-eventsub, githubReleases, eventReminders, events (due posts, reminders, series cursor, auto-archive, cleanup — one `events` cron job with named steps), warnings expiry, ban expiry (job `ban-expiry`), decay, honeypot sweep, XP cooldown sweep, audit message-cache, retention sweeps, link-code sweeper, bridge relay + TTL) register named jobs on `src/core/scheduler.js`. The scheduler skips overlapping runs, always logs tick failures as `[scheduler] <name> tick failed:`, and exposes `snapshot()` (`lastTickAt`, `intervalMs`, `running`) for dashboards. Feature `start()` still decides *whether* a job is armed (e.g. YouTube skips without `YOUTUBE_API_KEY`). Invoke `runVoiceTick` / `runYoutubeTick` / … directly in tests — do not start timers.
 
 ---
 

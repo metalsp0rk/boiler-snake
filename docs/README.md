@@ -80,6 +80,11 @@ Welcome to the comprehensive documentation for Boiler Snake.
   - Daily case budget and persisted safety breaker (`safety resume`, confirm-gated)
   - Discord-only for this milestone (explicit Fluxer no-parity)
 
+- **[Ban Lifecycle](ban-lifecycle.md)**
+  - Tracked bans (`/ban`, *Ban member* menu): B-n record, ban DM with expiry, auto-unban at expiry
+  - Welcome-back DM on any unban + 30-day rejoin retry; `/bannotify` toggles (both default on)
+  - Discord-only (explicit Fluxer no-parity, #772)
+
 - **[Community Events](community-events.md)**
   - Bot-owned events with button RSVP, capacity, waitlists
   - Reminders on the signup list, recurring series, presets, DM wizard

@@ -1565,6 +1565,65 @@ the trail shows which surface a guild used. Manage Server in the picker AND
 the handler; Discord-only (Fluxer answers the standard not-yet line). See
 [Auto-moderation](../automod.md#set-moderation-queue-admin-the-queue-alias-771).
 
+### `/ban` - Ban a member with lifecycle (admin)
+
+Tracked bans (#772): one durable record (**B-n**) per ban cycle, a ban-time DM
+showing the expiry, auto-unban at expiry, and a welcome-back DM on any unban.
+Admin-tier (Manage Server in the picker AND the handler); all replies ephemeral;
+Discord-only — Fluxer answers `That command is not available on Fluxer yet.`
+(explicit no-parity). See [Ban Lifecycle](../ban-lifecycle.md).
+
+**Usage**:
+```bash
+/ban member:@SomeUser reason:Repeated spam duration:24h   # inline run (both fields present)
+/ban member:@SomeUser reason:Ban evasion duration:permanent
+/ban member:@SomeUser                                      # missing reason/duration → Reason/Duration modal
+```
+
+| Option | Rule |
+|--------|------|
+| `member` | Required target |
+| `reason` | Required overall (modal collects it when omitted) — goes to the ban record AND the Discord ban reason |
+| `duration` | `<n><s/m/h/d>` (`24h`, `7d`) or `permanent`; blank asks in the modal. Floor 60 s, cap 365 d, never silently clamped |
+
+An invalid duration rejects with an ephemeral naming the field + example and
+bans **nothing** (#745 never-act-on-misread). Guards refuse with the specific
+cause: duplicate active ban, self-ban, staff subject (#729 — staff roles and
+Manage Guild carriers are never banned), role hierarchy (both positions named).
+
+### `/bannotify` - Ban-notice DMs (admin)
+
+**Usage**:
+```bash
+/bannotify ban on          # DM members before the ban runs (default on)
+/bannotify ban off         # bans skip the DM — the ban itself is unchanged
+/bannotify welcome on      # exactly one welcome DM per unban cycle (default on)
+/bannotify welcome off
+/bannotify status          # show both toggles
+```
+
+| Subcommand | Effect |
+|------------|--------|
+| `ban on\|off` | Guild setting `ban_dm` (default **on**). A failed ban DM never blocks the ban |
+| `welcome on\|off` | Guild setting `welcome_back_dm` (default **on**). Off leaves parked rejoin retries parked |
+| `status` | Read both toggles + the defaults note |
+
+Every toggle mutation lands a `banLifecycle.*` audit row + the
+`/automodconfig`-style audit embed. Manage Server in the picker AND the
+handler; Discord-only (explicit Fluxer no-parity).
+
+### "Ban member" - Tracked ban (user context menu, admin)
+
+Discord **context-menu** command — no slash. Open via **right-click
+(long-press) → Apps → Ban member** on a member: the context-menu twin of
+`/ban` (#772). The menu carries no options, so the invoke ALWAYS opens the
+same Reason/Duration modal — the ban executes on submit through the same
+single ban service (same guards, same B-n record, same notices). One-shot
+modal token (TTL 10 min): a replay or expired form reads `**Modal expired:**`
+and bans nothing. **Admin picker posture** (Manage Server only — NOT the
+staff-tier allow-sync of the report/referral menus). Discord-only — Fluxer is
+explicit no-parity. See [Ban Lifecycle](../ban-lifecycle.md).
+
 ---
 
 ## Permission Matrix
@@ -1648,6 +1707,9 @@ the handler; Discord-only (Fluxer answers the standard not-yet line). See
 | `Refer to automod` (message **context menu**, right-click → Apps, #726) | Staff gate (staff-tier picker: Manage Server default + `staff_roles` overwrites after `/staff syncpermissions`) | Yes |
 | `/automodconfig …` (#725) | ManageGuild (picker AND handler) | Yes |
 | `/set-moderation-queue set\|clear` (#771) | ManageGuild (picker AND handler) | Yes |
+| `/ban member [reason] [duration]` (#772) | ManageGuild (picker AND handler) | Yes |
+| `/bannotify ban\|welcome\|status` (#772) | ManageGuild (picker AND handler) | Yes |
+| `Ban member` (user **context menu**, right-click → Apps, #772) | ManageGuild (admin-tier picker — NOT the staff-tier allow-sync of the report/referral menus) | Yes |
 | `/staff role add\|remove\|setlevel` | ManageGuild | Yes |
 | `/staff syncpermissions` | ManageGuild | Yes |
 | `/setcommandchannel add\|remove\|list` | ManageGuild ¹ | Yes |
@@ -1749,4 +1811,7 @@ MANAGE SERVER ONLY:
 /honeypot safety resume            → Un-pause honeypot bans after the #440 safety valve
 /automodconfig channel|rules|enable|mode|timeout-cap|budget → Auto-mod config (#725)
 /automodconfig safety resume       → Re-arm auto kick/ban/timeout (confirm:true, #725)
+/ban member [reason] [duration]    → Tracked ban: ban DM + auto-unban at expiry (#772; modal when a field is missing)
+/bannotify ban|welcome|status      → Ban-notice DM toggles, both default on (#772)
+"Ban member"                  → Right-click member → Apps (always the ban modal, admin, #772)
 ```
