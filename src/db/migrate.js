@@ -81,6 +81,7 @@ const migrations = [
   require("./migrations/071_automod_case_queue"),
   require("./migrations/072_heal_event_dates"),
   require("./migrations/073_automod_rules_channel"),
+  require("./migrations/074_ban_lifecycle"),
 ];
 
 const helpers = {

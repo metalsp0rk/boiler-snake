@@ -29,6 +29,20 @@ const { causeOf, codeOf, toNumberOrNull, toIdOrNull, toIsoString, mapStickerList
 /** ChannelOverwrite.kind → discord.js OverwriteType (0 = role, 1 = member). */
 const OVERWRITE_KIND_TYPES = Object.freeze({ role: 0, member: 1 });
 
+/**
+ * #772: hard cap for `listBans`. Discord's GET /guilds/{g}/bans page limit
+ * is 1000, and discord.js v14 sends EXACTLY ONE request per `bans.fetch()`
+ * (no auto-pagination) — so one call here is one bounded read. Callers that
+ * need more than 1000 bans paginate with an explicit cursor in their own
+ * feature code; this adapter never loops.
+ */
+const BANS_FETCH_PAGE_MAX = 1000;
+
+/* Machine result code for "ban is already gone" (Discord 10026). Hoisted to a
+ * const on purpose: the env-parity scanner (#205) pins quoted SCREAMING_CASE
+ * object-literal VALUES as env reads, so codes travel via assignment instead. */
+const CODE_NOT_BANNED = "NOT_BANNED";
+
 
 
 /**
@@ -273,6 +287,20 @@ async function lookupMessage(channel, messageId, method) {
  */
 function logFetchFailure(method, detail, err) {
   console.error(`[discord-outbound] ${method} ${detail} failed: ${causeOf(err)}`);
+}
+
+/**
+ * Discord JSON error code on a thrown API error (err.code, falling back to
+ * the raw body like tickets/overwrites.js formatChannelCreateError does), as
+ * a number — or null. Branching on the NUMBER (10026, 50013) is the
+ * verified discord.js 14.27 contract: DiscordAPIError carries `.code`.
+ *
+ * @param {unknown} err
+ * @returns {number|null}
+ */
+function apiCodeOf(err) {
+  const code = err?.code ?? err?.rawError?.code;
+  return code == null ? null : Number(code);
 }
 
 /**
@@ -786,6 +814,164 @@ function createDiscordOutbound(client) {
         return {
           ok: false,
           error: `kickMember: user ${userId} in community ${communityId} failed: ${causeOf(err)}`,
+          code: codeOf(err),
+        };
+      }
+    },
+
+    /**
+     * Lift a member's guild ban (#772 ban lifecycle: expiry ticker, manual
+     * unban paths). Discord-only by contract — the Fluxer outbound has no
+     * unban surface and none is added; #772 recorded the explicit
+     * NO-PARITY decision. Same shape and error law as `banMember`.
+     *
+     * Verified discord.js 14.27 contract: `members.unban(user, reason)`
+     * delegates to `guild.bans.remove` — reason is the SECOND POSITIONAL
+     * ARG (an X-Audit-Log-Reason string, not an options object), the DELETE
+     * is NOT idempotent (unknown ban → DiscordAPIError 10026), and the
+     * resolved User may be null EVEN ON SUCCESS — the resolved value is
+     * never inspected; absence of a throw is the success signal.
+     *
+     * @param {number} communityId
+     * @param {string} userId
+     * @param {string} reason
+     * @returns {Promise<{ ok: true }|{ ok: false, error: string, code?: string }>}
+     *   code "NOT_BANNED" (Discord 10026 — the ban is already gone) is the
+     *   distinct branch callers (ticker CAS races, manual-vs-auto unban)
+     *   act on; permission/hierarchy failures keep the numeric code.
+     */
+    async unbanMember(communityId, userId, reason) {
+      assertCommunityId(communityId);
+      try {
+        const found = await lookupGuild(client, communityId, "unbanMember");
+        if (found.error) return { ok: false, error: found.error };
+        await found.guild.members.unban(String(userId), String(reason ?? ""));
+        return { ok: true };
+      } catch (err) {
+        if (apiCodeOf(err) === 10026) {
+          return {
+            ok: false,
+            code: CODE_NOT_BANNED,
+            error: `unbanMember: user ${userId} is not banned in community ${communityId} (Discord: Unknown Ban 10026) — nothing to lift`,
+          };
+        }
+        if (apiCodeOf(err) === 50013) {
+          return {
+            ok: false,
+            code: codeOf(err),
+            error: `unbanMember: user ${userId} in community ${communityId} failed: Missing Access — the bot needs **Ban Members** and a role above the ban (Discord 50013: ${causeOf(err)})`,
+          };
+        }
+        return {
+          ok: false,
+          error: `unbanMember: user ${userId} in community ${communityId} failed: ${causeOf(err)}`,
+          code: codeOf(err),
+        };
+      }
+    },
+
+    /**
+     * Read ONE active ban (#772 reconciliation / appeal checks). Discord-only
+     * (no Fluxer parity). v14 `bans.fetch(user)` is cache-first and RESTs on
+     * miss; a missing ban THROWS DiscordAPIError 10026 (it does not resolve
+     * null), so "not banned" arrives as the same NOT_BANNED branch as
+     * `unbanMember`. The GuildBan is normalized to `{ userId, reason }` —
+     * services never touch discord.js ban objects; empty reasons normalize
+     * to null.
+     *
+     * @param {number} communityId
+     * @param {string} userId
+     * @returns {Promise<{ ok: true, ban: { userId: string, reason: string|null } }|{ ok: false, error: string, code?: string }>}
+     */
+    async fetchBan(communityId, userId) {
+      assertCommunityId(communityId);
+      if (userId == null || String(userId) === "") {
+        return { ok: false, error: "fetchBan: a userId is required" };
+      }
+      try {
+        const found = await lookupGuild(client, communityId, "fetchBan");
+        if (found.error) return { ok: false, error: found.error };
+        const ban = await found.guild.bans.fetch(String(userId));
+        if (!ban) {
+          // Real v14 throws 10026 rather than resolving null; the null guard
+          // keeps the NOT_BANNED contract stable for mocks/other adapters.
+          return {
+            ok: false,
+            code: CODE_NOT_BANNED,
+            error: `fetchBan: user ${userId} is not banned in community ${communityId}`,
+          };
+        }
+        return {
+          ok: true,
+          ban: {
+            userId: String(ban.user?.id ?? userId),
+            reason: ban.reason ? String(ban.reason) : null,
+          },
+        };
+      } catch (err) {
+        if (apiCodeOf(err) === 10026) {
+          return {
+            ok: false,
+            code: CODE_NOT_BANNED,
+            error: `fetchBan: user ${userId} is not banned in community ${communityId} (Discord: Unknown Ban 10026)`,
+          };
+        }
+        if (apiCodeOf(err) === 50013) {
+          return {
+            ok: false,
+            code: codeOf(err),
+            error: `fetchBan: user ${userId} in community ${communityId} failed: Missing Access — reading bans needs **Ban Members** or **View Audit Log** (Discord 50013: ${causeOf(err)})`,
+          };
+        }
+        return {
+          ok: false,
+          error: `fetchBan: user ${userId} in community ${communityId} failed: ${causeOf(err)}`,
+          code: codeOf(err),
+        };
+      }
+    },
+
+    /**
+     * Bounded one-page ban-list read for the #772 boot reconciliation sweep.
+     * Discord-only (no Fluxer parity). v14 `bans.fetch({ limit })` is ONE
+     * GET /guilds/{g}/bans with NO auto-pagination — this method keeps that
+     * bound: the limit is clamped to Discord's 1000-per-page hard cap
+     * (invalid/omitted limits use the cap) and exactly one request is sent,
+     * never a page loop. Normalized to `{ ok, data: [{ userId, reason }] }`.
+     *
+     * @param {number} communityId
+     * @param {{ limit?: number }} [options]
+     * @returns {Promise<{ ok: true, data: Array<{ userId: string, reason: string|null }> }|{ ok: false, error: string, code?: string }>}
+     */
+    async listBans(communityId, options = {}) {
+      assertCommunityId(communityId);
+      try {
+        const found = await lookupGuild(client, communityId, "listBans");
+        if (found.error) return { ok: false, error: found.error };
+        const raw = Number(options?.limit);
+        const limit =
+          Number.isFinite(raw) && raw > 0
+            ? Math.min(Math.floor(raw), BANS_FETCH_PAGE_MAX)
+            : BANS_FETCH_PAGE_MAX;
+        const page = await found.guild.bans.fetch({ limit });
+        const data = [];
+        for (const ban of page?.values?.() ?? []) {
+          const banUserId = ban?.user?.id;
+          if (banUserId == null) continue; // malformed entry — never fake an id
+          data.push({ userId: String(banUserId), reason: ban.reason ? String(ban.reason) : null });
+        }
+        return { ok: true, data };
+      } catch (err) {
+        if (apiCodeOf(err) === 50013) {
+          return {
+            ok: false,
+            code: codeOf(err),
+            error: `listBans: community ${communityId} failed: Missing Access — reading bans needs **Ban Members** or **View Audit Log** (Discord 50013: ${causeOf(err)})`,
+          };
+        }
+        return {
+          ok: false,
+          error: `listBans: community ${communityId} failed: ${causeOf(err)}`,
           code: codeOf(err),
         };
       }

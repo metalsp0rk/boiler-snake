@@ -101,6 +101,9 @@ describe("platform/discord/outbound", () => {
       "setOverwrites",
       "banMember",
       "kickMember",
+      "unbanMember",
+      "fetchBan",
+      "listBans",
       "fetchMessages",
       "fetchMessage",
     ]) {
@@ -560,6 +563,158 @@ describe("platform/discord/outbound", () => {
     });
   });
 
+  // #772 ban lifecycle: the unban + ban-read helpers beside banMember.
+  // Mock-fidelity contract (v14.27): unban is NOT idempotent (unknown ban →
+  // 10026), bans.fetch(user) throws 10026 on miss, bans.fetch({limit}) is
+  // one bounded page — the outbound translates 10026 to code "NOT_BANNED"
+  // and 50013 into a specific Missing Access cause.
+  describe("ban lifecycle outbound (unbanMember / fetchBan / listBans)", () => {
+    it("unbanMember lifts a tracked ban and records the unban with reason", async () => {
+      // Fresh ids throughout: the shared _bans collector's exact-array
+      // assertion (banMember test above) has already run; keep this block
+      // self-cleaning so later suites see the same world.
+      const bannedId = "700000000000000001";
+      assert.deepEqual(await outbound.banMember(communityId, bannedId, "spam"), { ok: true });
+      const res = await outbound.unbanMember(communityId, bannedId, "appeal granted");
+      assert.deepEqual(res, { ok: true });
+      assert.equal(guild._unbans.length, 1, "one unban recorded");
+      assert.deepEqual(guild._unbans.at(-1), { user: { id: bannedId }, reason: "appeal granted" });
+      assert.ok(
+        !guild._bans.some((b) => b.userId === bannedId),
+        "lifted ban removed from _bans — fetchBan/listBans must see reality",
+      );
+    });
+
+    it("unbanMember maps Discord 10026 to a distinct NOT_BANNED code", async () => {
+      // v14.27: DELETE guild ban is not idempotent — unban of a never-banned
+      // (or already-lifted) user 404s 10026. The ticker's CAS race branches
+      // on exactly this, so it is NOT the generic failure path.
+      const res = await outbound.unbanMember(communityId, "700000000000000999", "expired");
+      assert.equal(res.ok, false);
+      assert.equal(res.code, "NOT_BANNED");
+      assert.match(
+        res.error,
+        /unbanMember: user 700000000000000999 is not banned in community \d+ \(Discord: Unknown Ban 10026\)/,
+      );
+    });
+
+    it("unbanMember translates 50013 into a Missing Access cause", async () => {
+      const realUnban = guild.members.unban;
+      guild.members.unban = async () => {
+        throw Object.assign(new Error("Missing Access"), { code: 50013, status: 403 });
+      };
+      try {
+        const res = await outbound.unbanMember(communityId, IDS.member, "expired");
+        assert.equal(res.ok, false);
+        assert.equal(String(res.code), "50013");
+        assert.match(res.error, /unbanMember: user .* in community \d+ failed: Missing Access/);
+        assert.match(res.error, /Ban Members/);
+        assert.match(res.error, /Missing Access/); // the verbatim cause rides through
+      } finally {
+        guild.members.unban = realUnban;
+      }
+    });
+
+    it("fetchBan round-trips ban → fetch → unban → NOT_BANNED", async () => {
+      const fetchId = "700000000000000002";
+      assert.deepEqual(await outbound.banMember(communityId, fetchId, "ban evasion"), { ok: true });
+      const hit = await outbound.fetchBan(communityId, fetchId);
+      assert.deepEqual(hit, { ok: true, ban: { userId: fetchId, reason: "ban evasion" } });
+
+      const gone = await outbound.fetchBan(communityId, "700000000000000998");
+      assert.equal(gone.ok, false);
+      assert.equal(gone.code, "NOT_BANNED");
+      assert.match(gone.error, /not banned in community \d+ \(Discord: Unknown Ban 10026\)/);
+
+      assert.deepEqual(await outbound.unbanMember(communityId, fetchId, "cleanup"), { ok: true });
+      const after = await outbound.fetchBan(communityId, fetchId);
+      assert.equal(after.ok, false);
+      assert.equal(after.code, "NOT_BANNED", "lifted ban reads as NOT_BANNED, not stale data");
+    });
+
+    it("fetchBan rejects a missing userId with a specific error", async () => {
+      const res = await outbound.fetchBan(communityId, "");
+      assert.equal(res.ok, false);
+      assert.match(res.error, /fetchBan: a userId is required/);
+    });
+
+    it("fetchBan translates the 50013 read-permission failure specifically", async () => {
+      // Ban reads ride BAN_MEMBERS *or* VIEW_AUDIT_LOG — the copy names both.
+      const realFetch = guild.bans.fetch;
+      guild.bans.fetch = async () => {
+        throw Object.assign(new Error("Missing Access"), { code: 50013, status: 403 });
+      };
+      try {
+        const res = await outbound.fetchBan(communityId, IDS.member);
+        assert.equal(res.ok, false);
+        assert.equal(String(res.code), "50013");
+        assert.match(res.error, /Ban Members/);
+        assert.match(res.error, /View Audit Log/);
+      } finally {
+        guild.bans.fetch = realFetch;
+      }
+    });
+
+    it("listBans returns the normalized [{ userId, reason }] page", async () => {
+      const idA = "700000000000000003";
+      const idB = "700000000000000004";
+      await outbound.banMember(communityId, idA, "raiding");
+      await outbound.banMember(communityId, idB, "");
+      try {
+        const res = await outbound.listBans(communityId);
+        assert.equal(res.ok, true);
+        const byUser = new Map(res.data.map((b) => [b.userId, b.reason]));
+        assert.equal(byUser.get(idA), "raiding");
+        assert.equal(byUser.get(idB), null, "empty reason normalizes to null");
+      } finally {
+        // Self-clean through the real path (also re-exercises unban).
+        await outbound.unbanMember(communityId, idA, "cleanup");
+        await outbound.unbanMember(communityId, idB, "cleanup");
+      }
+      const after = await outbound.listBans(communityId);
+      assert.equal(after.ok, true);
+      assert.ok(
+        !after.data.some((b) => b.userId === idA || b.userId === idB),
+        "lifted bans drop out of subsequent pages",
+      );
+    });
+
+    it("listBans hard-caps the page limit and sends exactly one request per call", async () => {
+      const seen = [];
+      const realFetch = guild.bans.fetch;
+      guild.bans.fetch = async (arg) => {
+        seen.push(arg);
+        return realFetch.call(guild.bans, arg);
+      };
+      try {
+        await outbound.listBans(communityId, { limit: 50_000 }); // absurd → cap
+        await outbound.listBans(communityId); // omitted → cap
+        await outbound.listBans(communityId, { limit: -5 }); // garbage → cap
+        const sane = await outbound.listBans(communityId, { limit: 25 }); // sane → rides
+        assert.equal(sane.ok, true);
+        assert.equal(seen.length, 4, "v14 has NO auto-pagination: one bans.fetch per call");
+        assert.deepEqual(seen.map((o) => o?.limit), [1000, 1000, 1000, 25]);
+      } finally {
+        guild.bans.fetch = realFetch;
+      }
+    });
+
+    it("listBans translates 50013 into the read-permission cause", async () => {
+      const realFetch = guild.bans.fetch;
+      guild.bans.fetch = async () => {
+        throw Object.assign(new Error("Missing Access"), { code: 50013, status: 403 });
+      };
+      try {
+        const res = await outbound.listBans(communityId);
+        assert.equal(res.ok, false);
+        assert.equal(String(res.code), "50013");
+        assert.match(res.error, /listBans: community \d+ failed: Missing Access/);
+      } finally {
+        guild.bans.fetch = realFetch;
+      }
+    });
+  });
+
   describe("community id discipline", () => {
     it("snowflake strings throw the assertCommunityId programmer error", async () => {
       const message = "community id required, got string";
@@ -572,6 +727,9 @@ describe("platform/discord/outbound", () => {
       await assert.rejects(() => outbound.addRole(SNOWFLAKE, "u1", "r1"), { message });
       await assert.rejects(() => outbound.removeRole(SNOWFLAKE, "u1", "r1"), { message });
       await assert.rejects(() => outbound.banMember(SNOWFLAKE, "u1", "x"), { message });
+      await assert.rejects(() => outbound.unbanMember(SNOWFLAKE, "u1", "x"), { message });
+      await assert.rejects(() => outbound.fetchBan(SNOWFLAKE, "u1"), { message });
+      await assert.rejects(() => outbound.listBans(SNOWFLAKE), { message });
       await assert.rejects(
         () => outbound.editMessage({ communityId: SNOWFLAKE, channelId: "c1", messageId: "m1" }, {}),
         { message },
@@ -622,6 +780,9 @@ describe("platform/discord/outbound", () => {
           () => dead.setOverwrites("c1", [{ id: "r1", kind: "role", allow: "1", deny: "0" }]),
         ],
         ["banMember", () => dead.banMember(communityId, "u1", "spam")],
+        ["unbanMember", () => dead.unbanMember(communityId, "u1", "expired")],
+        ["fetchBan", () => dead.fetchBan(communityId, "u1")],
+        ["listBans", () => dead.listBans(communityId, { limit: 100 })],
         ["fetchMessages", () => dead.fetchMessages("c1", { limit: 100 })],
         ["fetchMessage", () => dead.fetchMessage(communityId, "c1", "m1")],
       ];
