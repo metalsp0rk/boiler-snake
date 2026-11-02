@@ -512,6 +512,16 @@ async function executeHoneypotBan(
       }
     }
 
+    // #772 DECISION — intentionally NOT routed through banLifecycle/banService
+    // (the ONE tracked-ban choke point staff /ban and the automod harness now
+    // share). The honeypot ban is welded to the #440 mass-ban breaker below:
+    // the counter increments around THIS raw call, and routing the ban through
+    // the service would either double-record tracked ban rows for breaker
+    // enforcement or entangle the breaker's fail-closed trip with the
+    // lifecycle CAS machine. Revisit when the breaker moves to the choke point
+    // (then honeypot bans get ban_records + lifecycle DMs for free). Until
+    // then: this path records its intent via recordSystemAudit below and the
+    // ban is deliberately UNTRACKED. Comment-only — zero behavior change.
     try {
       await guild.members.ban(user.id, {
         reason: `Honeypot: ${shortReason}`,
