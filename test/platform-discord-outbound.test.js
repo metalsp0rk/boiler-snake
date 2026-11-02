@@ -715,6 +715,204 @@ describe("platform/discord/outbound", () => {
     });
   });
 
+  // #772 extension (subtask 10): the branches the base suite leaves untested —
+  // guild/communities resolution failures for the unban trio, the GENERIC
+  // API-cause translation (the non-10026/50013 catch-alls), the null-resolve
+  // NOT_BANNED contract for adapters that resolve instead of throwing 10026,
+  // GuildBan normalization fallbacks, malformed listBans entries (never fake
+  // an id), and the limit normalizer's remaining branches. Self-cleaning:
+  // every patch restores the real mock method in `finally`; fresh ids keep
+  // the shared _bans/_unbans buffers honest for later suites.
+  describe("ban lifecycle outbound — resolution failures + adapter edge branches", () => {
+    it("unbanMember / fetchBan / listBans report the guild as not available when the client lost it", async () => {
+      // Same communities row, a client with nothing cached whose REST fetch
+      // resolves null — lookupGuild's "both failed" branch. The base suite
+      // pins it through addRole only; the trio rides the same per-method path.
+      const blind = require("../src/platform/discord/outbound").createDiscordOutbound(createClient());
+
+      const unb = await blind.unbanMember(communityId, IDS.member, "expired");
+      assert.equal(unb.ok, false);
+      assert.match(unb.error, /^unbanMember: guild .* for community \d+ is not available to the bot/);
+      assert.equal(unb.code, undefined, "a resolution failure carries no API code");
+
+      const ban = await blind.fetchBan(communityId, IDS.member);
+      assert.equal(ban.ok, false);
+      assert.match(ban.error, /^fetchBan: guild .* is not available to the bot/);
+
+      const list = await blind.listBans(communityId);
+      assert.equal(list.ok, false);
+      assert.match(list.error, /^listBans: guild .* is not available to the bot/);
+    });
+
+    it("the trio names the missing communities row for an unknown id (banMember's contract, trio-wide)", async () => {
+      assert.deepEqual(await outbound.unbanMember(987_654, IDS.member, "expired"), {
+        ok: false,
+        error: "unbanMember: no communities row for id 987654",
+      });
+      const ban = await outbound.fetchBan(987_654, IDS.member);
+      assert.equal(ban.ok, false);
+      assert.match(ban.error, /^fetchBan: no communities row for id 987654$/);
+      const list = await outbound.listBans(987_654);
+      assert.equal(list.ok, false);
+      assert.match(list.error, /^listBans: no communities row for id 987654$/);
+    });
+
+    it("unbanMember keeps API codes OUTSIDE the 10026/50013 branches verbatim (generic cause law)", async () => {
+      // The catch-all every unban failure but NOT_BANNED/Missing Access rides:
+      // specific sentence + the Discord code — never a bare rethrow, never a
+      // swallowed boolean.
+      const realUnban = guild.members.unban;
+      guild.members.unban = async () => {
+        throw Object.assign(new Error("Maximum number of bans exceeded"), { code: 40005, status: 400 });
+      };
+      try {
+        const res = await outbound.unbanMember(communityId, "700000000000000101", "expired");
+        assert.equal(res.ok, false);
+        assert.equal(String(res.code), "40005", "adapterUtils.codeOf rides the number as a string");
+        assert.match(
+          res.error,
+          /unbanMember: user 700000000000000101 in community \d+ failed: Maximum number of bans exceeded/,
+        );
+      } finally {
+        guild.members.unban = realUnban;
+      }
+    });
+
+    it("unbanMember never inspects the resolved value — a null-resolving unban is still SUCCESS", async () => {
+      // v14.27: guild.members.unban can resolve null EVEN on success (jsdoc
+      // contract); absence of a throw is the only success signal.
+      const bannedId = "700000000000000102";
+      assert.deepEqual(await outbound.banMember(communityId, bannedId, "probe"), { ok: true });
+      const realUnban = guild.members.unban;
+      guild.members.unban = async (userId) => {
+        const i = guild._bans.findIndex((b) => String(b.userId) === String(userId));
+        if (i >= 0) guild._bans.splice(i, 1);
+        return null; // null on SUCCESS — the reality (ban store) still moves
+      };
+      try {
+        assert.deepEqual(await outbound.unbanMember(communityId, bannedId, "expired"), { ok: true });
+      } finally {
+        guild.members.unban = realUnban;
+      }
+      assert.ok(!guild._bans.some((b) => b.userId === bannedId), "world left as found");
+    });
+
+    it("fetchBan keeps the NOT_BANNED contract for adapters that RESOLVE null instead of throwing 10026", async () => {
+      // Real v14 THROWS 10026; the null guard (jsdoc: "keeps the NOT_BANNED
+      // contract stable for mocks/other adapters") gets the same verdict —
+      // WITHOUT the 10026 suffix, pinning it is the resolve-branch message.
+      const realFetch = guild.bans.fetch;
+      guild.bans.fetch = async () => null;
+      try {
+        const res = await outbound.fetchBan(communityId, "700000000000000103");
+        assert.equal(res.ok, false);
+        assert.equal(res.code, "NOT_BANNED");
+        assert.match(res.error, /^fetchBan: user 700000000000000103 is not banned in community \d+$/);
+      } finally {
+        guild.bans.fetch = realFetch;
+      }
+    });
+
+    it("fetchBan normalizes the GuildBan: missing user object falls back to the requested id, empty reason → null", async () => {
+      const realFetch = guild.bans.fetch;
+      const requested = "700000000000000104";
+      try {
+        guild.bans.fetch = async () => ({ user: null, reason: "ban evasion" });
+        const partial = await outbound.fetchBan(communityId, requested);
+        assert.deepEqual(
+          partial,
+          { ok: true, ban: { userId: requested, reason: "ban evasion" } },
+          "services never touch discord.js objects — the id falls back to what was asked for",
+        );
+
+        guild.bans.fetch = async () => ({ user: { id: requested }, reason: "" });
+        const empty = await outbound.fetchBan(communityId, requested);
+        assert.equal(empty.ok, true);
+        assert.equal(empty.ban.reason, null, "empty reasons normalize to null");
+        assert.equal(empty.ban.userId, requested);
+      } finally {
+        guild.bans.fetch = realFetch;
+      }
+    });
+
+    it("fetchBan surfaces generic read failures with cause + code (not everything is 10026/50013)", async () => {
+      const realFetch = guild.bans.fetch;
+      guild.bans.fetch = async () => {
+        throw Object.assign(new Error("Unknown Account"), { code: 10001, status: 404 });
+      };
+      try {
+        const res = await outbound.fetchBan(communityId, "700000000000000105");
+        assert.equal(res.ok, false);
+        assert.equal(String(res.code), "10001");
+        assert.match(res.error, /fetchBan: user .* in community \d+ failed: Unknown Account/);
+        assert.ok(!String(res.code).includes("NOT_BANNED"), "a transport fault is NOT the not-banned branch");
+      } finally {
+        guild.bans.fetch = realFetch;
+      }
+    });
+
+    it("listBans skips malformed entries — never fakes a userId — and an absent page is an empty list", async () => {
+      const realFetch = guild.bans.fetch;
+      try {
+        guild.bans.fetch = async () =>
+          new Map([
+            ["ghost", { user: null, reason: "no identity" }], // malformed — must vanish
+            ["k", { user: { id: "900000000000000106" }, reason: null }],
+          ]);
+        const res = await outbound.listBans(communityId);
+        assert.deepEqual(res, {
+          ok: true,
+          data: [{ userId: "900000000000000106", reason: null }],
+        });
+
+        guild.bans.fetch = async () => undefined; // transport answered with nothing
+        assert.deepEqual(
+          await outbound.listBans(communityId),
+          { ok: true, data: [] },
+          "an absent page reconciles as 'nothing to see', never a crash",
+        );
+      } finally {
+        guild.bans.fetch = realFetch;
+      }
+    });
+
+    it("listBans limit normalizer: non-finite / non-positive fall to the 1000 cap, fractional limits floor", async () => {
+      // Base suite pins 50_000/omitted/-5/25; this pins the remaining
+      // branches of the clamp: Infinity fails Number.isFinite, null coerces
+      // to 0 (not > 0), and Math.floor owns fractional limits.
+      const seen = [];
+      const realFetch = guild.bans.fetch;
+      guild.bans.fetch = async (arg) => {
+        seen.push(arg);
+        return new Map();
+      };
+      try {
+        await outbound.listBans(communityId, { limit: Infinity });
+        await outbound.listBans(communityId, { limit: null });
+        await outbound.listBans(communityId, { limit: 2.9 });
+        assert.deepEqual(seen.map((o) => o?.limit), [1000, 1000, 2]);
+      } finally {
+        guild.bans.fetch = realFetch;
+      }
+    });
+
+    it("listBans keeps generic API causes with their code (50013 is not the only named failure)", async () => {
+      const realFetch = guild.bans.fetch;
+      guild.bans.fetch = async () => {
+        throw Object.assign(new Error("Unknown Account"), { code: 10001, status: 404 });
+      };
+      try {
+        const res = await outbound.listBans(communityId);
+        assert.equal(res.ok, false);
+        assert.equal(String(res.code), "10001");
+        assert.match(res.error, /listBans: community \d+ failed: Unknown Account/);
+        assert.ok(!res.error.includes("Missing Access"), "only 50013 gets the permission sentence");
+      } finally {
+        guild.bans.fetch = realFetch;
+      }
+    });
+  });
+
   describe("community id discipline", () => {
     it("snowflake strings throw the assertCommunityId programmer error", async () => {
       const message = "community id required, got string";
