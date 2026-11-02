@@ -62,6 +62,26 @@ who acts, not what happens:
 Everything after opening is the normal lifecycle: **T-n** numbering, close →
 archive, transcripts, the works.
 
+### Ban-appeal tickets (#773)
+
+Ban appeals (#773) ride **this exact pipeline** too — `openTicketChannel`
+through the **#745 staff-self branch**, no parallel system — with one
+structural inversion: **the appealing user is never a member of the ticket.**
+They are banned; they cannot see the guild, are never the creator, never an
+overwrite target, never DM'd by the ticket flow. The ticket is owned by the
+ban's human moderator (guild owner for unattributed automod bans) and carries
+the shipped senior-staff-role overwrites; the channel is best-effort renamed
+`appeal-B<n>-<userid>`. The bot-side **ferry** is the user's only channel into
+the ticket — the header states that everything typed in the channel reaches
+them verbatim, and carries the **Grant clemency** / **Appeal denied** /
+**Pause relaying** buttons. Outcomes close through the shared close→archive
+flow; deleting the channel WITHOUT a decision is detected feature-side and
+sends a **neutral** notice ("staff ended the conversation … the ban stands")
+instead of pretending a decision happened. Decisions, ferry law, and the
+privacy rules: [Ban Lifecycle → Ban Appeals](ban-lifecycle.md). **Discord
+only** — ban appeals are explicit Fluxer no-parity, so no appeal ever opens
+a ticket on Fluxer.
+
 ## Setup
 
 1. Give the bot **Manage Channels** (and keep **Manage Roles** if you use level/reaction roles). Without Manage Channels, Discord returns `50013 Missing Permissions` on create.
