@@ -349,6 +349,7 @@ Each Discord server (guild) has its own settings stored in SQLite.
 | `automod_paused_at` / `automod_pause_reason` | *(none)* | Persisted circuit-breaker pause — clears via `/automodconfig safety resume` (two-step `confirm:`) |
 | `ban_dm` | `1` | DM the member BEFORE a tracked ban runs, with the expiry stamps (`/bannotify ban`; `0` = bans skip the DM, the ban is unchanged) — [Ban Lifecycle](ban-lifecycle.md) |
 | `welcome_back_dm` | `1` | Exactly one welcome-back DM per unban cycle, auto-expiry or manual (`/bannotify welcome`; `0` = silence, parked rejoin retries stay parked) — [Ban Lifecycle](ban-lifecycle.md) |
+| `ban_appeals` | `1` | Ban-appeal flow: Appeal button on the tracked-ban DM + staff ticket relay (`/banappeals enable\|disable`; `0` = presses refused, no tickets — appeals already in flight keep ferrying and stay decidable). Discord-only (#773 explicit Fluxer no-parity) — [Ban Lifecycle](ban-lifecycle.md) |
 
 The table above covers the knobs staff configure directly; `guild_settings` carries more columns (full live DDL: [Database](database.md#4-guild-settings-guild-settings)). Most have a configuring command documented on the owning feature page — `/settings` is the read-side view.
 

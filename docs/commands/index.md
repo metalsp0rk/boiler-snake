@@ -1612,6 +1612,35 @@ Every toggle mutation lands a `banLifecycle.*` audit row + the
 `/automodconfig`-style audit embed. Manage Server in the picker AND the
 handler; Discord-only (explicit Fluxer no-parity).
 
+### `/banappeals` - Ban appeals intake (admin)
+
+The intake toggle for the #773 ban-appeal flow: with it on, every tracked ban
+DM carries an **Appeal this ban** button; presses file a statement into a
+private staff ticket and the bot ferries the conversation between the banned
+user's DMs and that ticket until staff decide (clemency / denial / neutral
+close). Full mechanics: [Ban Lifecycle → Ban Appeals](../ban-lifecycle.md).
+
+**Usage**:
+```bash
+/banappeals enable       # appeals on: tracked ban DMs carry the Appeal button (default)
+/banappeals disable      # appeals off: presses get a refusal, no tickets open
+/banappeals status       # show the current setting
+```
+
+| Subcommand | Effect |
+|------------|--------|
+| `enable` | Guild setting `ban_appeals` **on** — tracked ban DMs carry the Appeal button; presses open staff appeal tickets |
+| `disable` | `ban_appeals` **off** — new presses refused with a specific reply, no tickets open. **Intake-only**: appeals already in flight keep ferrying and stay decidable |
+| `status` | Read the toggle + the one-per-ban defaults note |
+
+One appeal per ban cycle is schema law (`UNIQUE(ban_record_id)`), not luck —
+a decided cycle's button answers with what happened to that appeal. Every
+toggle mutation lands a `banAppeals.toggle_set` audit row + the
+`/automodconfig`-style audit embed. Manage Server in the picker AND the
+handler (the handler is the security source of truth); Discord-only — Fluxer
+answers `That command is not available on Fluxer yet.` (explicit
+no-parity — the DM button, modal, and ferry are Discord component mechanics).
+
 ### "Ban member" - Tracked ban (user context menu, admin)
 
 Discord **context-menu** command — no slash. Open via **right-click
@@ -1709,6 +1738,7 @@ explicit no-parity. See [Ban Lifecycle](../ban-lifecycle.md).
 | `/set-moderation-queue set\|clear` (#771) | ManageGuild (picker AND handler) | Yes |
 | `/ban member [reason] [duration]` (#772) | ManageGuild (picker AND handler) | Yes |
 | `/bannotify ban\|welcome\|status` (#772) | ManageGuild (picker AND handler) | Yes |
+| `/banappeals enable\|disable\|status` (#773) | ManageGuild (picker AND handler) | Yes |
 | `Ban member` (user **context menu**, right-click → Apps, #772) | ManageGuild (admin-tier picker — NOT the staff-tier allow-sync of the report/referral menus) | Yes |
 | `/staff role add\|remove\|setlevel` | ManageGuild | Yes |
 | `/staff syncpermissions` | ManageGuild | Yes |
@@ -1813,5 +1843,6 @@ MANAGE SERVER ONLY:
 /automodconfig safety resume       → Re-arm auto kick/ban/timeout (confirm:true, #725)
 /ban member [reason] [duration]    → Tracked ban: ban DM + auto-unban at expiry (#772; modal when a field is missing)
 /bannotify ban|welcome|status      → Ban-notice DM toggles, both default on (#772)
+/banappeals enable|disable|status  → Ban-appeal intake toggle, default on; one appeal per tracked ban (#773)
 "Ban member"                  → Right-click member → Apps (always the ban modal, admin, #772)
 ```
