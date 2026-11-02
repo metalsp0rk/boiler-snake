@@ -41,16 +41,20 @@ const assertCommunityId = (id) =>
 /**
  * Status vocabulary — the SINGLE code-side source, mirroring the
  * ban_records `status` CHECK in migration 074. The machine is APPEND-ONLY:
- * SQLite cannot widen a CHECK in place, so an extension (#773 adds
- * `clemency_granted`) lands as a NEW migration that rebuilds the constraint
- * plus one entry appended HERE — never by editing 074 in place. Existing ids
- * and rows are never renumbered: #773 keys appeals as `appeal:<banRecordId>`.
+ * SQLite cannot widen a CHECK in place, so an extension lands as a NEW
+ * migration that rebuilds the constraint plus one entry appended HERE —
+ * never by editing 074 in place. Existing ids and rows are never
+ * renumbered: #773 keys appeals as `appeal:<banRecordId>`. Migration 075
+ * (#773) widened the CHECK with `clemency_granted` (074's promised path);
+ * the ban-records tripwire test parses the stored CHECK from sqlite_master
+ * and pins this list against it, ORDER INCLUDED — keep appends at the END.
  *
  *   active            ban in force (only row the partial UNIQUE admits)
  *   expired_unbanned  the expiry ticker lifted the ban
  *   unbanned_manual   lifted outside the bot (event path) or by staff
  *   pending_rejoin    unbanned, welcome DM not delivered — retry on rejoin
  *   welcomed          rejoin welcome attempt made (regardless of outcome)
+ *   clemency_granted  appeal granted (#773): ban lifted early, invite path ran
  */
 const BAN_RECORD_STATUSES = Object.freeze([
   "active",
@@ -58,6 +62,7 @@ const BAN_RECORD_STATUSES = Object.freeze([
   "unbanned_manual",
   "pending_rejoin",
   "welcomed",
+  "clemency_granted",
 ]);
 
 /** Ban provenance vocabulary (migration 074 `source` CHECK). */

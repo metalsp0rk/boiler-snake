@@ -262,6 +262,11 @@ function updateGuildSettings(communityId, patch) {
     // `Number(s.ban_dm ?? 1) !== 0` idiom.
     "ban_dm",
     "welcome_back_dm",
+    // Ban appeals intake gate (#773, migration 075) — same default-ON
+    // toggle family. OFF removes the Appeal button from NEW ban DMs and
+    // refuses new filings; existing appeals stay decidable (the toggle
+    // gates intake, never outcomes). Same explicit-off write-belt below.
+    "ban_appeals",
     "ticket_category_id",
     "ticket_archive_channel_id",
     "ticket_rate_limit_minutes",
@@ -434,6 +439,12 @@ function updateGuildSettings(communityId, patch) {
   }
   if (safePatch.welcome_back_dm !== undefined) {
     safePatch.welcome_back_dm = normalizeBanNotifyFlag(safePatch.welcome_back_dm);
+  }
+  // #773 appeals intake gate — same explicit-off tri-state as its notice-
+  // toggle siblings (an off that reads as 0 under the `Number(x ?? 1) !== 0`
+  // idiom, never truthy TEXT).
+  if (safePatch.ban_appeals !== undefined) {
+    safePatch.ban_appeals = normalizeBanNotifyFlag(safePatch.ban_appeals);
   }
   if (typeof safePatch.automod_rules === "string") {
     safePatch.automod_rules = safePatch.automod_rules.slice(0, AUTOMOD_RULES_MAX_LEN);

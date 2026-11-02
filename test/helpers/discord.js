@@ -400,6 +400,39 @@ function createTextChannel(opts = {}) {
       create: async (threadOpts) =>
         createThreadChannel(channel, threadOpts || {}),
     },
+    /**
+     * #773 additive BaseGuildTextChannel#createInvite double: records the
+     * VERBATIM options on the owning guild's `_invites` assertion buffer
+     * ({ channelId, options } — policy pinning reads options directly) and
+     * resolves a fresh Invite-shaped `{ code, url }` like the real manager
+     * (no cache write). Deleted channels are gone for REST too (10003, the
+     * same #449 fidelity law as send()). Codes come from a per-guild
+     * sequence (orphan channels share one factory-wide counter, like
+     * createThreadChannel's orphan seq).
+     */
+    createInvite: async (options = {}) => {
+      if (deleted) {
+        throw Object.assign(new Error("DiscordAPIError[10003]: Unknown Channel"), {
+          code: 10003,
+        });
+      }
+      // Dynamic guild lookup: addChannel() re-parents a factory-made channel
+      // AFTER creation, so the closure `guild` can lag behind channel.guild.
+      const g = channel.guild || guild;
+      let seq;
+      if (g) {
+        g._inviteSeq = (g._inviteSeq || 0) + 1;
+        seq = g._inviteSeq;
+      } else {
+        createTextChannel._orphanInviteSeq = (createTextChannel._orphanInviteSeq || 0) + 1;
+        seq = createTextChannel._orphanInviteSeq;
+      }
+      const code = `mock-inv-${seq}`;
+      if (Array.isArray(g?._invites)) {
+        g._invites.push({ channelId: id, options });
+      }
+      return { code, url: `https://discord.gg/${code}` };
+    },
     permissionsFor: () => ({
       has: () => true,
     }),
@@ -567,6 +600,11 @@ function createGuild(opts = {}) {
   // outbound's unbanMember helper) — same buffer law as bans/kicks: stable
   // array identity, push-only (integration tests clear it with length = 0).
   const unbans = [];
+  // #773: channel.createInvite() collector (ban-appeal clemency invites via
+  // the platform outbound's createInvite helper) — same buffer law: the
+  // array identity is stable and entries push { channelId, options } with
+  // the options recorded VERBATIM so tests can pin the invite policy.
+  const invites = [];
   const voiceStates = new Map();
   let roleSeq = 1;
 
@@ -731,6 +769,7 @@ function createGuild(opts = {}) {
     _bans: bans,
     _kicks: kicks,
     _unbans: unbans,
+    _invites: invites,
     addMember(member) {
       membersById.set(member.id, member);
       return member;

@@ -122,7 +122,7 @@ describe("db layer", () => {
     const { runMigrations } = require("../src/db/migrate");
     api.db.pragma("user_version = 0"); // #202 guard: force the FULL replay, not the fast-skip
     assert.doesNotThrow(() => runMigrations());
-    assert.equal(Number(api.db.pragma("user_version", { simple: true })), 74);
+    assert.equal(Number(api.db.pragma("user_version", { simple: true })), 75);
   });
 
   describe("gork settings (migration 021 + clamps)", () => {
@@ -688,6 +688,85 @@ describe("db layer", () => {
     });
   });
 
+  describe("ban appeals intake toggle + repo facade (migration 075 + #773)", () => {
+    it("075_ban_appeals is registered and lands ban_appeals with the cycle belt", () => {
+      const { migrations } = require("../src/db/migrate");
+      assert.ok(
+        migrations.some((m) => m.id === "075_ban_appeals"),
+        "075_ban_appeals must be registered in migrate.js"
+      );
+      const table = api.db
+        .prepare(
+          `SELECT name FROM sqlite_master WHERE type='table' AND name='ban_appeals'`
+        )
+        .get();
+      assert.ok(table, "ban_appeals table must exist");
+      assert.ok(
+        api.db
+          .prepare(
+            `SELECT name FROM sqlite_master WHERE type='index' AND name='uq_ban_appeals_ban_record'`
+          )
+          .get(),
+        "uq_ban_appeals_ban_record must exist (one appeal per ban cycle)"
+      );
+      const cols = new Set(
+        api.db.prepare(`PRAGMA table_info(guild_settings)`).all().map((c) => c.name)
+      );
+      assert.ok(cols.has("ban_appeals"), "missing column: ban_appeals");
+    });
+
+    it("fresh guild row defaults ban_appeals to 1 (intake default-ON)", () => {
+      const s = api.getGuildSettings(communityKey("g-ban-appeals-fresh"));
+      assert.equal(s.ban_appeals, 1);
+    });
+
+    it("ban_appeals coerces to 0/1, persists, and preserves siblings", () => {
+      const g = communityKey("g-ban-appeals-toggle");
+      api.updateGuildSettings(g, { ban_dm: 0 });
+      const expectFlag = (value, expected) => {
+        const s = api.updateGuildSettings(g, { ban_appeals: value });
+        assert.equal(s.ban_appeals, expected, `ban_appeals ${String(value)} -> ${expected}`);
+      };
+      expectFlag(0, 0);
+      expectFlag("off", 0);
+      expectFlag(false, 0);
+      expectFlag(1, 1);
+      expectFlag("on", 1);
+      const s = api.getGuildSettings(g);
+      assert.equal(s.ban_appeals, 1, "value must persist across reads");
+      assert.equal(
+        s.ban_dm,
+        0,
+        "the appeals toggle must not clobber the ban-DM sibling"
+      );
+    });
+
+    it("banAppeals facade exports are reachable via the loadDb()/src/db.js path", () => {
+      for (const name of [
+        "fileAppeal",
+        "getAppealById",
+        "getAppealByTicketChannel",
+        "attachAppealTicketChannel",
+        "openAppeal",
+        "claimAppealOutcome",
+        "saveAppealCursor",
+        "loadAppealCursor",
+        "setAppealFerryPaused",
+      ]) {
+        assert.equal(typeof api[name], "function", `${name} must be a facade function`);
+      }
+      assert.deepEqual(
+        [...api.BAN_APPEAL_STATUSES],
+        ["filed", "open", "granted", "denied", "closed"],
+      );
+      assert.ok(Object.isFrozen(api.BAN_APPEAL_STATUSES), "code-side vocabulary is frozen");
+      assert.deepEqual([...api.APPEAL_OUTCOMES], ["granted", "denied", "closed"]);
+      assert.deepEqual([...api.APPEAL_FERRY_DIRECTIONS], ["user", "ticket"]);
+      assert.equal(api.MAX_APPEAL_STATEMENT, 4000);
+      assert.equal(api.MAX_DENIAL_REASON, 1000);
+    });
+  });
+
   describe("facade export shape (audit P2, #207)", () => {
     // The facade surface is repository functions plus this explicit set of
     // constants/handles. A typo'd mapping silently exports `undefined` —
@@ -739,6 +818,11 @@ describe("db layer", () => {
       "BAN_SOURCES", // #772: staff | automod ban provenance
       "MAX_BAN_REASON", // #772: ban reason cap (1000)
       "UNBAN_CLAIM_LEASE_MS", // #772: steal window for a crashed auto-unban claim
+      "BAN_APPEAL_STATUSES", // #773: ban_appeals status vocabulary (075) — append-only machine
+      "APPEAL_OUTCOMES", // #773: the three claimable decided endings (granted | denied | closed)
+      "APPEAL_FERRY_DIRECTIONS", // #773: user | ticket — keys the per-direction cursor columns
+      "MAX_APPEAL_STATEMENT", // #773: appeal statement cap (4000 = Discord modal hard limit)
+      "MAX_DENIAL_REASON", // #773: denial reason cap (1000, the case-explanation family)
     ]);
 
     it("exports no undefined value", () => {

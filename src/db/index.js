@@ -46,6 +46,7 @@ const bridges = require("./repositories/bridges");
 const userLinks = require("./repositories/userLinks");
 const events = require("./repositories/events");
 const banRecords = require("./repositories/banRecords");
+const banAppeals = require("./repositories/banAppeals");
 
 module.exports = {
   db,
@@ -723,4 +724,23 @@ module.exports = {
   markWelcomed: banRecords.markWelcomed,
   recordBanDmSent: banRecords.recordBanDmSent,
   recordWelcomeDmSent: banRecords.recordWelcomeDmSent,
+
+  // ban appeals (#773, migration 075: ban_appeals + the clemency_granted
+  // CHECK extension + the ban_appeals intake toggle). One appeal per ban
+  // cycle keyed on the stable record id; the outcome claim is first-decision-
+  // wins; cursors persist per ferry direction, pause is relay-only.
+  BAN_APPEAL_STATUSES: banAppeals.BAN_APPEAL_STATUSES,
+  APPEAL_OUTCOMES: banAppeals.APPEAL_OUTCOMES,
+  APPEAL_FERRY_DIRECTIONS: banAppeals.FERRY_DIRECTIONS,
+  MAX_APPEAL_STATEMENT: banAppeals.MAX_APPEAL_STATEMENT,
+  MAX_DENIAL_REASON: banAppeals.MAX_DENIAL_REASON,
+  fileAppeal: banAppeals.fileAppeal,
+  getAppealById: banAppeals.getAppealById,
+  getAppealByTicketChannel: banAppeals.getAppealByTicketChannel,
+  attachAppealTicketChannel: banAppeals.attachAppealTicketChannel,
+  openAppeal: banAppeals.openAppeal,
+  claimAppealOutcome: banAppeals.claimAppealOutcome,
+  saveAppealCursor: banAppeals.saveAppealCursor,
+  loadAppealCursor: banAppeals.loadAppealCursor,
+  setAppealFerryPaused: banAppeals.setAppealFerryPaused,
 };
