@@ -2,12 +2,23 @@
  * Ban appeals — VALIDATION CORE (#773 §1 + locked decision 6).
  *
  * The intake battery every press and every modal submit must pass BEFORE
- * anything is filed. Pure decision logic: NO Discord objects ever enter or
- * leave, and every storage read is an injectable dep (defaults resolve the
- * db facade lazily at CALL time, banService posture — requiring this module
- * with injected deps never opens SQLite). Filing orchestration (open the
- * ticket, post the header) is subtask 04; it codes against THESE result
- * shapes.
+ * anything is filed. The validation core is pure decision logic: NO Discord
+ * objects enter the validators, and every storage read is an injectable dep
+ * (defaults resolve the db facade lazily at CALL time, banService posture —
+ * requiring this module never opens SQLite). BELOW the validators lives the
+ * FILING ORCHESTRATION (#773 subtask 04): `buildAppealModal` + the one submit
+ * pipeline `handleAppealModalSubmit` — validate → `fileAppeal` → `ticket.js
+ * openAppealTicket` → `filed→open` → confirmation DM → ban-DM button
+ * edit-away. It returns DECISION OBJECTS for the guildless listener (subtask
+ * 07 owns the InteractionCreate wiring); it never replies itself and never
+ * rejects.
+ *
+ * Pending-truth law (#730, issue §2): a ticket failure leaves the appeal row
+ * `filed` with NULL ticket — the honest pending state — the user gets the
+ * SPECIFIC cause and is never told "filed", and the failure is logged loudly
+ * with ids. There is deliberately NO automatic ticket retry in v1: the filed
+ * row + the loud log are the pending surface (a boot/staff sweep is a
+ * documented follow-up, not shipped copy).
  *
  * Decision-code enum (INTAKE_CODES — the single source later tasks match
  * on; values are stable strings, never re-spelled inline):
@@ -43,8 +54,23 @@
  * allowedMentions {parse: []} — the validator performs neither.
  */
 
+// Modal chrome for the statement form (banModal.js posture; discord.js is
+// load-safe — nothing SQLite enters the require graph at load).
+const {
+  ModalBuilder,
+  ActionRowBuilder,
+  TextInputBuilder,
+  TextInputStyle,
+} = require("discord.js");
+// core/theme is load-safe (discord.js + core/text only).
+const { tsFull } = require("../../core/theme");
 const {
   LOG_PREFIX, // re-exported so the caller's log lines share one grep
+  APPEAL_MODAL_TITLE,
+  MODAL_APPEAL_PREFIX,
+  MODAL_FIELD_STATEMENT,
+  MODAL_LABEL_STATEMENT,
+  parseModalAppealRecordId,
   refusalNotYou,
   refusalNoRecord,
   refusalNotActive,
@@ -332,9 +358,483 @@ function validateModalSubmission(input = {}) {
   return { ...press, statement, nowMs: d.now() };
 }
 
+/* ══ FILING ORCHESTRATION (#773 subtask 04 — §1 §2 §3 up-front notice) ══════
+ * One pipeline behind the `appeal:s:<banRecordId>` modal submit (durable-id
+ * based — NO token store; the 075 UNIQUE is the one-shot belt):
+ *
+ *   validate (full press battery AGAIN + statement rules)
+ *     → fileAppeal (status 'filed' — the pending truth)
+ *     → ticket.js openAppealTicket (staff-only channel + header + buttons)
+ *     → attach channel + filed→open (CAS inside openAppealTicket)
+ *     → §5 audit row → confirmation DM (§3 up-front notice)
+ *     → ban-DM button edit-away to `**Appeal:** filed <timestamp>`
+ *
+ * Every terminal is a DECISION OBJECT ({ ok, code, error?, ids… }) for the
+ * guildless listener (07): this module NEVER replies to Discord. Post-filing
+ * outbound steps (audit / DM / edit-away) are individually guarded — a
+ * confirmation DM or ban-DM edit failure is logged with ids and changes
+ * NOTHING that already succeeded (K2 DM law: logged, never echoed).
+ */
+
+/* ── filing decision codes (ASSIGNED consts — env-parity scanner law; the
+ * validator codes above cover everything BEFORE filing) ──────────────────── */
+
+const CODE_FILED = "FILED";
+const CODE_FILE_FAILED = "FILE_FAILED";
+const CODE_TICKET_FAILED = "TICKET_FAILED";
+const CODE_INTERNAL = "INTERNAL";
+
+/** The enum every filing caller matches against (frozen). */
+const FILING_CODES = Object.freeze({
+  FILED: CODE_FILED,
+  FILE_FAILED: CODE_FILE_FAILED,
+  TICKET_FAILED: CODE_TICKET_FAILED,
+  INTERNAL: CODE_INTERNAL,
+});
+
+/** admin_audit action vocabulary entry for a filing (issue §5). */
+const AUDIT_ACTION_FILE = "banAppeals.file";
+
+/* ── user-facing copy (exact strings docs + 05/06/07 consume) ───────────────
+ * `**Label:** value` law (#471 H2-13); no mentions are ever sent, so every
+ * payload carries allowedMentions { parse: [] } (dmCopy DM law). */
+
+/**
+ * The filing confirmation DM (issue §3 "Up-front notice": it MUST state the
+ * text/images/video rule and the no-reactions rule; the pause mention keeps
+ * the user honest about silence).
+ *
+ * @returns {{ content: string, allowedMentions: { parse: string[] } }}
+ */
+function buildFilingConfirmationDm() {
+  return {
+    content: [
+      "**Appeal:** filed — staff have your statement and can reply to you here.",
+      "**Shared:** only text, images, and video are relayed to staff — " +
+        "reactions, embeds, audio, stickers, polls, and forwarded messages " +
+        "are never shared; anything un-sharable gets you a specific notice here.",
+      "**Replies:** staff may pause the relay while they discuss your case, " +
+        "so answers can take a while.",
+      "**One per ban:** this ban gets exactly one appeal — staff decisions " +
+        "are final for this ban.",
+    ].join("\n"),
+    allowedMentions: { parse: [] },
+  };
+}
+
+/**
+ * The ban-DM replacement line after a successful filing (issue §1: the
+ * button is edited away and replaced by `**Appeal:** filed <timestamp>`).
+ * @param {number} filedAtMs ms epoch (the stored appeal's created_at)
+ */
+function buildFiledBanDmLine(filedAtMs) {
+  return `**Appeal:** filed ${tsFull(filedAtMs)}`;
+}
+
+/**
+ * Amended ban-DM content: the original copy kept (the user's record of the
+ * ban), the button line appended below it. Empty/garbage original degrades
+ * to the filed line alone — the edit never throws on shape.
+ *
+ * @param {unknown} originalContent the ban DM's current content
+ * @param {number} filedAtMs ms epoch
+ * @returns {string}
+ */
+function buildAppealDmEditContent(originalContent, filedAtMs) {
+  const base = String(originalContent ?? "").trim();
+  const line = buildFiledBanDmLine(filedAtMs);
+  return base === "" ? line : `${base}\n\n${line}`;
+}
+
+/**
+ * Ticket-failure user copy (#730/§2: the SPECIFIC cause, the honest pending
+ * state — never "filed", never a ticket claim).
+ * @param {string} cause the specific failure sentence from ticket.js
+ */
+function refusalTicketFailed(cause) {
+  return (
+    "**Appeal:** your statement was saved, but the private staff review " +
+    `channel could not be opened (${String(cause ?? "unknown failure")}). ` +
+    "Staff can still see the pending appeal on their side — if you don't " +
+    "hear back, reach out to a staff member another way. The ban itself is " +
+    "unchanged."
+  );
+}
+
+/* ── the modal builder ────────────────────────────────────────────────────── */
+
+/** Tolerant text-input reader (banModal/report idiom): missing/odd → "". */
+function readModalText(interaction, fieldId) {
+  try {
+    return String(
+      interaction?.fields?.getTextInputValue?.(fieldId) ?? "",
+    ).trim();
+  } catch {
+    return "";
+  }
+}
+
+/**
+ * The statement modal (`appeal:s:<banRecordId>` — durable-id based, NO token
+ * store; the 075 UNIQUE(ban_record_id) is the durable one-shot). Paragraph,
+ * REQUIRED, capped at MAX_APPEAL_STATEMENT (the repository's truth; the
+ * modal clamps first, `validateModalSubmission` belts).
+ *
+ * @param {number|string} recordId the ban record id riding in the customId
+ * @param {object} [opts]
+ * @param {number} [opts.maxChars] cap override (tests)
+ * @returns {ModalBuilder}
+ */
+function buildAppealModal(recordId, opts = {}) {
+  // Lazy: the cap mirrors the repository's MAX_APPEAL_STATEMENT and the db
+  // facade opens SQLite at require time (#699 law — banModal exemplar).
+  const maxChars =
+    opts?.maxChars != null
+      ? Number(opts.maxChars)
+      : require("../../db").MAX_APPEAL_STATEMENT;
+  const statement = new TextInputBuilder()
+    .setCustomId(MODAL_FIELD_STATEMENT)
+    .setLabel(`${MODAL_LABEL_STATEMENT} — required`)
+    .setStyle(TextInputStyle.Paragraph)
+    .setRequired(true)
+    .setMaxLength(maxChars)
+    .setPlaceholder(
+      "What should staff consider? Your statement reaches them verbatim.",
+    );
+  return new ModalBuilder()
+    .setCustomId(`${MODAL_APPEAL_PREFIX}${recordId}`)
+    .setTitle(APPEAL_MODAL_TITLE)
+    .addComponents(new ActionRowBuilder().addComponents(statement));
+}
+
+/* ── the one submit pipeline (listener: 07 wires InteractionCreate) ───────── */
+
+/** Fail-safe §5 audit row for a landed filing (auditTrail is fail-safe by
+ * contract — the try/catch is the belt, a broken audit write must never turn
+ * a delivered appeal into a reported failure). */
+function auditFiling({
+  communityId,
+  actorUserId,
+  appealId,
+  banRecordId,
+  status,
+  ticketChannelId,
+}) {
+  try {
+    // Lazy: core/auditTrail requires the db facade at load (#699 law).
+    const { recordSlashAudit } = require("../../core/auditTrail");
+    recordSlashAudit({
+      communityId,
+      actorUserId,
+      action: AUDIT_ACTION_FILE,
+      targetType: "ban_appeal",
+      targetId: String(appealId),
+      details: {
+        ban_record_id: banRecordId,
+        status,
+        ticket_channel_id: ticketChannelId ?? null,
+      },
+    });
+  } catch (err) {
+    console.error(
+      `${LOG_PREFIX} appeal filing audit failed community=${communityId} appeal=${appealId}:`,
+      err?.message || err,
+    );
+  }
+}
+
+/**
+ * File the appeal behind an `appeal:s:<banRecordId>` MODAL SUBMIT. Inputs
+ * arrive as plain data (the listener already routed the guildless
+ * interaction); everything Discord-facing rides injectable seams.
+ *
+ * Decision outcomes (all `{ ...ids }`-carrying; the CALLER logs
+ * `[appeals] …` with them and owns the ephemeral reply — this module never
+ * replies):
+ *  - validator codes (NOT_YOU/NO_RECORD/…) — the battery result, passed
+ *    through untouched;
+ *  - FILED — appeal open, confirmation DM + ban-DM edit attempted (their
+ *    per-step results ride on the decision: dmDelivered/dmError/banDmEdited/
+ *    banDmEditError — logged here, never fatal);
+ *  - ALREADY_FILED — includes the UNIQUE-race re-read (copy keys the live
+ *    status);
+ *  - FILE_FAILED — the repository's specific sentence, nothing stored;
+ *  - TICKET_FAILED — the appeal row STAYS `filed` with NULL ticket (the
+ *    pending truth; never claimed filed), error names the specific cause;
+ *  - INTERNAL / DB_ERROR — unexpected throw before filing.
+ *
+ * @param {object} params
+ * @param {object} [params.interaction] the modal submit (user/message/customId source)
+ * @param {number|string} [params.banRecordId] parsed record id (defaults to parsing the customId)
+ * @param {string} [params.pressingUserId] submitter id override (tests / listener shape)
+ * @param {string} [params.statement] statement override (else read from the modal fields)
+ * @param {object} [params.client] Discord client (supervisor.discord at the edge; DM sender + ticket guilds)
+ * @param {object} [params.deps] seams: getBanRecord, getAppealByBanRecord, appealsGate,
+ *   maxStatementLength, now, fileAppeal, openAppealTicket, guild, sendDm, editBanDm,
+ *   banDmMessage (explicit ban-DM message reference, overriding interaction.message),
+ *   ticketDeps (seams forwarded INTO ticket.js openAppealTicket: openTicketChannel,
+ *   attachAppealTicketChannel, openAppeal, listWarnings, listStaffNotes, fetchUser)
+ * @returns {Promise<object>} decision object (never rejects)
+ */
+async function handleAppealModalSubmit(params = {}) {
+  const deps = params.deps || {};
+  // Hoisted so the outer catch can tell "before filing" (Nothing was filed.)
+  // from "after filing" (pending-truth copy) honestly.
+  let filed = null;
+  let record = null;
+  let communityId = null;
+  let banRecordId = null;
+  const ids = () =>
+    `community=${communityId ?? "?"} record=${banRecordId ?? "?"}` +
+    ` user=${record?.user_id ?? "?"} appeal=${filed?.id ?? "?"}`;
+
+  try {
+    const interaction = params.interaction ?? null;
+    const submitterId =
+      params.pressingUserId ?? interaction?.user?.id ?? null;
+    const recordIdRaw =
+      params.banRecordId ??
+      parseModalAppealRecordId(interaction?.customId ?? "");
+    const statement =
+      params.statement ?? readModalText(interaction, MODAL_FIELD_STATEMENT);
+    const client =
+      params.client ?? deps.client ?? interaction?.client ?? null;
+
+    // ── 1. the FULL battery AGAIN (settings can have flipped, a parallel
+    // press can have filed the cycle's single appeal between press and
+    // submit) + statement rules ─────────────────────────────────────────────
+    const validation = validateModalSubmission({
+      banRecordId: recordIdRaw,
+      pressingUserId: submitterId,
+      communityId: params.communityId ?? null,
+      statement,
+      deps,
+    });
+    if (!validation.ok) return validation; // validator's specific refusal
+
+    communityId = validation.communityId;
+    banRecordId = validation.banRecordId;
+    record = validation.record;
+
+    // ── 2. file (status 'filed' — pending truth until a ticket exists) ─────
+    const fileFn = deps.fileAppeal || ((p) => dbApi().fileAppeal(p));
+    const fileRes = await fileFn({
+      communityId,
+      banRecordId,
+      appealStatement: validation.statement,
+      createdAt: validation.nowMs,
+    });
+    if (!fileRes || fileRes.ok !== true) {
+      if (fileRes?.code === "APPEAL_EXISTS") {
+        // UNIQUE belt caught a race past the validator read — answer with
+        // the LIVE row so the refusal names the real status (§1).
+        let existing = null;
+        try {
+          const readFn =
+            deps.getAppealByBanRecord ||
+            ((c, r) => dbApi().getAppealByBanRecord(c, r));
+          existing = readFn(communityId, banRecordId) || null;
+        } catch (err) {
+          console.error(
+            `${LOG_PREFIX} appeal race re-read failed ${ids()}:`,
+            err?.message || err,
+          );
+        }
+        return fail(CODE_ALREADY_FILED, refusalAlreadyFiled(existing?.status), {
+          record,
+          appeal: existing,
+          communityId,
+          banRecordId,
+        });
+      }
+      console.error(
+        `${LOG_PREFIX} appeal filing failed ${ids()}:`,
+        fileRes?.error || "fileAppeal returned no result",
+      );
+      return fail(
+        CODE_FILE_FAILED,
+        fileRes?.error || "Could not save the ban appeal — nothing was filed.",
+        { record, communityId, banRecordId },
+      );
+    }
+    filed = fileRes.appeal;
+
+    // ── 3. the staff ticket (channel + header + buttons + filed→open) ──────
+    const openTicketFn =
+      deps.openAppealTicket ||
+      ((p) => require("./ticket").openAppealTicket(p));
+    const ticketRes = await openTicketFn({
+      appeal: filed,
+      banRecord: record,
+      communityId,
+      client,
+      statement: validation.statement,
+      guild: deps.guild,
+      deps: deps.ticketDeps,
+    });
+    if (!ticketRes || ticketRes.ok !== true) {
+      // #730 + issue §2: the appeal row stays `filed` with NULL ticket —
+      // the pending truth — and the user learns the SPECIFIC cause. Logged
+      // loudly here; ticket.js logged its own cause with the same ids.
+      console.error(
+        `${LOG_PREFIX} appeal filed but ticket FAILED ${ids()} — appeal ` +
+          "stays pending (filed, no ticket):",
+        ticketRes?.error || "openAppealTicket returned no result",
+      );
+      auditFiling({
+        communityId,
+        actorUserId: String(record.user_id ?? ""),
+        appealId: filed.id,
+        banRecordId,
+        status: "filed",
+        ticketChannelId: null,
+      });
+      return fail(
+        CODE_TICKET_FAILED,
+        refusalTicketFailed(
+          ticketRes?.error || "the staff review channel could not be created",
+        ),
+        {
+          record,
+          appeal: filed,
+          communityId,
+          banRecordId,
+          appealId: filed.id,
+          ticketError: ticketRes?.error ?? null,
+        },
+      );
+    }
+    const liveAppeal = ticketRes.appeal ?? filed;
+
+    // ── 4. §5 audit row (one per filing; reflects the TRUTHFUL state) ──────
+    auditFiling({
+      communityId,
+      actorUserId: String(record.user_id ?? ""),
+      appealId: filed.id,
+      banRecordId,
+      status: liveAppeal?.status ?? "open",
+      ticketChannelId: ticketRes.channelOfRecordId ?? null,
+    });
+
+    // ── 5. confirmation DM — best-effort (K2: logged with ids, never
+    // echoed to any channel; a failed notice never re-files or re-opens) ────
+    let dm = {
+      ok: false,
+      error: "no Discord client — the confirmation DM had no sender",
+    };
+    if (deps.sendDm || client) {
+      const sendFn =
+        deps.sendDm ||
+        ((userId, payload) =>
+          require("../../platform/discord/outbound")
+            .getDiscordOutbound(client)
+            .sendDm(userId, payload));
+      try {
+        dm =
+          (await sendFn(String(record.user_id), buildFilingConfirmationDm())) ||
+          dm;
+      } catch (err) {
+        dm = { ok: false, error: err?.message || String(err) };
+      }
+    }
+    if (!dm || dm.ok !== true) {
+      console.error(
+        `${LOG_PREFIX} filing confirmation DM failed ${ids()} channel=${
+          ticketRes.channelOfRecordId ?? "?"
+        }:`,
+        dm?.error || "sendDm returned no result",
+      );
+    }
+
+    // ── 6. ban-DM button edit-away (issue §1) — the interaction's own
+    // message is the ban DM (button→modal→submit carries it); best-effort:
+    // the DM channel being gone is EXPECTED for some users and never
+    // un-files anything (filing success never depends on this edit). ────────
+    const banDmMessage =
+      deps.banDmMessage !== undefined
+        ? deps.banDmMessage
+        : interaction?.message ?? null;
+    const filedAtMs =
+      Number(filed.created_at) > 0 ? Number(filed.created_at) : validation.nowMs;
+    let banDmEdited = false;
+    let banDmEditError = null;
+    if (banDmMessage && typeof banDmMessage.edit === "function") {
+      try {
+        const payload = {
+          content: buildAppealDmEditContent(
+            banDmMessage.content,
+            filedAtMs,
+          ),
+          components: [],
+          allowedMentions: { parse: [] },
+        };
+        if (deps.editBanDm) {
+          await deps.editBanDm(banDmMessage, payload);
+        } else {
+          await banDmMessage.edit(payload);
+        }
+        banDmEdited = true;
+      } catch (err) {
+        banDmEditError = err?.message || String(err);
+        console.error(
+          `${LOG_PREFIX} ban-DM button edit-away failed ${ids()} (non-fatal):`,
+          banDmEditError,
+        );
+      }
+    } else {
+      banDmEditError = "no ban-DM message reference carried by the submit";
+      console.warn(
+        `${LOG_PREFIX} ban-DM button edit-away skipped ${ids()}: ${banDmEditError}`,
+      );
+    }
+
+    return {
+      ok: true,
+      code: CODE_FILED,
+      communityId,
+      banRecordId,
+      appealId: filed.id,
+      userId: String(record.user_id ?? ""),
+      appeal: liveAppeal,
+      ticket: ticketRes.ticket,
+      channel: ticketRes.channel,
+      ticketChannelId: ticketRes.channelOfRecordId ?? null,
+      dmDelivered: dm?.ok === true,
+      dmError: dm?.ok === true ? null : dm?.error ?? "send failed",
+      banDmEdited,
+      banDmEditError,
+    };
+  } catch (err) {
+    // Rule 1/6: name the ids, answer with the CAUSE (rule 3). Post-filing
+    // throws report the pending truth; pre-filing throws honestly say
+    // nothing was filed.
+    const cause = String(err?.message || err);
+    console.error(
+      `${LOG_PREFIX} appeal modal submit failed ${ids()}:`,
+      err?.message || err,
+    );
+    if (filed) {
+      return fail(CODE_TICKET_FAILED, refusalTicketFailed(cause), {
+        record,
+        appeal: filed,
+        communityId,
+        banRecordId,
+        appealId: filed.id,
+      });
+    }
+    return fail(
+      CODE_INTERNAL,
+      refusalValidationFailed("appeal filing", cause),
+      { record, communityId, banRecordId },
+    );
+  }
+}
+
 module.exports = {
   LOG_PREFIX,
   INTAKE_CODES,
+  FILING_CODES,
+  AUDIT_ACTION_FILE,
   // individual codes (tests + callers may import any subset):
   CODE_OK,
   CODE_NOT_YOU,
@@ -345,6 +845,21 @@ module.exports = {
   CODE_DB_ERROR,
   CODE_MISSING_STATEMENT,
   CODE_STATEMENT_TOO_LONG,
+  CODE_FILED,
+  CODE_FILE_FAILED,
+  CODE_TICKET_FAILED,
+  CODE_INTERNAL,
   validateAppealPress,
   validateModalSubmission,
+  // filing orchestration (listener subtask 07 wires these):
+  buildAppealModal,
+  handleAppealModalSubmit,
+  // instruction-compat alias for the same pipeline:
+  handleModalSubmission: handleAppealModalSubmit,
+  // copy seams (docs + tests + subtasks 05/06/07 quote these exactly):
+  buildFilingConfirmationDm,
+  buildFiledBanDmLine,
+  buildAppealDmEditContent,
+  refusalTicketFailed,
+  readModalText,
 };
