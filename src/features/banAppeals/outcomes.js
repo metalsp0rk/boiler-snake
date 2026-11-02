@@ -204,7 +204,15 @@ function logWith(log, level, what, ids, cause) {
   const line =
     `${LOG_PREFIX} ${what} community=${ids.community ?? "?"} record=${ids.record ?? "?"}` +
     ` appeal=${ids.appeal ?? "?"} user=${ids.user ?? "?"} ticket=${ids.ticket ?? "?"}`;
-  const sink = level === "error" ? log.error : log.warn;
+  // Level law: info truths ride log.info (claim-WON / NOT_BANNED honesty
+  // lines are OPS SIGNALS, not warnings); warn/error per call site. A log
+  // double without an info channel degrades to warn — never silence.
+  const sink =
+    level === "error"
+      ? log.error
+      : level === "info"
+        ? (log.info ?? log.warn)
+        : log.warn;
   if (cause === undefined || cause === null) sink(`${line}: no cause reported`);
   else sink(`${line}:`, cause?.message || cause);
 }
