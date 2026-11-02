@@ -22,6 +22,7 @@ module.exports = [
   require("./commandPermissions"),
   require("./staffNotes"),
   require("./warnings"),
+  require("./banLifecycle"),
   require("./userinfo"),
   require("./userActivity"),
   require("./retention"),
