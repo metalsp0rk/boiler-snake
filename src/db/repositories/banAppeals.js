@@ -275,6 +275,68 @@ function getAppealByBanRecord(communityId, banRecordId) {
   );
 }
 
+/** Hard ceiling for the scan reads below (a LIST_LIMIT can never ask for
+ * the whole table; the live open-appeal population is tiny — this is the
+ * abuse guard, not a feature knob). */
+const LIST_SCAN_MAX = 500;
+const LIST_SCAN_DEFAULT = 200;
+
+/**
+ * OPEN appeals whose ban belongs to a user — the DM ferry lane. A banned
+ * user's DM carries no guild, so community scoping is impossible THERE;
+ * what scopes it is the person: the user id is globally unique, so every
+ * open appeal whose ban record belongs to that user is a lane the user is
+ * legitimately typing into (each row still relays only into ITS OWN
+ * ticket — the engine never merges communities). Cross-community by
+ * construction, documented in #773. Only `open` rows: `filed` rows have no
+ * ticket to relay into (the engine's structural guard would skip them), and
+ * decided statuses ended their relay.
+ *
+ * @param {string} userId the DM author's snowflake
+ * @param {number} [limit] scan bound (default 200, clamped to the 500 ceiling)
+ * @returns {object[]} open appeal rows (possibly empty; never null)
+ */
+function listOpenAppealsByUser(userId, limit = LIST_SCAN_DEFAULT) {
+  const user = optionalText(userId);
+  if (!user) return [];
+  const max = Math.min(
+    LIST_SCAN_MAX,
+    Math.max(1, Math.trunc(Number(limit)) || LIST_SCAN_DEFAULT),
+  );
+  return db
+    .prepare(
+      `SELECT a.* FROM ban_appeals a
+        JOIN ban_records r ON r.id = a.ban_record_id
+        WHERE r.user_id=? AND a.status='open'
+        ORDER BY a.id ASC LIMIT ?`,
+    )
+    .all(user, max);
+}
+
+/**
+ * OPEN appeals for the boot ferry catch-up (#773 §3 durability): the
+ * bounded scan `start()` replays per-direction history for. Ordered by id
+ * (stable walk), bounded — a deployment with thousands of stalled open
+ * appeals processes the OLDEST first and the rest await the next boot;
+ * cursors stay truthful either way (nothing is claimed relayed that was
+ * not). `filed` rows are deliberately NOT listed: they have no ticket,
+ * so there is nothing to catch up.
+ *
+ * @param {number} [limit] scan bound (default 200, clamped to the 500 ceiling)
+ * @returns {object[]} open appeal rows (possibly empty; never null)
+ */
+function listOpenAppeals(limit = LIST_SCAN_DEFAULT) {
+  const max = Math.min(
+    LIST_SCAN_MAX,
+    Math.max(1, Math.trunc(Number(limit)) || LIST_SCAN_DEFAULT),
+  );
+  return db
+    .prepare(
+      `SELECT * FROM ban_appeals WHERE status='open' ORDER BY id ASC LIMIT ?`,
+    )
+    .all(max);
+}
+
 /**
  * Attach the staff ticket channel (first attach wins — an appeal gets
  * exactly one ticket; a racing second attach reads `won:false` plus the LIVE
@@ -506,6 +568,8 @@ module.exports = {
   getAppealById,
   getAppealByBanRecord,
   getAppealByTicketChannel,
+  listOpenAppeals,
+  listOpenAppealsByUser,
   attachAppealTicketChannel,
   openAppeal,
   claimAppealOutcome,
