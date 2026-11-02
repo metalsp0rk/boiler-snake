@@ -18,39 +18,15 @@ const features = require("../src/features");
 // never throws).
 after(cleanup);
 
-/**
- * #773 stopgap — the SAME law command-visibility.test.js's
- * mergedCommandPayloads applies: the pins must cover the FULL wired command
- * surface NOW, while the banAppeals feature module's boot wiring
- * (src/features/index.js) lands in a later subtask of this stacked branch —
- * the features pin stays 30 here, 07 owns that bump to 31. So the feature's
- * exported command module joins the built registry in these two views.
- * The name-dedupe makes the merge a no-op once wiring registers the
- * commands through buildDefaultRegistry itself — the assertion only ever
- * tightens.
- *
- * @returns {object} registry with /banappeals applied (idempotently)
- */
-function banAppealsWiredRegistry() {
-  const registry = buildDefaultRegistry();
-  const banAppealsCommands = require("../src/features/banAppeals/commands");
-  const seen = new Set(registry.commands.map((c) => c.name));
-  for (const builder of banAppealsCommands.commands) {
-    const name =
-      typeof builder.toJSON === "function" ? builder.toJSON().name : builder.name;
-    if (!seen.has(name)) registry.addCommand(builder);
-  }
-  for (const [name, fn] of Object.entries(banAppealsCommands.handlers)) {
-    registry.registerHandler(name, fn, {
-      api: banAppealsCommands.handlerApi?.[name] ?? "interaction",
-    });
-  }
-  return registry;
-}
+// #773: the banAppeals feature module is BOOT-WIRED (src/features/index.js,
+// subtask 07) — the former merge stopgap that grafted its command module onto
+// a raw buildDefaultRegistry() is GONE: /banappeals now arrives through the
+// real registry like every other command, and these pins cover the wired
+// surface directly.
 
 describe("command definitions via registry", () => {
   it("exports 43 slash commands + 5 context menus with unique names", () => {
-    const { commands } = banAppealsWiredRegistry();
+    const { commands } = buildDefaultRegistry();
     // #745: 37 slash builders + "Report Post"/"Report User" context menus.
     // #725: + /automod and /automodconfig (auto-moderation epic #723).
     // #726: + "Refer to automod" context menu (/automod refer is a
@@ -61,8 +37,8 @@ describe("command definitions via registry", () => {
     // /ticket for subcommand — one new top-level menu, no new slash).
     // #772: + /ban, /bannotify and the "Ban member" context menu
     // (ban lifecycle: two new slashes + one menu).
-    // #773: + /banappeals (ban appeals intake toggle) — via the merge
-    // stopgap above until boot wiring lands.
+    // #773: + /banappeals (ban appeals intake toggle) — wired through
+    // src/features/index.js like every other feature command.
     assert.equal(commands.length, 48);
     const names = commands.map((c) => c.name);
     assert.equal(new Set(names).size, names.length);
@@ -150,7 +126,7 @@ describe("buildDefaultRegistry", () => {
     // its feature PR flips the flag. `ticket panel` is Discord-only INSIDE
     // the migrated /ticket handler (rawInteraction bridge) — the command
     // itself is context.
-    const registry = banAppealsWiredRegistry();
+    const registry = buildDefaultRegistry();
     const migrated = [
       "xp",
       "leaderboard",
@@ -186,9 +162,8 @@ describe("buildDefaultRegistry", () => {
       // #772: staff ban surface + notification toggles ride the same arm.
       "ban",
       "bannotify",
-      // #773: the ban-appeals toggle rides the same arm (registry built via
-      // banAppealsWiredRegistry above — the merge stopgap until the
-      // boot-wiring subtask puts the feature into src/features/index.js).
+      // #773: the ban-appeals toggle rides the same arm (boot-wired through
+      // src/features/index.js since subtask 07 — the merge stopgap is gone).
       "banappeals",
     ];
     for (const name of migrated) {
@@ -234,6 +209,8 @@ describe("buildDefaultRegistry", () => {
       "warnings",
       // #772: ban lifecycle (records, lifecycle DMs, auto-unban ticker).
       "banLifecycle",
+      // #773: ban appeals (DM intake, staff ticket, ferry, outcomes).
+      "banAppeals",
       "userinfo",
       "userActivity",
       "retention",
@@ -249,7 +226,7 @@ describe("buildDefaultRegistry", () => {
     ]) {
       assert.ok(names.includes(expected), `missing feature ${expected}`);
     }
-    assert.equal(features.length, 30);
+    assert.equal(features.length, 31);
   });
 
   it("registers userinfo button handler", () => {

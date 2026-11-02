@@ -579,6 +579,28 @@ function buildDefaultDeps(deps = {}) {
           err?.message || err,
         );
       }
+      // #773 ban-DM appeal-button seam — the automod mirror of the /ban
+      // command-layer seam (locked wiring law: the command + automod layers
+      // inject it, banService stays #772-exact). Toggle ON → the outbound is
+      // wrapped to capture the ban-DM message id; after the record insert the
+      // DM is EDITED to attach `appeal:<banRecordId>`. Toggle off / read
+      // failure → the outbound passes through unchanged (the DM keeps the
+      // exact #772 shape). LAZY requires (#699 cycle law). The return shape
+      // below is the UNCHANGED consumer contract.
+      let dmSink = null;
+      let banOutbound = outbound;
+      const appealsSettings = require("../banAppeals/settings");
+      const gate = appealsSettings.readSettings(communityId); // never throws
+      if (!gate.ok) {
+        console.error(
+          `[automod] appeals setting read failed (community ${communityId}) ` +
+            `— ban DM sent without the appeal button: ${gate.error}`,
+        );
+      } else if (gate.settings.appealsEnabled) {
+        const { captureBanDmRef } = require("../banAppeals/dmButton");
+        dmSink = {};
+        banOutbound = captureBanDmRef(outbound, dmSink);
+      }
       try {
         const res = await banLifecycle.banUser({
           communityId,
@@ -587,12 +609,23 @@ function buildDefaultDeps(deps = {}) {
           reason,
           durationMs, // null → permanent; #738 threads the harness duration here
           source: "automod",
-          outbound,
+          outbound: banOutbound,
           client,
           guildId,
           guildName,
         });
         if (res?.ok) {
+          // Post-record button edit (best-effort; never throws, never alters
+          // the facts returned below — the tool loop's contract is frozen).
+          if (dmSink?.messageId != null) {
+            const { attachAppealButtonToBanDm } = require("../banAppeals/dmButton");
+            await attachAppealButtonToBanDm({
+              client,
+              userId,
+              banRecordId: res.banRecordId ?? null,
+              banDmMessageId: dmSink.messageId,
+            });
+          }
           // The tool loop reads `ok` only today; the extra facts ride for the
           // card layer (banRecordId is the stable #773 appeal handle). Ban-DM
           // warnings are DELIBERATELY not forwarded: K2 law — a DM failure is

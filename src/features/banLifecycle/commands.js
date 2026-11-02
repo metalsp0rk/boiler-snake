@@ -189,6 +189,32 @@ const banContextMenu = new ContextMenuCommandBuilder()
  * @returns {Promise<object>} banService.banUser's result verbatim
  */
 async function runTrackedBan(facts) {
+  // #773 ban-DM appeal-button seam — the COMMAND layer owns it (locked wiring
+  // law): when the guild's appeals toggle is ON, the outbound is wrapped so
+  // the ban-DM's delivered message id is captured, and AFTER the record
+  // insert (customId law: `appeal:<banRecordId>` needs the id; the locked
+  // guards→DM→ban→record order forbids riding it) the DM is EDITED to attach
+  // the button. Toggle off or an unreadable setting → the outbound passes
+  // through UNCHANGED: the DM is byte-identical to the #772 shape.
+  // LAZY requires (#699 cycle law — banAppeals never loads at banLifecycle's
+  // top level; settings.js/dmButton.js load on the first actual ban).
+  let dmSink = null;
+  let outbound = facts.outbound ?? null;
+  const appealsSettings = require("../banAppeals/settings");
+  const gate = appealsSettings.readSettings(facts.communityId); // never throws
+  if (!gate.ok) {
+    // Rule 3 (staff-side): the DM ships WITHOUT the button fast path — the
+    // specific cause is logged, the ban itself is never blocked by it.
+    console.error(
+      `${LOG_PREFIX} appeals setting read failed community=${facts.communityId} ` +
+        `— ban DM sent without the appeal button: ${gate.error}`,
+    );
+  } else if (gate.settings.appealsEnabled && outbound) {
+    const { captureBanDmRef } = require("../banAppeals/dmButton");
+    dmSink = {};
+    outbound = captureBanDmRef(outbound, dmSink);
+  }
+
   const result = await banService.banUser({
     communityId: facts.communityId,
     userId: facts.userId,
@@ -196,11 +222,26 @@ async function runTrackedBan(facts) {
     reason: facts.reason,
     source: "staff",
     expiresAtMs: facts.expiresAtMs ?? null,
-    outbound: facts.outbound ?? null,
+    outbound,
     guildId: facts.guildId ?? null,
     guildName: facts.guildName ?? null,
     client: facts.client ?? null,
   });
+
+  // Post-record button edit (strictly best-effort): attachAppealButtonToBanDm
+  // never throws — every missing surface (mock clients, closed DMs) is its
+  // own `[appeals]` skip line. The RESULT is never altered: staff-side copy
+  // and pins keep the exact #772 shape.
+  if (result.ok && dmSink?.messageId != null) {
+    const { attachAppealButtonToBanDm } = require("../banAppeals/dmButton");
+    await attachAppealButtonToBanDm({
+      client: facts.client ?? null,
+      userId: facts.userId,
+      banRecordId: result.banRecordId ?? null,
+      banDmMessageId: dmSink.messageId,
+    });
+  }
+
   if (result.ok) auditStaffBan(facts, result);
   return result;
 }

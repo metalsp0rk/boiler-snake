@@ -23,6 +23,7 @@ module.exports = [
   require("./staffNotes"),
   require("./warnings"),
   require("./banLifecycle"),
+  require("./banAppeals"),
   require("./userinfo"),
   require("./userActivity"),
   require("./retention"),
