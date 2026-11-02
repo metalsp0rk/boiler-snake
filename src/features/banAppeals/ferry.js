@@ -543,6 +543,11 @@ function classifyOutbound(message, opts = {}) {
 
   // RELAY rows: text / image / video. Attachments outrank text for `kind`;
   // video outranks image (deterministic tie-break, documented in the header).
+  if (stickers > 0) {
+    // Sticker riding alongside relayed text/media: it travels nowhere, so the
+    // sender learns it by name too (§3). Sticker-only already returned above.
+    dropped.push({ name: "sticker", size: 0, copy: FERRY_COPY.sticker });
+  }
   const kind = shareable.some((a) => a.media === "video")
     ? "video"
     : shareable.some((a) => a.media === "image")
@@ -889,7 +894,17 @@ async function relayMessageCore({ appeal, message, direction, deps = {}, userId 
     }
 
     // 5. Re-host attachments (per-file partial failure; notices to SENDER).
+    // Seed with the classifier's PARTIAL-DROP notices (§3 law: an un-ferryable
+    // part of a relayed message still earns its sender a specific "not shared"
+    // notice naming it — text/video travel, audio/sticker/file do not vanish
+    // silently).
     const notices = [];
+    for (const drop of cls.drops ?? []) {
+      if (drop?.copy) notices.push(drop.copy);
+    }
+    if (cls.refusal && (cls.drops ?? []).length === 0) {
+      notices.push(cls.refusal);
+    }
     const files = await rehostAttachments(cls.shareable, { deps, notices });
     const hasText = cls.text !== "";
     if (files.length === 0 && !hasText && cls.shareable.length > 0) {
