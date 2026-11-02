@@ -38,40 +38,22 @@ describe("commandVisibility", () => {
   let registeredNames;
 
   /**
-   * Registry payloads merged with the #772 banLifecycle + #773 banAppeals
-   * builders.
+   * Registry payloads — the FULL wired command surface.
    *
-   * The /ban + /bannotify + "Ban member" builders and their visibility
-   * tiers land in the command-surface subtask; the feature's registration
-   * in src/features/index.js lands in the later boot-wiring subtask (same
-   * PR, same branch). Coverage must be pinned against the FULL wired
-   * command surface NOW (that is the whole law), so the banLifecycle
-   * feature module's exported builders join the payload list until boot
-   * wiring registers them. Once wiring lands the names arrive through the
-   * default registry itself and the name-dedupe below makes this merge a
-   * no-op — the assertion only ever tightens.
-   *
-   * #773: /banappeals (src/features/banAppeals/commands.js) merges in the
-   * same way — its boot wiring lands with the appeals feature subtask.
+   * The #772/#773 stopgaps that merged the banLifecycle + banAppeals exported
+   * builders on top of a raw buildDefaultRegistry() are GONE: both features
+   * are boot-wired in src/features/index.js (banAppeals with subtask 07), so
+   * their builders arrive through the default registry itself and the merge
+   * had already become a name-dedupe no-op. Coverage stays pinned against
+   * exactly what the router will dispatch.
    *
    * @returns {object[]} toJSON-normalized command payloads (unique names)
    */
   function mergedCommandPayloads() {
     const { buildDefaultRegistry } = require("../src/commands/registry");
-    const { commands: banBuilders } = require("../src/features/banLifecycle/commands");
-    const { commands: appealBuilders } = require("../src/features/banAppeals/commands");
-    const payloads = buildDefaultRegistry().commands.map((c) =>
+    return buildDefaultRegistry().commands.map((c) =>
       typeof c.toJSON === "function" ? c.toJSON() : c
     );
-    const seen = new Set(payloads.map((c) => c.name));
-    for (const builder of [...banBuilders, ...appealBuilders]) {
-      const json = builder.toJSON();
-      if (!seen.has(json.name)) {
-        payloads.push(json);
-        seen.add(json.name);
-      }
-    }
-    return payloads;
   }
 
   before(() => {
