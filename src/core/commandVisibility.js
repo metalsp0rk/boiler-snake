@@ -94,6 +94,14 @@ const COMMAND_VISIBILITY = Object.freeze({
   // automod-channel setting `/automodconfig channel` writes — same admin
   // picker tier, ManageGuild in the handler too (requireAdminFromContext).
   "set-moderation-queue": TIERS.admin,
+  // #772: the staff ban surface. `/ban` is admin-tier (ManageGuild picker,
+  // requireAdminFromContext in the handler — automodconfig posture: the
+  // admin picker hides the command from staff-role members; NO staff_roles
+  // allow overwrites, bans are not a staff-usable surface by default).
+  // `/bannotify` rides the same tier: its toggles decide whether every
+  // ban/welcome DM fires, so they are admin config, not staff config.
+  ban: TIERS.admin,
+  bannotify: TIERS.admin,
   // #599: read-only twin of `/staff role list` + `/staff settings` (roles |
   // overview) so junior/senior staff can check their own staff-role status
   // and the staff settings without Manage Server. Handler gate is the staff
@@ -121,6 +129,14 @@ const COMMAND_VISIBILITY = Object.freeze({
   // src/features/automod/contextMenu.js, character-for-character. The
   // `/automod refer` SUBCOMMAND rides the `automod` staff tier above.
   "Refer to automod": TIERS.staff,
+  // #772: the "Ban member" user context menu — ADMIN picker posture, NOT
+  // the staff posture of the report/referral menus: `/ban` is admin-only,
+  // so the menu gets the ManageGuild default WITHOUT staff_roles allow
+  // overwrites on sync (an allow-sync here would advertise a command whose
+  // handler refuses the staffer anyway). Key = exact display name from
+  // src/features/banLifecycle/constants.js (BAN_CONTEXT_MENU_NAME),
+  // character-for-character.
+  "Ban member": TIERS.admin,
 });
 
 /**
