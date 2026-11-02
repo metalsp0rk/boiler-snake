@@ -87,11 +87,22 @@ const MAX_BAN_REASON = 1000;
 const UNBAN_CLAIM_LEASE_MS = 10 * 60 * 1000;
 
 /**
- * Statuses finalizeUnban may move an ACTIVE row to — the two ways a ban
- * ends. The welcome sub-machine (pending_rejoin / welcomed) has its own
+ * Statuses finalizeUnban may move an ACTIVE row to — the ways a ban ends.
+ * The welcome sub-machine (pending_rejoin / welcomed) has its own
  * primitives; `active` is the state you leave, never a destination.
+ *
+ * #773 append (law: extends land at the END, the 074 tripwire order-pins):
+ * `clemency_granted` is the appeal-outcome settle — the clemency flow
+ * (banAppeals/outcomes.js) spends the welcome claim BEFORE the unban, so
+ * this settle — not the GuildBanRemove event — owns the cycle's ending.
+ * A losing clemency finalize (the event CAS won) reports the live status;
+ * the CLOSED-domain posture otherwise holds unchanged.
  */
-const UNBAN_OUTCOMES = Object.freeze(["expired_unbanned", "unbanned_manual"]);
+const UNBAN_OUTCOMES = Object.freeze([
+  "expired_unbanned",
+  "unbanned_manual",
+  "clemency_granted",
+]);
 
 /** Trim-to-null for the optional id/text fields ("" is absent, never stored). */
 function optionalText(value) {
@@ -355,7 +366,8 @@ function claimUnban(recordId, atMs = now()) {
  * actor never claimed (the manual/event path).
  *
  * @param {number} recordId
- * @param {string} status 'expired_unbanned' | 'unbanned_manual'
+ * @param {string} status 'expired_unbanned' | 'unbanned_manual' |
+ *   'clemency_granted' (#773 appeal outcome — see UNBAN_OUTCOMES)
  * @param {string|null} [unbanReason] Discord-side unban reason (audit)
  * @param {{ nowMs?: number }} [opts]
  * @returns {{ ok: true, won: boolean, record: object|null } | { ok: false, error: string }}

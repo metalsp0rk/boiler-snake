@@ -513,15 +513,36 @@ describe("banRecords.finalizeUnban / markUnbannedManual — CAS on status", () =
     assert.equal(db.getBanRecord(rec.id).unban_reason, "event 1");
   });
 
-  it("the outcome domain is CLOSED to the two ways a ban ends — everything else is a named refusal", () => {
+  it("the outcome domain is CLOSED — everything outside it is a named refusal", () => {
     const rec = mk(CID, uid("f5"));
-    for (const status of ["active", "welcomed", "pending_rejoin", "clemency_granted", "EXPIRED_UNBANNED", ""]) {
+    // #773 widened the domain with `clemency_granted` (moved out of this
+    // refusal list into its own settle pin below — the appeal outcome is
+    // now one of the ways a ban ends; the domain stays CLOSED beyond that).
+    for (const status of ["active", "welcomed", "pending_rejoin", "EXPIRED_UNBANNED", ""]) {
       const res = db.finalizeUnban(rec.id, status, null, { nowMs: T0 });
       assert.equal(res.ok, false, `${JSON.stringify(status)} must be refused`);
       assert.match(res.error, /Unknown ban unban outcome/);
-      assert.match(res.error, /expired_unbanned, unbanned_manual/, "the message teaches the domain");
+      assert.match(res.error, /expired_unbanned, unbanned_manual, clemency_granted/, "the message teaches the domain");
     }
     assert.equal(db.getBanRecord(rec.id).status, "active", "refusals mutate nothing");
+  });
+
+  it("clemency_granted settles an ACTIVE row (#773 appeal outcome) — once; the CAS holds", () => {
+    const rec = mk(CID, uid("f5c"));
+    const res = db.finalizeUnban(rec.id, "clemency_granted", "Ban appeal — clemency granted by staff", {
+      nowMs: T0,
+    });
+    assert.equal(res.ok, true);
+    assert.equal(res.won, true, "the clemency settle wins the active-row CAS");
+    assert.equal(res.record.status, "clemency_granted");
+    assert.equal(res.record.unban_reason, "Ban appeal — clemency granted by staff");
+
+    // The event path arrives late: manual CAS LOSES (clemency owns the row)
+    // and reports the live truth — events never overwrite the decision.
+    const late = db.markUnbannedManual(rec.id, "GuildBanRemove");
+    assert.equal(late.won, false, "the settled clemency row is final");
+    assert.equal(late.record.status, "clemency_granted");
+    assert.equal(db.getBanRecord(rec.id).unban_reason, "Ban appeal — clemency granted by staff");
   });
 
   it("unban_reason rides COALESCE: blank/null are ABSENT (never stored), a real one lands once", () => {
