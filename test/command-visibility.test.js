@@ -37,10 +37,40 @@ describe("commandVisibility", () => {
   /** @type {string[]} */
   let registeredNames;
 
-  before(() => {
+  /**
+   * Registry payloads merged with the #772 banLifecycle builders.
+   *
+   * The /ban + /bannotify + "Ban member" builders and their visibility
+   * tiers land in the command-surface subtask; the feature's registration
+   * in src/features/index.js lands in the later boot-wiring subtask (same
+   * PR, same branch). Coverage must be pinned against the FULL wired
+   * command surface NOW (that is the whole law), so the banLifecycle
+   * feature module's exported builders join the payload list until boot
+   * wiring registers them. Once wiring lands the names arrive through the
+   * default registry itself and the name-dedupe below makes this merge a
+   * no-op — the assertion only ever tightens.
+   *
+   * @returns {object[]} toJSON-normalized command payloads (unique names)
+   */
+  function mergedCommandPayloads() {
     const { buildDefaultRegistry } = require("../src/commands/registry");
-    const reg = buildDefaultRegistry();
-    registeredNames = reg.commands.map((c) => c.name);
+    const { commands: banBuilders } = require("../src/features/banLifecycle/commands");
+    const payloads = buildDefaultRegistry().commands.map((c) =>
+      typeof c.toJSON === "function" ? c.toJSON() : c
+    );
+    const seen = new Set(payloads.map((c) => c.name));
+    for (const builder of banBuilders) {
+      const json = builder.toJSON();
+      if (!seen.has(json.name)) {
+        payloads.push(json);
+        seen.add(json.name);
+      }
+    }
+    return payloads;
+  }
+
+  before(() => {
+    registeredNames = mergedCommandPayloads().map((c) => c.name);
   });
 
   it("covers every registered slash command", () => {
@@ -82,6 +112,13 @@ describe("commandVisibility", () => {
     assert.equal(visibilityTier("Refer to automod"), TIERS.staff);
     assert.equal(visibilityTier("staff"), TIERS.admin);
     assert.equal(visibilityTier("setcommandchannel"), TIERS.admin);
+    // #772: the staff ban surface is ADMIN-tier — ManageGuild picker, no
+    // staff_roles allow overwrites (automodconfig posture). Slash pair and
+    // the "Ban member" menu key (exact display name) all classify admin;
+    // handlers keep requireAdmin(FromContext) as the security truth.
+    assert.equal(visibilityTier("ban"), TIERS.admin);
+    assert.equal(visibilityTier("bannotify"), TIERS.admin);
+    assert.equal(visibilityTier("Ban member"), TIERS.admin);
   });
 
   it("staff sync list excludes public and admin", () => {
@@ -105,14 +142,22 @@ describe("commandVisibility", () => {
     assert.ok(!names.includes("xp"));
     assert.ok(!names.includes("staff"));
     assert.ok(!names.includes("setcommandchannel"));
+    // #772: the ban trio is admin-tier — none of it may receive
+    // staff_roles allow overwrites on sync (an allow-sync would advertise
+    // commands whose handlers refuse staffers anyway).
+    assert.ok(!names.includes("ban"));
+    assert.ok(!names.includes("bannotify"));
+    assert.ok(!names.includes("Ban member"));
     assert.ok(isStaffSyncCommand("activityconfig"));
     assert.ok(!isStaffSyncCommand("leaderboard"));
   });
 
   it("staff-tier builders set ManageGuild defaultMemberPermissions", () => {
-    const { buildDefaultRegistry } = require("../src/commands/registry");
-    const reg = buildDefaultRegistry();
-    for (const cmd of reg.commands) {
+    // Merged payloads (see mergedCommandPayloads): once #772 boot wiring
+    // registers banLifecycle, /ban + /bannotify + "Ban member" are checked
+    // here through the registry itself; until then through the feature
+    // module's exported builders — either way the admin tier pins.
+    for (const cmd of mergedCommandPayloads()) {
       const tier = visibilityTier(cmd.name);
       if (tier === TIERS.public) {
         assert.equal(
@@ -130,16 +175,16 @@ describe("commandVisibility", () => {
     }
   });
 
-  it("context-menu commands (#745 reports, #726 referral) carry staff-tier command JSON", () => {
+  it("context-menu commands (#745 reports, #726 referral, #794 proxy, #772 ban) carry the ManageGuild picker command JSON", () => {
     // The generic loop above already classifies these by name (registry-
     // derived registeredNames includes context-menu builders via
     // toJSON().name); this pins the payload specifics the loop can see:
     // Message/User type + the ManageGuild default_member_permissions string
     // the builder emits (validateDefaultMemberPermissions bigint→string).
     const { PermissionFlagsBits, ApplicationCommandType } = require("discord.js");
-    const { buildDefaultRegistry } = require("../src/commands/registry");
-    const reg = buildDefaultRegistry();
-    const byName = new Map(reg.commands.map((c) => [c.name, c]));
+    const byName = new Map(
+      mergedCommandPayloads().map((c) => [c.name, c]),
+    );
     const manageGuild = BigInt(PermissionFlagsBits.ManageGuild).toString();
 
     const post = byName.get("Report Post");
@@ -167,6 +212,15 @@ describe("commandVisibility", () => {
     );
     assert.equal(openForMenu.type, ApplicationCommandType.User);
     assert.equal(openForMenu.default_member_permissions, manageGuild);
+
+    // #772: "Ban member" — USER menu, admin-tier name but the SAME
+    // ManageGuild picker payload (the tier difference lives in the
+    // overwrite posture, not the builder): staff_roles get NO allow
+    // overwrite for it (excluded from staffSyncCommandNames above).
+    const banMenu = byName.get("Ban member");
+    assert.ok(banMenu, "Ban member missing from the command surface");
+    assert.equal(banMenu.type, ApplicationCommandType.User);
+    assert.equal(banMenu.default_member_permissions, manageGuild);
   });
 });
 
