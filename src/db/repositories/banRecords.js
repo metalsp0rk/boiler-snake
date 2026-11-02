@@ -463,25 +463,27 @@ function markWelcomed(recordId) {
 }
 
 /**
- * Stamp "the ban DM went out" (the K2 DM-before-ban recorder). Plain flag,
- * not a claim — the ban flow runs it once per cycle by construction.
+ * Stamp "the ban DM went out" (the K2 DM-before-ban recorder). Stamp-only:
+ * the ban flow runs it once per cycle by construction; the guard keeps the
+ * return honest (re-stamping an already-stamped row reports false).
  * @param {number} recordId
- * @returns {boolean} true when a row was stamped
+ * @returns {boolean} true when an unstamped row was stamped
  */
 function recordBanDmSent(recordId) {
   const { id } = recordIdOrError(recordId);
   if (!id) return false;
   return (
-    db.prepare(`UPDATE ban_records SET ban_dm_sent=1 WHERE id=?`).run(id)
-      .changes === 1
+    db.prepare(
+      `UPDATE ban_records SET ban_dm_sent=1 WHERE id=? AND ban_dm_sent=0`
+    ).run(id).changes === 1
   );
 }
 
 /**
  * Stamp "the welcome DM went out". On the normal path {@link claimWelcome}
  * already flipped the flag (claim === stamp on the locked schema); this is
- * the explicit recorder for the rejoin retry, whose success must land in
- * the record even though the claim was consumed at unban time.
+ * the belt recorder for paths that delivered without a claim — stamp-only,
+ * an already-stamped row reports false.
  * @param {number} recordId
  * @returns {boolean} true when an unstamped row was stamped
  */
@@ -489,8 +491,9 @@ function recordWelcomeDmSent(recordId) {
   const { id } = recordIdOrError(recordId);
   if (!id) return false;
   return (
-    db.prepare(`UPDATE ban_records SET welcome_dm_sent=1 WHERE id=?`).run(id)
-      .changes === 1
+    db.prepare(
+      `UPDATE ban_records SET welcome_dm_sent=1 WHERE id=? AND welcome_dm_sent=0`
+    ).run(id).changes === 1
   );
 }
 
