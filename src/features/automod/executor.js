@@ -168,6 +168,15 @@ const { formatStaffRoleAccessNote } = require("../tickets/overwrites");
 // discord.js, and the executor's `createKick` seam wraps this one pipeline
 // (tests script the seam, production reaches the cached outbound).
 const { getDiscordOutbound } = require("../../platform/discord/outbound");
+// #772: the ban tool executes through the ONE ban service (subtask 08 re-route
+// of the createBan seam). Deliberate READ-ONLY cross-feature import — a pure
+// service ({ok:false}-by-contract, no discord.js, no interaction context), the
+// same idiom as the warnings/tickets imports above: no parallel ban path.
+const banLifecycle = require("../banLifecycle/banService");
+// Community reverse-lookup for the ban seam's guild pre-reads (the same
+// accessor the outbound's lookupGuild rides; banService re-resolves on its own
+// as a belt).
+const { getCommunityById } = require("../../platform/community");
 const { findCaseNoteRow } = require("./caseNote");
 const {
   AUTOMOD_ACTIONS,
@@ -532,19 +541,92 @@ function buildDefaultDeps(deps = {}) {
     },
     fetchMember: async (guildId, userId) =>
       guildOf(guildId).members.fetch(String(userId)),
-    // #738: the ban rides the platform outbound's banMember helper (the
-    // cached Discord outbound over the same client) — the raw
-    // guild.bans.create path is REPLACED: the outbound returns
-    // {ok:false, error, code} instead of throwing, so the specific Discord
-    // cause reaches the row verbatim (and no delete_message_days is ever
-    // passed — decision 9). Same (communityId, userId, {reason}) shape as
-    // createKick.
-    createBan: async (communityId, userId, { reason }) =>
-      getDiscordOutbound(requireClient(deps)).banMember(
-        communityId,
-        userId,
-        reason,
-      ),
+    // #738 → #772: the ban executes through the ONE ban service
+    // (banLifecycle/banService.banUser) instead of the raw outbound.banMember
+    // call, so every harness ban gets the SAME durable ban record + ban-time
+    // DM as a staff /ban (issue §1 "every ban — harness or staff — gets the
+    // same record + notifications"). source 'automod' + moderatorId null is
+    // the system-actor convention: banService writes the record unattributed
+    // and lands its own banLifecycle.ban SYSTEM audit row (recordSystemAudit
+    // with a null actor). Guards (duplicate-active, self-ban, the #729
+    // staff-subject mirror, hierarchy) now front every automod ban too —
+    // executor's own guardSubject still runs first, so the double guard is
+    // fail-safe; translated causes ride the existing `error` field verbatim.
+    // THE CONSUMER CONTRACT IS UNCHANGED: {ok:true,…} | {ok:false,error,code?}
+    // and NEVER throws for an expected failure — the tool loop quotes row.error
+    // verbatim (tests pin it). No delete_message_days anywhere (decision 9 —
+    // banService calls outbound.banMember(communityId, userId, reason) with
+    // exactly three args). durationMs rides null (permanent): the harness
+    // duration parameter is decided in #738, and the seam already accepts it.
+    // The record insert lives INSIDE banService — the executor inserts nothing.
+    createBan: async (communityId, userId, { reason, durationMs = null } = {}) => {
+      const client = requireClient(deps);
+      const outbound = getDiscordOutbound(client);
+      // Guild pre-reads for the guard reads + the ban DM copy, best-effort:
+      // banService re-resolves guildId from the communities row (guildArgOf)
+      // and falls back to "the server" in the DM, so a failed read here is a
+      // log line, never a lost ban.
+      let guildId = null;
+      let guildName = null;
+      try {
+        guildId = getCommunityById(communityId)?.externalGuildId ?? null;
+        if (guildId) {
+          guildName = client.guilds?.cache?.get?.(String(guildId))?.name ?? null;
+        }
+      } catch (err) {
+        console.error(
+          `[automod] executor createBan guild pre-read failed (community ${communityId}, user ${userId}):`,
+          err?.message || err,
+        );
+      }
+      try {
+        const res = await banLifecycle.banUser({
+          communityId,
+          userId,
+          moderatorId: null, // system actor — the automod harness is not a staff member
+          reason,
+          durationMs, // null → permanent; #738 threads the harness duration here
+          source: "automod",
+          outbound,
+          client,
+          guildId,
+          guildName,
+        });
+        if (res?.ok) {
+          // The tool loop reads `ok` only today; the extra facts ride for the
+          // card layer (banRecordId is the stable #773 appeal handle). Ban-DM
+          // warnings are DELIBERATELY not forwarded: K2 law — a DM failure is
+          // logged by banService with ids, never echoed into channel copy.
+          return {
+            ok: true,
+            banRecordId: res.banRecordId ?? null,
+            banNumber: res.banNumber ?? null,
+            banDmSent: res.banDmSent === true,
+          };
+        }
+        // Guard rejections and Discord causes come back translated and
+        // specific; forward them UNTOUCHED (the consumer quotes them
+        // verbatim) with the machine code when banService carried one.
+        const failed = {
+          ok: false,
+          error:
+            res?.error ||
+            `The ban service returned no result for <@${userId}> — nothing was banned.`,
+        };
+        if (res?.code != null) failed.code = res.code;
+        return failed;
+      } catch (err) {
+        // banService is {ok:false}-by-contract; ONLY its programmer-error
+        // posture throws (assertCommunityId, outside its catch). Convert at
+        // the seam so the consumer's never-throw law holds with the specific
+        // cause in `error` — the breaker's attempt accounting still runs.
+        console.error(
+          `[automod] executor createBan banService threw (community ${communityId}, user ${userId}):`,
+          err?.message || err,
+        );
+        return { ok: false, error: `Could not run the ban: ${err?.message || err}` };
+      }
+    },
     // #737: the kick rides the platform outbound's kickMember helper (the
     // cached Discord outbound over the same client). {ok:false, error, code}
     // comes back from the outbound — the handler reports the cause verbatim.

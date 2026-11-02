@@ -8,7 +8,10 @@
  * the mutation EXACTLY once), the #735 ticket tool (real ticket seams: the
  * member-visible law, the #420 rate-slot idiom, the commit-time note
  * scrub), and the real
- * createWarning write.
+ * createWarning write. Since #772 the default createBan seam is covered too:
+ * an automod ban executes through banLifecycle's ONE ban service (ban_records
+ * row + ban-time DM BEFORE the ban, guards translated into the error field,
+ * the {ok}|{ok:false,error,code?} never-throw contract intact).
  */
 const { describe, it, after } = require("node:test");
 const assert = require("node:assert/strict");
@@ -19,6 +22,9 @@ const { api: db, cleanup } = loadDb();
 
 const executor = require("../src/features/automod/executor");
 const repo = require("../src/db/repositories/automodCaseActions");
+// #772 default-seam tests: the communities row behind the fake guild cache
+// (externalGuildId is what the outbound's lookupGuild resolves).
+const { getCommunityById } = require("../src/platform/community");
 const { PermissionFlagsBits } = require("discord.js");
 
 after(() => cleanup());
@@ -345,6 +351,11 @@ describe("subject guards — staff roles + role hierarchy (decision 6)", () => {
         cache: { keys: () => ["r-everyone"] },
         highest: { position: 2 },
       },
+      // #772: banService's ManageGuild staff-subject belt reads the member's
+      // effective bits (numeric 0x20 on purpose) — the fake denies that bit in
+      // either representation and grants everything else (plain member with
+      // ordinary bits), same convention as the ManageMessages pre-flight below.
+      permissions: { has: (flag) => !(flag === 0x20 || flag === PermissionFlagsBits.ManageGuild) },
       timeout: async () => { throw new Error("unused"); },
     };
     const guild = {
@@ -772,6 +783,222 @@ describe("ban tool — required reason rides the audit log through the outbound 
     assert.equal(a2.ok, true);
     assert.match(String(a2.result ?? ""), /Banned <@200000000000000002>\./, "the second click reports the existing result");
     assert.equal(a2.deduped, true);
+  });
+});
+
+// ── #772: default createBan seam — automod bans ride the ONE ban service ───
+
+describe("#772 default ban seam — every automod ban executes through banService", () => {
+  /**
+   * A fake Discord client rich enough to run the PRODUCTION default
+   * createBan seam END TO END: the real Discord outbound runs over it
+   * (lookupGuild / sendDm / banMember resolve through the communities row),
+   * and every default guard seam answers — executor's own guardSubject AND
+   * banService's #729 staff-subject mirror read the same fake member. NO
+   * createBan stub is injected: the default seam itself is the subject.
+   * `events` is ONE shared timeline proving the DM-before-ban law.
+   *
+   * The guild cache answers BOTH identities: the row's guild_id (GUILD —
+   * what the executor's guildOf reads) and the community's externalGuildId
+   * (what the outbound's lookupGuild and banService's guildArgOf belt
+   * resolve) — one fake guild answers both.
+   */
+  function makeBanWorld(cid, opts = {}) {
+    const externalGuildId = String(getCommunityById(cid).externalGuildId);
+    const events = [];
+    const dmPayloads = [];
+    const banArgs = [];
+    const member = {
+      roles: {
+        cache: { keys: () => opts.subjectRoleIds ?? ["r-everyone"] },
+        highest: { position: opts.subjectPos ?? 1 },
+      },
+      permissions: { has: () => opts.subjectManageGuild === true },
+    };
+    const guild = {
+      id: externalGuildId,
+      name: opts.guildName ?? "Executor Test Guild",
+      members: {
+        me: { roles: { highest: { position: opts.botPos ?? 10 } } },
+        fetch: async () => member,
+        ban: async (userId, options = {}) => {
+          events.push("ban");
+          banArgs.push({ userId: String(userId), reason: options?.reason ?? null });
+          if (opts.banThrow) {
+            const err = new Error(opts.banThrow.message);
+            if (opts.banThrow.code != null) err.code = opts.banThrow.code;
+            throw err;
+          }
+          return {};
+        },
+      },
+    };
+    const client = {
+      guilds: {
+        cache: {
+          get: (id) =>
+            String(id) === GUILD || String(id) === externalGuildId ? guild : undefined,
+        },
+        fetch: async (id) => client.guilds.cache.get(id) ?? null,
+      },
+      users: {
+        fetch: async (userId) => ({
+          id: String(userId),
+          send: async (payload) => {
+            events.push("dm");
+            dmPayloads.push(payload);
+            if (opts.dmThrow) throw new Error(opts.dmThrow);
+            return { id: "900000000000000001" };
+          },
+        }),
+      },
+    };
+    return { events, dmPayloads, banArgs, client, guild, member };
+  }
+
+  /** Run the ban action through the DEFAULT seams (no createBan injection). */
+  const runDefaultBan = (cid, params, client, caseId) =>
+    executor.executeAutomodAction({
+      communityId: cid,
+      guildId: GUILD,
+      subjectUserId: SUBJECT,
+      action: "ban",
+      params,
+      caseId,
+      deps: { client },
+    });
+
+  it("the default seam executes through banService: ban_records row (source automod) + the DM runs BEFORE the ban - issue #772", async () => {
+    const cid = freshCommunity();
+    setMode(cid, "ban", "auto");
+    const world = makeBanWorld(cid);
+    const res = await runDefaultBan(cid, { reason: "raid leader" }, world.client, 260);
+    assert.equal(res.ok, true, res.error);
+    assert.equal(res.state, "executed");
+    assert.equal(res.result, `Banned <@${SUBJECT}>.`, "the consumer's success line is unchanged");
+
+    // DM-first (K2): one shared timeline — exactly one DM, and it precedes the ban.
+    assert.deepEqual(world.events, ["dm", "ban"], "the ban DM rides while the shared-guild DM path exists");
+
+    // DM copy: the guild is named, the permanent variant renders, and NOTHING
+    // staff-side leaks (never a case ref or moderator — issue §3).
+    const dm = world.dmPayloads[0];
+    assert.match(dm.content, /Executor Test Guild/);
+    assert.match(dm.content, /has no set expiry/);
+    assert.ok(!/case #|automod case/i.test(dm.content), "the ban DM never names harness internals");
+
+    // Discord audit: the STATED reason still rides case-tagged, and the
+    // banMember call is the bare three-arg one — no delete-message window
+    // anywhere (decision 9 survives the re-route).
+    assert.equal(world.banArgs.length, 1);
+    assert.equal(world.banArgs[0].reason, "raid leader (automod case #260)");
+
+    // The record exists — written INSIDE banService (the executor inserts
+    // nothing): unattributed system actor, permanent until #738 decides the
+    // harness duration, the delivered DM stamped.
+    const rec = db.findActiveBanRecord(cid, SUBJECT);
+    assert.ok(rec, "the automod ban left a ban_records row");
+    assert.equal(rec.source, "automod");
+    assert.equal(rec.moderator_id, null, "the automod origin records unattributed (system-actor convention)");
+    assert.equal(rec.reason, "raid leader (automod case #260)");
+    assert.equal(rec.expires_at, null, "permanent — the harness duration parameter is #738's to decide");
+    assert.equal(rec.status, "active");
+    assert.equal(rec.ban_dm_sent, 1, "the delivered ban DM was stamped on the record");
+  });
+
+  it("ban_dm off mutes the notice but NEVER the ban; the record lands unstamped - issue #772", async () => {
+    const cid = freshCommunity();
+    setMode(cid, "ban", "auto");
+    db.updateGuildSettings(cid, { ban_dm: 0 });
+    const world = makeBanWorld(cid);
+    const res = await runDefaultBan(cid, { reason: "raid leader" }, world.client, 261);
+    assert.equal(res.ok, true, res.error);
+    assert.deepEqual(world.events, ["ban"], "toggle off → total DM silence (issue §6)");
+    const rec = db.findActiveBanRecord(cid, SUBJECT);
+    assert.ok(rec, "the record fires regardless of the notice toggle");
+    assert.equal(rec.ban_dm_sent, 0);
+  });
+
+  it("a ban-DM failure never costs the ban and is never echoed to the staff line (K2) - issue #772", async () => {
+    const cid = freshCommunity();
+    setMode(cid, "ban", "auto");
+    const world = makeBanWorld(cid, { dmThrow: "Cannot send messages to this user" });
+    const res = await runDefaultBan(cid, { reason: "raid leader" }, world.client, 262);
+    assert.equal(res.ok, true, "the ban executes regardless of the DM outcome");
+    assert.deepEqual(world.events, ["dm", "ban"]);
+    assert.equal(res.result, `Banned <@${SUBJECT}>.`, "the DM cause is logged with ids, NEVER echoed");
+    const rec = db.findActiveBanRecord(cid, SUBJECT);
+    assert.ok(rec);
+    assert.equal(rec.ban_dm_sent, 0, "an undelivered DM never stamps");
+  });
+
+  it("a duplicate active ban refuses through the service guard: the row quotes the cause, no second ban - issue #772", async () => {
+    const cid = freshCommunity();
+    setMode(cid, "ban", "auto");
+    const prior = db.createBanRecord({
+      communityId: cid,
+      userId: SUBJECT,
+      moderatorId: "900000000000000099",
+      source: "staff",
+      reason: "prior staff ban",
+    });
+    assert.equal(prior.ok, true);
+    const world = makeBanWorld(cid);
+    const res = await runDefaultBan(cid, { reason: "raid leader" }, world.client, 263);
+    assert.equal(res.ok, false);
+    assert.match(
+      res.error,
+      /already banned — see records/,
+      "the dup-active guard's SPECIFIC text rides the error field verbatim (no generic string)",
+    );
+    assert.match(res.error, /nobody was banned/, "the consumer's outcome sentence is appended");
+    assert.deepEqual(world.events, [], "the guard refusal precedes the DM AND the outbound");
+    const row = repo.getAutomodActionBySlot({
+      communityId: cid,
+      caseId: 263,
+      subjectUserId: SUBJECT,
+      action: "ban",
+    });
+    assert.equal(row.state, "refused");
+    assert.equal(row.error_text, res.error, "the quoted cause is the recorded row's error");
+    const rec = db.findActiveBanRecord(cid, SUBJECT);
+    assert.equal(rec.id, prior.record.id, "the prior record stays the ONLY active row — no second record");
+  });
+
+  it("a Discord 50013 ban failure surfaces the translated cause and writes NO record - issue #772", async () => {
+    const cid = freshCommunity();
+    setMode(cid, "ban", "auto");
+    const world = makeBanWorld(cid, { banThrow: { message: "Missing Permissions", code: 50013 } });
+    const res = await runDefaultBan(cid, { reason: "raid leader" }, world.client, 264);
+    assert.equal(res.ok, false);
+    assert.match(
+      res.error,
+      /Missing Access 50013/i,
+      "banService pins the hierarchy failure into actionable copy (formatChannelCreateError idiom)",
+    );
+    assert.match(res.error, /nobody was banned/);
+    assert.equal(db.findActiveBanRecord(cid, SUBJECT), null, "no lifecycle record for a ban that never happened");
+    const row = repo.getAutomodActionBySlot({
+      communityId: cid,
+      caseId: 264,
+      subjectUserId: SUBJECT,
+      action: "ban",
+    });
+    assert.equal(row.state, "refused");
+  });
+
+  it("the seam NEVER throws: banService's programmer-error throw becomes {ok:false,error} at the seam - issue #772", async () => {
+    const cid = freshCommunity();
+    const world = makeBanWorld(cid);
+    const seams = executor.buildDefaultDeps({ client: world.client });
+    // A non-integer community id trips banService's assertCommunityId posture
+    // — the ONLY throw the service allows. The seam converts it: the
+    // consumer's {ok:false,error}-never-throws law holds with the specific cause.
+    const res = await seams.createBan("not-a-community-id", SUBJECT, { reason: "belt probe" });
+    assert.equal(res.ok, false);
+    assert.match(res.error, /Could not run the ban/);
+    assert.ok(!("code" in res), "no machine code was carried for a programmer error");
+    assert.deepEqual(world.events, [], "the never-throw belt sits BEFORE any outbound touch");
   });
 });
 
