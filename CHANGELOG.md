@@ -1,5 +1,32 @@
 # Changelog
 
+## [1.40.0](https://github.com/metalsp0rk/boiler-snake/compare/v1.39.1...v1.40.0) (2026-11-03)
+
+
+### Features
+
+* **automod:** extract rules from the rules channel via one-time batch distill ([b83cabb](https://github.com/metalsp0rk/boiler-snake/commit/b83cabba48589b4ffd742ca6ab9f99f6fc613719))
+* **ban-appeals:** appeal ticket + filing orchestration + ferry relay engine ([#773](https://github.com/metalsp0rk/boiler-snake/issues/773) subtasks 04-05) ([91c073a](https://github.com/metalsp0rk/boiler-snake/commit/91c073a929f9672f11652a5d0ae88e7ba8817b7c))
+* **ban-appeals:** claim-first outcome engine — clemency/deny/plain-close ([#773](https://github.com/metalsp0rk/boiler-snake/issues/773) subtask 06) ([1d068f2](https://github.com/metalsp0rk/boiler-snake/commit/1d068f2b7cffdfe11a841efb389a1c7353c8836a))
+* **ban-appeals:** feature scaffolding + intake validation core + db unit suites ([#773](https://github.com/metalsp0rk/boiler-snake/issues/773) subtasks 03, 08) ([1df6e8a](https://github.com/metalsp0rk/boiler-snake/commit/1df6e8aa46e3fea546baa6ad658cecd13096f7b7))
+* **ban-appeals:** ferry relay units + partial-relay sender notices ([#773](https://github.com/metalsp0rk/boiler-snake/issues/773) subtasks 05-units) ([67b9ac4](https://github.com/metalsp0rk/boiler-snake/commit/67b9ac4d700db6c13981bb9dd1b4c80fdaad6d02))
+* **ban-appeals:** gateway wiring — guildless appeal lane, ferry listeners, outcomes arms, ban-DM button ([#773](https://github.com/metalsp0rk/boiler-snake/issues/773) subtask 07) ([ccadb6e](https://github.com/metalsp0rk/boiler-snake/commit/ccadb6ebf36ca32af3a632fdc79e80fc69ac5e94))
+* **ban-appeals:** migration 075 + banAppeals repo + createInvite outbound ([#773](https://github.com/metalsp0rk/boiler-snake/issues/773) subtasks 01-02) ([1a4bec8](https://github.com/metalsp0rk/boiler-snake/commit/1a4bec88c1ae05226b1d4a66ffd2be256443cfed))
+* **ban-lifecycle:** /ban + modal + /bannotify command surface, ban event listeners ([#772](https://github.com/metalsp0rk/boiler-snake/issues/772) subtasks 05-06) ([01eb79e](https://github.com/metalsp0rk/boiler-snake/commit/01eb79e444e863dc42bb50d29b1547a267946072))
+* **ban-lifecycle:** banService — guarded ban flow + unban/welcome/rejoin state machine ([#772](https://github.com/metalsp0rk/boiler-snake/issues/772) subtask 04) ([c20ed87](https://github.com/metalsp0rk/boiler-snake/commit/c20ed87d47af974b50cc74f43b556f97e23ec1f8))
+* **ban-lifecycle:** db foundation, outbound unban/fetchBan/listBans, duration + DM copy pieces ([#772](https://github.com/metalsp0rk/boiler-snake/issues/772) subtasks 01-03) ([fb85e88](https://github.com/metalsp0rk/boiler-snake/commit/fb85e88b974d4a4b52d5c87e72dec2f7691484a3))
+* **ban-lifecycle:** expiry ticker + boot reconciliation, automod bans ride banService ([#772](https://github.com/metalsp0rk/boiler-snake/issues/772) subtasks 07-08) ([30f2264](https://github.com/metalsp0rk/boiler-snake/commit/30f22643492306e99ceb69328e13b50a35dfd943))
+* **ban-lifecycle:** feature boot wiring + registry pins ([#772](https://github.com/metalsp0rk/boiler-snake/issues/772) subtask 09) ([92e5665](https://github.com/metalsp0rk/boiler-snake/commit/92e56652c7d64026ff9f6e67ba4a6e42b6f69ef0))
+* **tickets:** staff "Open ticket for user" member Apps menu ([#794](https://github.com/metalsp0rk/boiler-snake/issues/794)) ([6951d6f](https://github.com/metalsp0rk/boiler-snake/commit/6951d6f4cbd65b63ef4f7a121e83d34fdce4300e))
+
+
+### Bug Fixes
+
+* **e2e:** retry harness boot through transient mock blips ([#792](https://github.com/metalsp0rk/boiler-snake/issues/792)) ([7b2662d](https://github.com/metalsp0rk/boiler-snake/commit/7b2662d16ea3a7af70a4d19ab49431952f61bdc2))
+* **platform:** [#795](https://github.com/metalsp0rk/boiler-snake/issues/795) normalize onto a duck-clone, never the live discord.js cache ([b4b5392](https://github.com/metalsp0rk/boiler-snake/commit/b4b5392371ed9272a78f98b728f93384ac147c30))
+* **visual:** take pixelmatch default export (ESM-only since 7) ([0bf67a2](https://github.com/metalsp0rk/boiler-snake/commit/0bf67a2f5eab44ef96e34a31feb9ce88f63dfddb))
+* **web:** [#790](https://github.com/metalsp0rk/boiler-snake/issues/790) complete text-input framework parity and pin autofill off fuzzy lookups ([0770ec7](https://github.com/metalsp0rk/boiler-snake/commit/0770ec79b6b332d8193af5844af0e0e8f6c5a3a5))
+
 ## [1.39.1](https://github.com/metalsp0rk/boiler-snake/compare/v1.39.0...v1.39.1) (2026-10-30)
 
 
