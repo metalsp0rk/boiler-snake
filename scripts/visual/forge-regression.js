@@ -32,7 +32,9 @@ if (!process.env.DATA_DIR && !process.env.DB_PATH) {
   process.env.DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), "forge-visual-"));
 }
 const { PNG } = require("pngjs");
-const pixelmatch = require("pixelmatch");
+// pixelmatch 7+ is ESM-only: require(esm) (Node >=22.12, engines pin 22.22.2)
+// hands back the module namespace, so take the default export.
+const { default: pixelmatch } = require("pixelmatch");
 const puppeteer = require("puppeteer");
 const { createCspMiddleware, contentSecurityPolicy } = require("../../src/web/middleware/csp");
 const { createStaticMiddleware } = require("../../src/web/middleware/static");
