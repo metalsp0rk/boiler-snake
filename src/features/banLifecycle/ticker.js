@@ -361,6 +361,9 @@ async function runBanExpiryTick(supervisor, opts = {}) {
           communityId,
           outbound,
           guildId,
+          // #811: the appeal auto-close's ticket leg needs the client
+          // (channel fetch inside the shared close flow).
+          client,
           resolveModeratorName: moderatorNameResolver(client),
           ...(positiveInt(opts.now) ? { now: nowMs } : {}),
         });
@@ -527,6 +530,10 @@ async function reconcileCommunity(supervisor, communityId, facade, opts, out) {
         userId: String(row.user_id),
         outbound,
         guildId,
+        // #811: ticket-leg client for the appeal auto-close + the honest
+        // cause the auto-closed appeal records.
+        client: safeDiscordClient(supervisor),
+        banEndCause: "the ban vanished while the bot was offline (boot reconciliation)",
         unbanReason: RECONCILE_UNBAN_REASON,
         settings: { welcome_back_dm: 0 },
         ...(positiveInt(opts.now) ? { now: positiveInt(opts.now) } : {}),

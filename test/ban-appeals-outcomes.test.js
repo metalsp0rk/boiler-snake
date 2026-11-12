@@ -1142,3 +1142,227 @@ describe("outcomes.post-decision guards — the ferry stops structurally, belts 
     }
   });
 });
+
+/* ═══════════ 8. closeOnBanEnd — the #811 system auto-close ════════════════ */
+
+describe("outcomes.closeOnBanEnd — the ban-ended system close (#811)", () => {
+  const CID = communityKey("811-outcomes-close");
+
+  /** FILED-only seed (ticket never opened) — the dead-pending shape. */
+  function mkFiledAppeal(communityId) {
+    const record = mkRecord(communityId);
+    const filed = db.fileAppeal({
+      communityId,
+      banRecordId: record.id,
+      appealStatement: "please review",
+      createdAt: T0,
+    });
+    assert.equal(filed.ok, true, `filed seed failed: ${filed.error}`);
+    return { record, appeal: filed.appeal };
+  }
+
+  it("garbage gates: NO_TARGET refuses before any read", async () => {
+    for (const bad of [null, undefined, 0, -1, "abc", 1.5]) {
+      const D = makeDeps();
+      const r1 = await outcomes.closeOnBanEnd({ communityId: bad, banRecordId: 1, deps: D.deps });
+      assert.equal(r1.ok, false, `${String(bad)} community must refuse`);
+      assert.equal(r1.code, "NO_TARGET");
+      const r2 = await outcomes.closeOnBanEnd({ communityId: CID, banRecordId: bad, deps: D.deps });
+      assert.equal(r2.ok, false);
+      assert.equal(r2.code, "NO_TARGET");
+      assert.deepEqual(D.calls, [], `garbage ${String(bad)} touched no seam`);
+    }
+  });
+
+  it("NO appeal behind the ban (the common case): honest silent skip, zero seams", async () => {
+    const record = mkRecord(CID);
+    const D = makeDeps();
+    const res = await outcomes.closeOnBanEnd({
+      communityId: CID,
+      banRecordId: record.id,
+      cause: "the ban expired and was auto-unbanned",
+      deps: D.deps,
+    });
+    assert.deepEqual({ ok: res.ok, acted: res.acted, skipped: res.skipped }, { ok: true, acted: false, skipped: true });
+    assert.deepEqual(D.calls, [], "a ban with no appeal is silence, not noise");
+    assert.equal(D.dms.length, 0);
+    assert.deepEqual(auditFor(CID, "banAppeals.closed_ban_ended", 0), [], "nothing audited for nothing");
+  });
+
+  it("FILED close: CAS lands, NO ticket legs (never had one), audit prior=filed, ZERO user DMs", async () => {
+    const { record, appeal } = mkFiledAppeal(CID);
+    const D = makeDeps();
+    const res = await outcomes.closeOnBanEnd({
+      communityId: CID,
+      banRecordId: record.id,
+      cause: "the ban was lifted outside the bot",
+      deps: D.deps,
+    });
+    assert.equal(res.ok, true, res.error);
+    assert.equal(res.acted, true);
+    assert.equal(res.priorStatus, "filed");
+    assert.equal(res.ticketClosed, false);
+
+    const row = db.getAppealById(appeal.id);
+    assert.equal(row.status, "closed");
+    assert.equal(row.decided_by, "system:ban-ended");
+    assert.equal(row.decided_at, NOW, "the injected clock rides the CAS");
+    assert.match(row.denial_reason, /lifted outside the bot.*auto-closed/s);
+
+    // No channel existed → no note seam, no ticket close seam, NO DM ever.
+    assert.deepEqual(namesOf(D.calls, "sendChannel", "softCloseTicket", "sendDm"), []);
+    assert.equal(D.dms.length, 0, "the ban-end already speaks — no second lifecycle DM");
+
+    const audited = auditFor(CID, "banAppeals.closed_ban_ended", appeal.id);
+    assert.equal(audited.length, 1);
+    const det = details(audited[0]);
+    assert.equal(det.prior_status, "filed");
+    assert.equal(det.cause, "the ban was lifted outside the bot");
+    assert.equal(det.ticket_closed, false);
+    assert.equal(det.ban_number, record.ban_number);
+    assert.equal(det.subject_user_id, record.user_id);
+    assert.equal(audited[0].origin, "system", "system action, no fake actor");
+  });
+
+  it("OPEN close: note BEFORE the close, shared close flow runs, ferry dies structurally", async () => {
+    const { record, appeal, channel } = mkOpenAppeal(CID);
+    const D = makeDeps();
+    const res = await outcomes.closeOnBanEnd({
+      communityId: CID,
+      banRecordId: record.id,
+      cause: "the ban expired and was auto-unbanned",
+      deps: D.deps,
+    });
+    assert.equal(res.ok, true, res.error);
+    assert.equal(res.acted, true);
+    assert.equal(res.priorStatus, "open");
+    assert.equal(res.ticketClosed, true);
+
+    // Staff-side note: into the ticket channel, pings stripped, cause quoted.
+    assert.equal(D.channelNotes.length, 1);
+    assert.equal(D.channelNotes[0].channelId, channel);
+    assert.match(D.channelNotes[0].payload.content, /System — ban ended/);
+    assert.match(D.channelNotes[0].payload.content, /The ban expired and was auto-unbanned/);
+    assert.deepEqual(D.channelNotes[0].payload.allowedMentions, { parse: [] });
+
+    // ORDER law: the note lands BEFORE the channel goes dark on the close.
+    const noteAt = D.calls.findIndex((c) => c[0] === "sendChannel");
+    const closeAt = D.calls.findIndex((c) => c[0] === "softCloseTicket");
+    assert.ok(noteAt >= 0 && closeAt >= 0 && noteAt < closeAt, `note(${noteAt}) < close(${closeAt})`);
+
+    // Shared close flow with the honest reason.
+    assert.equal(D.softCloses.length, 1);
+    assert.match(D.softCloses[0].closeReason, /Ban ended \(the ban expired and was auto-unbanned\).*auto-closed/s);
+
+    // Ban record UNTOUCHED by the appeal layer (the settle already happened
+    // upstream — this engine must never write ban-side).
+    assert.deepEqual(namesOf(D.calls, "unbanMember", "claimWelcome", "recordWelcomeDmSent", "createInvite", "sendDm"), []);
+
+    // The row + the ferry lane (structural stop).
+    assert.equal(db.getAppealById(appeal.id).status, "closed");
+    assert.deepEqual(db.listOpenAppealsByUser(record.user_id).filter((a) => a.id === appeal.id), []);
+
+    const det = details(auditFor(CID, "banAppeals.closed_ban_ended", appeal.id)[0]);
+    assert.equal(det.prior_status, "open");
+    assert.equal(det.ticket_closed, true);
+    assert.equal(det.ticket_channel_id, channel);
+  });
+
+  it("a decided appeal is a benign skip: no second close, zero seams", async () => {
+    const { record, appeal } = mkOpenAppeal(CID);
+    const g = makeDeps();
+    assert.equal((await outcomes.grantClemency({ appealId: appeal.id, staffUserId: MOD_ID, deps: g.deps })).ok, true);
+
+    const D = makeDeps();
+    const res = await outcomes.closeOnBanEnd({
+      communityId: CID, banRecordId: record.id, cause: "the ban expired", deps: D.deps,
+    });
+    assert.equal(res.ok, true);
+    assert.equal(res.skipped, true);
+    assert.equal(res.code, "NOT_OPEN");
+    assert.equal(res.status, "granted", "the live truth rides the skip");
+    assert.deepEqual(D.calls, [], "the skip reads the row and stops — THEIR flow owns the ticket");
+  });
+
+  it("CAS LOSS (staff decided mid-flight): silent report of the live truth, zero ticket legs", async () => {
+    const { record, appeal } = mkOpenAppeal(CID);
+    // Stale read (the row read OPEN), then the CAS answers denied — the
+    // exact interleaving: staff denies between our read and our write.
+    const stale = { ...db.getAppealById(appeal.id), status: "open" };
+    const D = makeDeps({
+      getAppealByBanRecord: () => stale,
+      closeAppealOnBanEnd: async () => ({ ok: true, won: false, appeal: { status: "denied" } }),
+    });
+    const res = await outcomes.closeOnBanEnd({
+      communityId: CID, banRecordId: record.id, cause: "the ban expired", deps: D.deps,
+    });
+    assert.equal(res.ok, true, "a CAS loss is a REPORTED outcome, not an error");
+    assert.equal(res.acted, false);
+    assert.equal(res.code, "ALREADY_DECIDED");
+    assert.equal(res.liveStatus, "denied");
+    assert.deepEqual(namesOf(D.calls, "sendChannel", "softCloseTicket", "sendDm"), [], "the winner owns the ticket");
+    assert.ok(D.logs.info.some((l) => l.includes("ban-ended close LOST the CAS")), JSON.stringify(D.logs.info));
+  });
+
+  it("CAS ERROR answers CLAIM_FAILED with its cause (never a silent drop)", async () => {
+    const { record, appeal } = mkOpenAppeal(CID);
+    const stale = { ...db.getAppealById(appeal.id), status: "open" };
+    const D = makeDeps({
+      getAppealByBanRecord: () => stale,
+      closeAppealOnBanEnd: async () => ({ ok: false, error: "SQLITE_BUSY: database is locked" }),
+    });
+    const res = await outcomes.closeOnBanEnd({
+      communityId: CID, banRecordId: record.id, cause: "x", deps: D.deps,
+    });
+    assert.equal(res.ok, false);
+    assert.equal(res.code, "CLAIM_FAILED");
+    assert.match(res.error, /SQLITE_BUSY/);
+    assert.ok(D.logs.error.some((l) => l.includes("ban-ended close CAS failed")));
+    assert.equal(db.getAppealById(appeal.id).status, "open", "nothing half-happened");
+  });
+
+  it("partial failure law: a throwing ticket note rides warnings, the close still completes", async () => {
+    const { record, appeal, channel } = mkOpenAppeal(CID);
+    const D = makeDeps({
+      sendChannel: async () => {
+        throw new Error("channels are on fire");
+      },
+    });
+    const res = await outcomes.closeOnBanEnd({
+      communityId: CID, banRecordId: record.id, cause: "the ban expired", deps: D.deps,
+    });
+    assert.equal(res.ok, true);
+    assert.equal(res.acted, true, "the CAS won — the close IS the truth");
+    assert.equal(res.ticketClosed, true, "the note failure never cancels the ticket close");
+    assert.ok(res.warnings.some((w) => w.includes("Ticket notice failed")), JSON.stringify(res.warnings));
+    assert.equal(db.getAppealById(appeal.id).status, "closed");
+  });
+
+  it("a throwing softCloseTicket rides closeWarnings; the closed appeal stands", async () => {
+    const { record, appeal } = mkOpenAppeal(CID);
+    const D = makeDeps({
+      softCloseTicket: async () => {
+        throw new Error("close pipeline down");
+      },
+    });
+    const res = await outcomes.closeOnBanEnd({
+      communityId: CID, banRecordId: record.id, cause: "the ban expired", deps: D.deps,
+    });
+    assert.equal(res.ok, true);
+    assert.equal(res.acted, true);
+    assert.equal(res.ticketClosed, false);
+    assert.ok(res.closeWarnings.some((w) => w.includes("Ticket close failed")), JSON.stringify(res.closeWarnings));
+    assert.equal(db.getAppealById(appeal.id).status, "closed", "the appeal CAS is already durable");
+  });
+
+  it("cause fallback: a blank cause still closes with honest generic copy", async () => {
+    const { record, appeal } = mkOpenAppeal(CID);
+    const D = makeDeps();
+    const res = await outcomes.closeOnBanEnd({ communityId: CID, banRecordId: record.id, deps: D.deps });
+    assert.equal(res.ok, true);
+    assert.equal(res.priorStatus, "open");
+    assert.equal(D.channelNotes.length, 1);
+    assert.match(D.channelNotes[0].payload.content, /The ban ended/);
+    assert.equal(db.getAppealById(appeal.id).status, "closed");
+  });
+});

@@ -742,6 +742,8 @@ module.exports = {
   attachAppealTicketChannel: banAppeals.attachAppealTicketChannel,
   openAppeal: banAppeals.openAppeal,
   claimAppealOutcome: banAppeals.claimAppealOutcome,
+  closeAppealOnBanEnd: banAppeals.closeAppealOnBanEnd,
+  APPEAL_BAN_END_DECIDER: banAppeals.APPEAL_BAN_END_DECIDER,
   saveAppealCursor: banAppeals.saveAppealCursor,
   loadAppealCursor: banAppeals.loadAppealCursor,
   setAppealFerryPaused: banAppeals.setAppealFerryPaused,

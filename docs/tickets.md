@@ -77,10 +77,13 @@ them verbatim, and carries the **Grant clemency** / **Appeal denied** /
 **Pause relaying** buttons. Outcomes close through the shared close→archive
 flow; deleting the channel WITHOUT a decision is detected feature-side and
 sends a **neutral** notice ("staff ended the conversation … the ban stands")
-instead of pretending a decision happened. Decisions, ferry law, and the
-privacy rules: [Ban Lifecycle → Ban Appeals](ban-lifecycle.md). **Discord
-only** — ban appeals are explicit Fluxer no-parity, so no appeal ever opens
-a ticket on Fluxer.
+instead of pretending a decision happened. When the BAN itself ends without a
+decision (#811 — expiry, outside lift, or reconciliation), the system
+auto-closes the pending appeal and converges this ticket too, with a
+`📜 System — ban ended.` note and no staff action needed. Decisions, ferry
+law, and the privacy rules: [Ban Lifecycle → Ban Appeals](ban-lifecycle.md).
+**Discord only** — ban appeals are explicit Fluxer no-parity, so no appeal
+ever opens a ticket on Fluxer.
 
 ## Setup
 

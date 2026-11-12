@@ -881,3 +881,118 @@ describe("banAppeals — the appeal machine, end to end (injected clock througho
     assert.equal(row.ferry_paused, 1);
   });
 });
+
+/* ══ #811: closeAppealOnBanEnd — the ban-ended system close ═════════════════ */
+
+describe("banAppeals.closeAppealOnBanEnd — CAS over BOTH pending shapes (#811)", () => {
+  const CID = communityKey("811-repo-close");
+
+  it("files the CAS law: 'filed' → closed with the system decider + reason ride", () => {
+    const appeal = fileOk(CID, mkBan(CID).id);
+    const res = db.closeAppealOnBanEnd(appeal.id, {
+      reason: "Ban ended (the ban expired and was auto-unbanned) — appeal auto-closed",
+      nowMs: T0 + MIN,
+    });
+    assert.deepEqual({ ok: res.ok, won: res.won }, { ok: true, won: true });
+
+    const row = appealRow(appeal.id);
+    assert.equal(row.status, "closed");
+    assert.equal(row.decided_by, db.APPEAL_BAN_END_DECIDER, "names the mechanism, never a fake user id");
+    assert.equal(row.decided_at, T0 + MIN, "the injected clock is the stamp");
+    assert.equal(row.updated_at, T0 + MIN);
+    assert.match(row.denial_reason, /appeal auto-closed/, "the WHY rides denial_reason for the ticket read");
+    assert.equal(row.ferry_paused, 0, "the close does NOT touch the pause knob (state orthogonality)");
+  });
+
+  it("the LIVE shape: 'open' → closed (the ferry lane dies with the row)", () => {
+    const appeal = openOk(CID, mkBan(CID).id);
+    const res = db.closeAppealOnBanEnd(appeal.id, { reason: "lifted outside the bot", nowMs: T0 + MIN });
+    assert.equal(res.won, true);
+    const row = appealRow(appeal.id);
+    assert.equal(row.status, "closed");
+    assert.equal(row.decided_by, db.APPEAL_BAN_END_DECIDER);
+
+    // STRUCTURAL ferry stop: the DM relay lane selects ONLY open rows.
+    const rec = db.getBanRecord(appeal.ban_record_id);
+    assert.deepEqual(db.listOpenAppealsByUser(rec.user_id).filter((a) => a.id === appeal.id), []);
+  });
+
+  it("decided/closed rows are UNTOUCHED (won:false + the live row, byte-stable)", () => {
+    for (const [status, how] of [
+      ["granted", (id) => db.claimAppealOutcome(id, { status: "granted", decidedBy: uid("mod"), nowMs: T0 + MIN })],
+      ["denied", (id) => db.claimAppealOutcome(id, { status: "denied", decidedBy: uid("mod"), nowMs: T0 + MIN })],
+      ["closed", (id) => db.claimAppealOutcome(id, { status: "closed", decidedBy: uid("mod"), nowMs: T0 + MIN })],
+    ]) {
+      const appeal = openOk(CID, mkBan(CID).id);
+      assert.equal(how(appeal.id).won, true, `seed reaches ${status}`);
+      const before = appealRow(appeal.id);
+
+      const res = db.closeAppealOnBanEnd(appeal.id, { reason: "too late", nowMs: T0 + 9 * MIN });
+      assert.equal(res.ok, true);
+      assert.equal(res.won, false, `${status} is outside the ('filed','open') CAS domain`);
+      assert.deepEqual(appealRow(appeal.id), before, "a losing system-close mutates NOTHING");
+      assert.equal(res.appeal.status, status, "the loser reports the LIVE truth");
+    }
+  });
+
+  it("a staff decision landing mid-flight simply WINS the row (one-winner CAS)", () => {
+    const appeal = openOk(CID, mkBan(CID).id);
+    // Staff deny claims first; the ban-ended pass reads later and lands on a
+    // decided row — exactly the race the design promises the staff wins.
+    assert.equal(
+      db.claimAppealOutcome(appeal.id, { status: "denied", decidedBy: "mod-1", nowMs: T0 + MIN }).won,
+      true
+    );
+    const res = db.closeAppealOnBanEnd(appeal.id, { reason: "ban expired", nowMs: T0 + 2 * MIN });
+    assert.equal(res.won, false);
+    const row = appealRow(appeal.id);
+    assert.equal(row.status, "denied", "no status clobbering");
+    assert.equal(row.decided_by, "mod-1", "no attribution clobbering");
+    assert.equal(row.denial_reason, null, "no reason clobbering");
+  });
+
+  it("two racing ban-ended passes: exactly one winner (the CAS is the arbiter)", () => {
+    const appeal = openOk(CID, mkBan(CID).id);
+    const first = db.closeAppealOnBanEnd(appeal.id, { reason: "first", nowMs: T0 + MIN });
+    const second = db.closeAppealOnBanEnd(appeal.id, { reason: "second", nowMs: T0 + 2 * MIN });
+    assert.equal(first.won, true);
+    assert.equal(second.won, false, "a repeated ban-end (duplicate event) changes nothing");
+    assert.equal(appealRow(appeal.id).denial_reason, "first", "the winner's reason stands");
+  });
+
+  it("the reason cap rides MAX_DENIAL_REASON like every other outcome note", () => {
+    const appeal = openOk(CID, mkBan(CID).id);
+    const long = "x".repeat(db.MAX_DENIAL_REASON + 1);
+    const res = db.closeAppealOnBanEnd(appeal.id, { reason: long });
+    assert.equal(res.ok, false);
+    assert.match(res.error, /too long \(max \d+ characters\)/);
+    assert.equal(appealRow(appeal.id).status, "open", "an over-cap refusal stores NOTHING");
+  });
+
+  it("null/blank reason is honest: the close lands with denial_reason NULL", () => {
+    const appeal = openOk(CID, mkBan(CID).id);
+    assert.equal(db.closeAppealOnBanEnd(appeal.id, { reason: null }).won, true);
+    assert.equal(appealRow(appeal.id).denial_reason, null);
+  });
+
+  it("garbage appeal ids answer the runtime refusal, never throw", () => {
+    for (const bad of GARBAGE_APPEAL_IDS) {
+      const res = db.closeAppealOnBanEnd(bad, { reason: "x" });
+      assert.equal(res.ok, false, `${JSON.stringify(bad) ?? String(bad)} must be refused`);
+      assert.equal(res.error, "No such ban appeal.");
+    }
+  });
+
+  it("a never-existing id is a LOSS, not an error (won:false + null row)", () => {
+    const res = db.closeAppealOnBanEnd(999999, { reason: "ghost" });
+    assert.equal(res.ok, true);
+    assert.equal(res.won, false);
+    assert.equal(res.appeal, null);
+  });
+
+  it("the system decider constant is frozen-shaped truth: exact string, exported once", () => {
+    assert.equal(db.APPEAL_BAN_END_DECIDER, "system:ban-ended");
+    // It is NOT a snowflake — attribution reads honestly in every audit grep.
+    assert.doesNotMatch(db.APPEAL_BAN_END_DECIDER, /^\d{17,20}$/);
+  });
+});

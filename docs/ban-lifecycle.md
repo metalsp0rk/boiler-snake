@@ -155,6 +155,14 @@ Staff decision (claim-row UPDATE … WHERE status='open' — first wins)
           eligibility restated) → ticket close→archive
         → plain close (ticket channel deleted while still `open`): neutral
           DM, the ban untouched, status `closed`
+
+The ban ENDS with the appeal still pending (#811 — expiry auto-unban, staff
+lift outside the bot, or boot reconciliation; never a HELD expiry, #809):
+        → system auto-close (CAS 'filed'|'open' → `closed`, decided_by
+          `system:ban-ended`) → staff-side system note in the ticket →
+          shared ticket close → audit `banAppeals.closed_ban_ended`
+        → NO user DM — the ban-end itself already speaks (welcome-back DM,
+          or reconcile's log-only law); the ferry stops with the status
 ```
 
 The DM lane (`appeal:`, `appeal:s:`) is guildless: banned users carry no guild context, so the feature binds its OWN `InteractionCreate` listener (the command router drops guildless interactions and stays untouched). The in-ticket family (`ap:clemency:` / `ap:deny:` / `ap:deny:m:` / `ap:pause:`) rides the registered router with the usual staff gate. Community resolution is through the ban record's own row — a guildless press never guesses a guild.
@@ -206,7 +214,7 @@ The filing confirmation DM states the same law up-front (`**Shared:** only text,
 
 ### Outcomes
 
-All three start with the SAME claim (`UPDATE … WHERE status='open'`): **first decision wins**, a losing click mutates nothing and answers with the LIVE row's truth (`**Appeal:** this appeal was already decided as \`…\` — first decision wins, so this click changed nothing.`). Once the status leaves `open` the ferry stops structurally — the status guard IS the relay stop.
+The three staff decisions start with the SAME claim (`UPDATE … WHERE status='open'`): **first decision wins**, a losing click mutates nothing and answers with the LIVE row's truth (`**Appeal:** this appeal was already decided as \`…\` — first decision wins, so this click changed nothing.`). Once the status leaves `open` the ferry stops structurally — the status guard IS the relay stop. The fourth entry is a SYSTEM close, not a decision (see "When the ban ends" below): a different CAS over both pending shapes, and a staff decision racing it simply wins the row.
 
 **Grant clemency** (locked order): claim `granted` → **spend the cycle's #772 welcome FIRST** (claim → belt stamp, `welcome_dm_sent=1` before any unban call, so a racing GuildBanRemove or the expiry ticker LOSES its welcome claim — exactly ONE DM per clemency, structurally) → unban ONLY against an ACTIVE record (a settled row means a newer cycle owns the ban — never unban against it; Discord 10026 NOT_BANNED is TRUTH, not failure: still granted) → record settles **`clemency_granted`** (CAS; the live row wins a race and is reported) → **permanent re-join invite** minted in `guild.systemChannel` ?? first visible text channel with the pinned policy `maxAge 0 / maxUses 0` (never expires, unlimited uses — policy + code audited as `banAppeals.invite_created`) → ONE DM → ticket close→archive (shared flow, warnings ledger) → header buttons disabled → audit. Clemency on an already-expired ban still sends the DM.
 
@@ -236,6 +244,8 @@ Permanent bans answer `**Expiry:** none — this ban has no set end date; staff 
 The ban itself was not changed by this. If you want to raise anything, you can contact a staff member another way.
 ```
 
+**When the ban ends (system auto-close, #811)** — if the ban behind a pending appeal ends by any path that ISN'T a clemency (the expiry sweep auto-unbans it, staff lift it outside the bot, or boot reconciliation detaches it), the appeal closes with it: a CAS over BOTH pending shapes (`filed` and `open` → `closed`, `decided_by = system:ban-ended`, the human cause riding `denial_reason`). Staff get a `📜 System — ban ended.` note in the ticket before the shared close flow converges it; a late button click answers the honest "already decided". There is deliberately **no user DM** — the ban-end itself already speaks (the welcome-back DM, or reconciliation's log-only law) and a second lifecycle DM would double-message the same fact. A **held** expiry (#809) is NOT a ban end: the live ban is still in force, so its appeal legitimately stays open for staff to decide.
+
 ### Appeals toggle (`/banappeals`)
 
 | Command | Guild setting | Default | Effect |
@@ -248,12 +258,13 @@ Admin tier (Manage Server in the picker AND the handler), Discord-only like `/ba
 
 ### Appeals data & audit
 
-Migration `075_ban_appeals`: the `ban_appeals` table (one row per appealable cycle — `ban_record_id` UNIQUE, `ticket_channel_id` NULL until the ticket lands, status `filed` → `open` → exactly one of `granted|denied|closed`, the statement, four plain ferry-cursor columns (id + timestamp per direction), `ferry_paused`, `decided_by/decided_at`, `denial_reason`) **plus** the `ban_records` status-CHECK rebuild adding `clemency_granted` (074 stays byte-frozen; ids and B-n numbers are preserved — the `appeal:<banRecordId>` customIds depend on that stability) and the `guild_settings.ban_appeals` toggle (`DEFAULT 1`).
+Migration `075_ban_appeals`: the `ban_appeals` table (one row per appealable cycle — `ban_record_id` UNIQUE, `ticket_channel_id` NULL until the ticket lands, status `filed` → `open` → exactly one of `granted|denied|closed` (a `closed` row is either the neutral plain-close, or — #811 — the system ban-ended auto-close, told apart by `decided_by = 'system:ban-ended'`), the statement, four plain ferry-cursor columns (id + timestamp per direction), `ferry_paused`, `decided_by/decided_at`, `denial_reason`) **plus** the `ban_records` status-CHECK rebuild adding `clemency_granted` (074 stays byte-frozen; ids and B-n numbers are preserved — the `appeal:<banRecordId>` customIds depend on that stability) and the `guild_settings.ban_appeals` toggle (`DEFAULT 1`).
 
 | Action | Origin |
 |--------|--------|
 | `banAppeals.file` | Filing (per modal submit that reached the repository; status/ticket truth included) |
 | `banAppeals.clemency_granted` / `banAppeals.denied` / `banAppeals.closed` | The three outcome claims (staff actor on the button paths; attribution-free on the ChannelDelete path) |
+| `banAppeals.closed_ban_ended` (#811) | System auto-close when the BAN behind a pending appeal ends (expiry / external lift / reconciliation); details carry `prior_status`, the human `cause`, and `ticket_closed` |
 | `banAppeals.invite_created` | Invite mint — channel + pinned policy (`max_age: 0`, `max_uses: 0`) + code, staff-side audit only |
 | `banAppeals.toggle_set` | `/banappeals enable\|disable` (recordSlashAudit + audit embed) |
 

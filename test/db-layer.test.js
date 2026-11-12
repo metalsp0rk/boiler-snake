@@ -749,6 +749,7 @@ describe("db layer", () => {
         "attachAppealTicketChannel",
         "openAppeal",
         "claimAppealOutcome",
+        "closeAppealOnBanEnd",
         "saveAppealCursor",
         "loadAppealCursor",
         "setAppealFerryPaused",
@@ -823,6 +824,7 @@ describe("db layer", () => {
       "APPEAL_FERRY_DIRECTIONS", // #773: user | ticket — keys the per-direction cursor columns
       "MAX_APPEAL_STATEMENT", // #773: appeal statement cap (4000 = Discord modal hard limit)
       "MAX_DENIAL_REASON", // #773: denial reason cap (1000, the case-explanation family)
+      "APPEAL_BAN_END_DECIDER", // #811: system attribution marker for a ban-ended auto-close
     ]);
 
     it("exports no undefined value", () => {
