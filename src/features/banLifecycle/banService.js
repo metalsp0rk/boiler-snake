@@ -159,6 +159,22 @@ function banRef(record) {
   return `B-${record?.ban_number ?? "?"}`;
 }
 
+/**
+ * #809: does the LIVE ban reason still match the reason captured when this
+ * record issued its ban? Normalized equality (trim, collapse internal
+ * whitespace, case-fold) — Discord itself does not re-wrap reasons, but the
+ * audit trail around a re-ban often differs by punctuation, and the guard
+ * only fires on a real narrative change, not cosmetic drift. Both sides
+ * ride the SAME platform read path (fetchBan at issue vs. fetchBan at
+ * expiry), so truncation/normalization Discord applies is shared, not a
+ * false mismatch.
+ */
+function identityReasonMatches(issued, live) {
+  const norm = (v) =>
+    String(v ?? "").trim().replace(/\s+/g, " ").toLowerCase();
+  return norm(issued) === norm(live);
+}
+
 /** { ok:false, error } result with an optional machine code. */
 function fail(error, code) {
   const out = { ok: false, error };
@@ -689,6 +705,23 @@ async function banUser(opts = {}) {
       return failLogged(log, "ban failed", communityId, userId, error, banned?.code);
     }
 
+    // ── #809: fingerprint the ban we now own BEFORE storing the record. ───
+    // Discord bans are (guild,user)-keyed with no ban id and the v10 Ban
+    // payload carries no creation date / moderator — the LIVE reason read
+    // back from the platform is the identity the expiry sweep can check.
+    // Best-effort: a failed read leaves the marker NULL and expiry falls
+    // back to the historical behavior (never a ban refused, never a lie).
+    let banIdentityReason = null;
+    if (typeof outbound?.fetchBan === "function") {
+      try {
+        const live = await outbound.fetchBan(communityId, userId);
+        if (live?.ok === true) banIdentityReason = live.ban?.reason ?? null;
+      } catch {
+        // Post-ban bookkeeping never rewrites the outcome (rule 5); the
+        // record simply carries no identity until a future read.
+      }
+    }
+
     // ── Record AFTER the successful ban ────────────────────────────────────
     const created = facade.createBanRecord({
       communityId,
@@ -698,6 +731,7 @@ async function banUser(opts = {}) {
       reason,
       bannedAt: nowMs,
       expiresAt: expiresAtMs,
+      banIdentityReason,
     });
     if (!created.ok) {
       const partial =
@@ -832,6 +866,89 @@ async function finalizeExpiry(recordOrId, deps = {}) {
         `Could not auto-unban: the outbound has no unbanMember surface — **${banRef(row)}** stays claimed for a lease retry.`
       );
     }
+    // ── #809 RE-BAN GUARD: the live ban must still BE the ban this record
+    // issued. Any unban→re-issue outside the bot (moderator re-ban during
+    // downtime) leaves this record pointing at a human's newer ban — and
+    // Discord bans have no id: the v10 Ban payload's only identity beyond
+    // the user is its reason, fingerprinted at issue time
+    // (`ban_identity_reason`). The three answers:
+    //   MATCH (or nothing fingerprinted) → proceed — historical behavior.
+    //   MISMATCH → staff owns whatever is live now: the auto-unban is HELD
+    //     (never executed — lifting a moderator's ban against their intent
+    //     is the destructive act this guard exists to stop) and NO welcome
+    //     DM/invite goes to a member a human just (re-)banned. Terminal.
+    //   UNREADABLE (any failure that is not the 10026 "not banned") → FAIL
+    //     CLOSED: unknown never executes a destructive unban — reconcile's
+    //     law ("unknown never settles a record"), applied to the unban
+    //     itself. The row stays claimed; the lease frees it for a retry.
+    // A 10026 answer falls THROUGH to the unban attempt: its NOT_BANNED arm
+    // already owns the external-lift settle (one code path, one truth).
+    if (typeof outbound?.fetchBan === "function") {
+      const live = await outbound.fetchBan(communityId, userId);
+      if (
+        live?.ok === true &&
+        row.ban_identity_reason != null &&
+        !identityReasonMatches(row.ban_identity_reason, live.ban?.reason)
+      ) {
+        const heldReason =
+          `${unbanReason} — HELD: the live ban does not match this record ` +
+          `(live reason differs from the reason captured at issue — a staff re-ban is assumed; nothing was lifted)`;
+        const held = facade.markExpiryHeld(id, heldReason, { nowMs });
+        if (!held.ok) {
+          return failLogged(log, "expiry held-settle failed", communityId, userId, held.error);
+        }
+        if (!held.won) {
+          return failLogged(
+            log,
+            "expiry held-settle lost",
+            communityId,
+            userId,
+            `Ban record **${banRef(held.record)}** was concurrently settled as \`${held.record?.status ?? "unknown"}\` — nothing overwritten.`
+          );
+        }
+        systemAudit(log, {
+          communityId,
+          action: "banLifecycle.expiry_held",
+          targetType: "ban_record",
+          targetId: String(id),
+          actorUserId: null,
+          details: {
+            ban_number: row.ban_number,
+            subject_user_id: userId,
+            expires_at: row.expires_at,
+            source: row.source,
+            issued_reason: row.ban_identity_reason,
+            live_reason: live.ban?.reason ?? null,
+          },
+        });
+        log.warn(
+          `${LOG_PREFIX} expiry HELD community=${communityId} user=${userId} ${banRef(row)}: the live ban does not match the record ` +
+            `(issued \`${String(row.ban_identity_reason).slice(0, 160)}\` vs live \`${String(live.ban?.reason ?? "").slice(0, 160)}\`) — auto-unban skipped, no welcome DM`
+        );
+        return {
+          ok: true,
+          acted: false,
+          held: true,
+          record: facade.getBanRecord(id),
+          banNumber: banRef(row),
+          status: "expired_held",
+          unbanReason: heldReason,
+          issuedReason: row.ban_identity_reason,
+          liveReason: live.ban?.reason ?? null,
+          welcome: null,
+        };
+      }
+      if (live && live.ok !== true && live.code !== CODE_NOT_BANNED) {
+        return failLogged(
+          log,
+          "expiry verification unavailable",
+          communityId,
+          userId,
+          `${live?.error || "fetchBan returned no result"} — refusing to unban a ban that cannot be verified (retrying on a later tick)`
+        );
+      }
+    }
+
     const res = await outbound.unbanMember(communityId, userId, unbanReason);
 
     let status = null;
@@ -1197,5 +1314,6 @@ module.exports = {
     buildExpiryUnbanReason,
     translateBanMemberError,
     attemptWelcome,
+    identityReasonMatches,
   },
 };

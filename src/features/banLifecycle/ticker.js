@@ -95,6 +95,10 @@ const BAN_PAGE_LIMIT = 1000;
  * "voided, closed, removed" meaning (core/theme.js). */
 const COLOR_UNBAN = Color.muted;
 
+/** #809: held-expiry embeds ask staff for a decision (nothing closed, nothing
+ * lifted) — the token's declared caution meaning fits. */
+const COLOR_HELD = Color.caution;
+
 /** Guild-side settle reason for reconciliation-detached bans. Staff-facing
  * audit copy only — no user DM ever carries it (§2 log-only law). */
 const RECONCILE_UNBAN_REASON =
@@ -254,6 +258,62 @@ async function postUnbanEmbed(outbound, guildId, row, result) {
   }
 }
 
+/* ── #809 held-expiry embed ─────────────────────────────────────────────────
+ * The expiry sweep HELD its auto-unban: the term lapsed but the live ban
+ * does not match the record (a staff re-issue is assumed). This is NOT an
+ * unban — posting the unban embed here would LIE about what happened — so
+ * staff get their own honest embed: nothing was lifted, no welcome DM was
+ * sent, and the reason the guard fired (issued vs. live reason). Color is
+ * `caution`: the row needs a human decision (re-issue a matching ban,
+ * manually unban, or leave it), it is not the "closed" muted story. */
+
+function buildExpiryHeldEmbed({ row, result }) {
+  const embed = new EmbedBuilder()
+    .setColor(COLOR_HELD)
+    .setTitle("Ban expired — auto-unban HELD (live ban does not match)")
+    .setDescription(
+      "The term lapsed but the live ban does not look like the ban this " +
+        "record issued (a staff re-ban is assumed). **Nothing was " +
+        "unbanned and no welcome DM was sent.** Staff owns whatever is live."
+    )
+    .setTimestamp(new Date())
+    .addFields(
+      { name: "User", value: `<@${row.user_id}> (\`${row.user_id}\`)`, inline: true },
+      { name: "Ban", value: `${banRef(row)} (record ${row.id})`, inline: true },
+      { name: "Source", value: row.source === "automod" ? "Automod harness" : "Staff", inline: true },
+      { name: "Status", value: "expired_held", inline: true },
+      {
+        name: "Expired",
+        value: row.expires_at ? `${tsTag(row.expires_at)} (${tsRelative(row.expires_at)})` : "—",
+        inline: true,
+      },
+    );
+  embed.addFields({
+    name: "Reason captured at issue",
+    value: truncate(result?.issuedReason) || "*Not captured (pre-#809 record or unreadable at issue)*",
+  });
+  embed.addFields({
+    name: "Live reason now",
+    value: truncate(result?.liveReason) || "*None (null live reason)*",
+  });
+  return embed;
+}
+
+/** Best-effort like postUnbanEmbed; same never-lie rule. */
+async function postExpiryHeldEmbed(outbound, guildId, row, result) {
+  if (!outbound || !guildId) return;
+  try {
+    const { sendAuditLog } = auditLogApi();
+    const embed = buildExpiryHeldEmbed({ row, result });
+    await sendAuditLog(outbound, guildId, { embeds: [embed] });
+  } catch (err) {
+    console.error(
+      `${LOG_PREFIX} held-expiry embed failed community=${row.community_id} user=${row.user_id} ${banRef(row)}:`,
+      err?.message || err,
+    );
+  }
+}
+
 /* ═══ 1. The minute tick — due-row expiry sweep (#772 §4) ═══════════════════ */
 
 /**
@@ -274,7 +334,7 @@ async function postUnbanEmbed(outbound, guildId, row, result) {
 async function runBanExpiryTick(supervisor, opts = {}) {
   const nowMs = positiveInt(opts.now) ?? Date.now();
   const limit = positiveInt(opts.limit) ?? TICK_ROW_LIMIT;
-  const out = { processed: 0, unbanned: 0, welcomed: 0, skipped: 0, errors: 0 };
+  const out = { processed: 0, unbanned: 0, welcomed: 0, held: 0, skipped: 0, errors: 0 };
 
   try {
     const facade = dbFacade();
@@ -310,6 +370,13 @@ async function runBanExpiryTick(supervisor, opts = {}) {
           if (result.welcome?.delivered === true) out.welcomed += 1;
           // One embed per ACTED row (§4); failures earn only their log lines.
           await postUnbanEmbed(outbound, guildId, row, result);
+        } else if (result?.ok === true && result.held === true) {
+          // #809: the re-ban guard held this auto-unban (live ban does not
+          // match the record). A terminal transition THIS pass performed —
+          // not a CAS-loss skip, and never an "unban" (posting the unban
+          // embed would lie; the held embed tells the truth instead).
+          out.held += 1;
+          await postExpiryHeldEmbed(outbound, guildId, row, result);
         } else {
           // { ok:false } — the service already logged the line it owns with
           // ids. The live status decides the bucket: a row that left

@@ -893,7 +893,175 @@ describe("integration: ban lifecycle (#772)", () => {
     assert.equal(target.sends.length, 0, "still zero DMs");
   });
 
-  /* ── 11. Fluxer no-parity (documented skip) ─────────────────────────────── */
+  /* ── 11. #809 re-ban guard on the expiry sweep ────────────────────────── */
+
+  /** The claim lease (repo constant) — retry becomes possible past it.
+   * LAZY: env is minted in before(); describe-body evaluation is too early. */
+  const leaseMs = () => env.db.UNBAN_CLAIM_LEASE_MS ?? 10 * 60 * 1000;
+
+  /**
+   * Simulate a moderator lifting our ban and issuing their OWN while the
+   * bot never saw either event (downtime): the (guild,user)-keyed ban entry
+   * is REPLACED with a fresh object + reason. The record stays ACTIVE —
+   * exactly the state the expiry sweep faces in the wild.
+   */
+  function reissueBanExternally(user, newReason) {
+    const idx = env.guild._bans.findIndex((b) => String(b.userId) === user.id);
+    assert.ok(idx >= 0, "the bot-issued ban is live before the re-issue");
+    env.guild._bans.splice(idx, 1, { userId: user.id, reason: newReason });
+  }
+
+  it("#809: ban issue fingerprints the live ban; a MATCHING identity still unbans normally", async () => {
+    const target = addBanTarget("809match");
+    await slashBan(target, { reason: "spam", duration: "24h" });
+
+    const record = activeRecord(target);
+    assert.equal(
+      record.ban_identity_reason,
+      "spam",
+      "the record fingerprints the ban it owns (live reason read at issue)"
+    );
+
+    const out = await banTicker.runBanExpiryTick(fakeSupervisor(env.client), {
+      now: Date.now() + DAY + 60_000,
+    });
+    assert.deepEqual(
+      { processed: out.processed, unbanned: out.unbanned, held: out.held, welcomed: out.welcomed, errors: out.errors },
+      { processed: 1, unbanned: 1, held: 0, welcomed: 1, errors: 0 },
+      "the guard is a no-op on its own ban"
+    );
+    assert.equal(latestRecord(target).status, "expired_unbanned");
+    assert.equal(welcomeDmsFor(target).length, 1);
+  });
+
+  it("#809: a moderator re-ban makes expiry HELD — zero unban calls, zero welcome, terminal + audited", async () => {
+    const target = addBanTarget("809held");
+    await slashBan(target, { reason: "spam", duration: "24h" });
+    assert.equal(activeRecord(target).ban_identity_reason, "spam");
+
+    // Downtime story: staff lifted the bot's ban and re-banned the member
+    // for a DIFFERENT reason; the bot missed both events.
+    reissueBanExternally(target, "appeal denied — harassment continues");
+
+    const future = Date.now() + DAY + 60_000;
+    const out = await banTicker.runBanExpiryTick(fakeSupervisor(env.client), { now: future });
+    assert.deepEqual(
+      { processed: out.processed, unbanned: out.unbanned, held: out.held, welcomed: out.welcomed, errors: out.errors, skipped: out.skipped },
+      { processed: 1, unbanned: 0, held: 1, welcomed: 0, errors: 0, skipped: 0 },
+      "the held row is its own honest bucket — never 'unbanned', never a CAS-loss 'skipped'"
+    );
+
+    // Nothing destructive happened: the moderator's ban is STILL live and
+    // the bot performed ZERO unban calls; the member got NO welcome DM.
+    assert.equal(env.guild._unbans.length, 0, "the auto-unban was HELD — zero unban calls");
+    assert.equal(banCountFor(target), 1, "the live (re-issued) ban is untouched");
+    assert.equal(
+      env.guild._bans.find((b) => String(b.userId) === target.id).reason,
+      "appeal denied — harassment continues",
+      "staff's reason stands"
+    );
+    assert.equal(welcomeDmsFor(target).length, 0, "no welcome/invite to a member a human just re-banned");
+
+    // Record: terminal held, the fingerprint preserved, cause recorded.
+    const row = latestRecord(target);
+    assert.equal(row.status, "expired_held");
+    assert.equal(row.ban_identity_reason, "spam", "the fingerprint survives for staff forensics");
+    assert.match(row.unban_reason, /HELD: the live ban does not match this record/);
+
+    // Audited with BOTH reasons (the sweep's evidence trail).
+    const held = auditRowsFor("banLifecycle.expiry_held", target);
+    assert.equal(held.length, 1, "one held-expiry audit row");
+    const details = JSON.parse(held[0].details_json);
+    assert.equal(details.issued_reason, "spam");
+    assert.equal(details.live_reason, "appeal denied — harassment continues");
+
+    // Terminal means terminal: the next sweep never re-selects the row.
+    const again = await banTicker.runBanExpiryTick(fakeSupervisor(env.client), { now: future + 60_000 });
+    assert.equal(again.processed, 0, "expired_held rides no future sweep");
+
+    // And the welcome claim structurally cannot fire on a held row.
+    const welcome = env.db.claimWelcome(row.id);
+    assert.equal(welcome.ok, true);
+    assert.equal(welcome.won, false, "claimWelcome admits only lifted rows");
+  });
+
+  it("#809: an unreadable live ban FAILS CLOSED — no unban, row stays claimed ACTIVE, later retry completes", async () => {
+    const target = addBanTarget("809fail");
+    await slashBan(target, { reason: "spam", duration: "24h" });
+
+    // Unknown (a 5xx, not the 10026 "not banned") must NEVER settle or
+    // unban — reconcile's law applied to the unban itself.
+    const realFetch = env.guild.bans.fetch;
+    env.guild.bans.fetch = async () => {
+      throw Object.assign(new Error("DiscordAPIError[50001]: Internal error"), {
+        code: 50001,
+        status: 500,
+      });
+    };
+    try {
+      const t1 = Date.now() + DAY + 60_000;
+      const out = await banTicker.runBanExpiryTick(fakeSupervisor(env.client), { now: t1 });
+      assert.equal(out.unbanned, 0);
+      assert.equal(out.held, 0);
+      assert.equal(out.errors, 1, "unverifiable = transient error accounting, never destructive");
+      assert.equal(env.guild._unbans.length, 0, "zero unban calls while the truth is unknown");
+      const row = latestRecord(target);
+      assert.equal(row.status, "active", "the row stays active-claimed for a lease retry");
+      assert.ok(row.unban_claimed_at, "the claim stamp records the attempt");
+
+      // Recovery: once the read works again and the lease lapsed, the
+      // matching identity lands the unban.
+      env.guild.bans.fetch = realFetch;
+      const out2 = await banTicker.runBanExpiryTick(fakeSupervisor(env.client), {
+        now: t1 + leaseMs() + 60_000,
+      });
+      assert.equal(out2.unbanned, 1, "the retry completes the auto-unban");
+      assert.equal(latestRecord(target).status, "expired_unbanned");
+    } finally {
+      env.guild.bans.fetch = realFetch;
+    }
+  });
+
+  it("#809: an external lift (10026) still rides the NOT_BANNED fall-through — never a false HELD", async () => {
+    const target = addBanTarget("809gone");
+    await slashBan(target, { reason: "spam", duration: "24h" });
+
+    // Ban lifted outside the bot (no event seen): the guard's fetchBan
+    // answers 10026 → fall THROUGH — the unban attempt's NOT_BANNED arm
+    // owns the settle (one code path, one truth).
+    const idx = env.guild._bans.findIndex((b) => String(b.userId) === target.id);
+    env.guild._bans.splice(idx, 1);
+
+    const out = await banTicker.runBanExpiryTick(fakeSupervisor(env.client), {
+      now: Date.now() + DAY + 60_000,
+    });
+    assert.equal(out.held, 0, "a vanished ban is not a re-ban");
+    assert.equal(out.unbanned, 1);
+    const row = latestRecord(target);
+    assert.equal(row.status, "unbanned_manual", "the pre-existing 10026 settle stands");
+    assert.match(row.unban_reason, /already lifted outside the bot/);
+  });
+
+  it("#809: a legacy NULL-marker record keeps the historical behavior — unbans on a different live reason", async () => {
+    const target = addBanTarget("809legacy");
+    await slashBan(target, { reason: "spam", duration: "24h" });
+
+    // Pre-#809 row: no fingerprint. Fail-OPEN is the deliberate choice —
+    // a marker-less record must not start HOLDING every expiry (the fleet
+    // upgrades with thousands of these; only NEW re-bans get the guard).
+    env.db.db
+      .prepare("UPDATE ban_records SET ban_identity_reason=NULL WHERE community_id=? AND user_id=?")
+      .run(env.communityId, target.id);
+    reissueBanExternally(target, "someone else's reason");
+
+    const out = await banTicker.runBanExpiryTick(fakeSupervisor(env.client), {
+      now: Date.now() + DAY + 60_000,
+    });
+    assert.equal(out.unbanned, 1, "the historical sweep behavior stands for unmarked rows");
+    assert.equal(latestRecord(target).status, "expired_unbanned");
+  });
+
+  /* ── 12. Fluxer no-parity (documented skip) ─────────────────────────────── */
 
   it.skip("Fluxer NOT_ON_FLUXER refusal — unreachable through the offline Discord harness", () => {
     // createIntegrationEnv wires the DISCORD router (src/commands/router.js)
