@@ -1027,9 +1027,11 @@ ships as three mechanical seams:
    ```
 
 2. **Commit (the overlap scrub).** The note may be queued AFTER the ticket
-   call, so commit is the authoritative seam: the harness threads the
-   subject's queued note narrative into the executor (never persisted into
-   `params_json`, never shown to the model). If the reason reproduces the
+   call, so commit is the authoritative seam: the subject's queued note
+   narrative is threaded into the executor by the harness (auto mode, from
+   its in-memory queue) and resolved from the stored case note on the card's
+   Approve path (#812) — never persisted into `params_json`, never shown to
+   the model. If the reason reproduces the
    start of that narrative (normalized; floor 40 characters — below it a
    shared phrase is coincidence, not a reproduction), the row refuses:
 
