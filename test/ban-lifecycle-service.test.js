@@ -769,3 +769,128 @@ test("#809 identityReasonMatches — normalized equality, nothing cleverer", () 
   );
   assert.equal(identityReasonMatches("spam", undefined), false, "same via undefined");
 });
+
+// ═══ #810: the quarantine valve — winner-side counting → terminal quarantine ═
+
+test("#810: chronic unban failures count ONLY winner-side attempts; the ceiling quarantines", async () => {
+  const cid = freshCid();
+  const row = seedExpiredActive(cid);
+  const w = makeWorld();
+  w.ob.unbanResult = { ok: false, error: "Missing Access", code: 50013 };
+  const deps = (now) => expiryDeps(w, cid, { maxExpiryAttempts: 2, now });
+
+  // REAL attempt #1 (claim winner): honest ok:false with the count annotated.
+  const first = await banService.finalizeExpiry(row.id, deps(NOW));
+  assert.equal(first.ok, false);
+  assert.match(first.error, /Missing Access/);
+  assert.match(first.error, /\(expiry attempt 1\/2\)/, "the loser-facing copy carries the count");
+  let live = db.getBanRecord(row.id);
+  assert.equal(live.status, "active", "below the ceiling the row keeps riding the sweep");
+  assert.equal(live.expiry_attempts, 1);
+  assert.ok(w.lines.warn.some((l) => l.includes("auto-unban failed") && l.includes("expiry attempt 1/2")));
+
+  // INSIDE the lease: the claim loser performed NOTHING and counts NOTHING
+  // (this is the anti-inflation law — a lease-paced row would otherwise
+  // cross any ceiling in three ticks).
+  const loser = await banService.finalizeExpiry(row.id, deps(NOW + 60_000));
+  assert.equal(loser.ok, false);
+  assert.match(loser.error, /already in flight/);
+  assert.equal(db.getBanRecord(row.id).expiry_attempts, 1, "a pass that did no work files no attempt");
+  assert.equal(w.calls.filter((c) => c.op === "unbanMember").length, 1);
+
+  // PAST the lease: real attempt #2 → crossing → the quarantined RESULT.
+  const crossed = await banService.finalizeExpiry(row.id, deps(NOW + db.UNBAN_CLAIM_LEASE_MS + 1));
+  assert.deepEqual(
+    {
+      ok: crossed.ok,
+      acted: crossed.acted,
+      quarantined: crossed.quarantined,
+      status: crossed.status,
+      attempts: crossed.attempts,
+    },
+    { ok: true, acted: false, quarantined: true, status: "expiry_failed", attempts: 2 },
+    "quarantine is a terminal transition PERFORMED: ok:true, never an 'unban', never an error"
+  );
+  assert.match(crossed.lastError, /Missing Access/);
+
+  live = db.getBanRecord(row.id);
+  assert.equal(live.status, "expiry_failed", "the row LEAVES the sweep domain — anti-starvation");
+  assert.equal(live.expiry_attempts, 2);
+  assert.match(live.unban_reason, /QUARANTINED.*Missing Access/s);
+
+  // Nothing destructive ever landed: zero welcomes, no settle, one Discord
+  // attempt PER WINNER pass (two), zero for the loser.
+  assert.equal(w.calls.filter((c) => c.op === "unbanMember").length, 2);
+  assert.equal(w.calls.filter((c) => c.op === "sendDm").length, 0, "a quarantine never welcomes");
+
+  // Audit forensics + the loud log line.
+  const q = auditRows(cid, "banLifecycle.expiry_quarantined");
+  assert.equal(q.length, 1);
+  assert.equal(q[0].origin, "system");
+  const det = JSON.parse(q[0].details_json);
+  assert.equal(det.attempts, 2);
+  assert.equal(det.ban_number, 1);
+  assert.equal(det.subject_user_id, SUB);
+  assert.match(det.last_error, /Missing Access/);
+  assert.ok(w.lines.error.some((l) => l.includes("expiry QUARANTINED") && l.includes("handle the live ban by hand")));
+
+  // And the row is DONE: a later sweep pass reads the settled truth.
+  const again = await banService.finalizeExpiry(row.id, deps(NOW + DAY));
+  assert.equal(again.ok, false);
+  assert.match(again.error, /already settled as `expiry_failed`/);
+  assert.equal(db.getBanRecord(row.id).expiry_attempts, 2, "a settled row never counts again");
+});
+
+test("#810: the fail-closed VERIFY refusal is a real attempt too (it consumed the claim)", async () => {
+  const cid = freshCid();
+  const row = seedExpiredActive(cid);
+  const w = makeWorld();
+  w.ob.fetchBan = async () => ({ ok: false, error: "REST unavailable" });
+
+  const res = await banService.finalizeExpiry(row.id, expiryDeps(w, cid, { maxExpiryAttempts: 3 }));
+  assert.equal(res.ok, false);
+  assert.match(res.error, /REST unavailable.*refusing to unban a ban that cannot be verified/s);
+  assert.match(res.error, /\(expiry attempt 1\/3\)/);
+  assert.equal(db.getBanRecord(row.id).expiry_attempts, 1, "#809 fail-closed counts toward quarantine");
+  assert.equal(w.calls.filter((c) => c.op === "unbanMember").length, 0, "fail-closed: zero destructive calls");
+});
+
+test("#810: a missing unbanMember surface counts (the claim was real work) and never crashes", async () => {
+  const cid = freshCid();
+  const row = seedExpiredActive(cid);
+  const w = makeWorld();
+
+  const res = await banService.finalizeExpiry(row.id, expiryDeps(w, cid, { outbound: {}, maxExpiryAttempts: 2 }));
+  assert.equal(res.ok, false);
+  assert.match(res.error, /no unbanMember surface/);
+  assert.match(res.error, /\(expiry attempt 1\/2\)/);
+  assert.equal(db.getBanRecord(row.id).expiry_attempts, 1);
+  assert.equal(db.getBanRecord(row.id).status, "active");
+});
+
+test("#810: the HELD arm never counts an attempt (a human decision is not a failure)", async () => {
+  const cid = freshCid();
+  const row = seedExpiredActive(cid, {});
+  db.db.prepare("UPDATE ban_records SET ban_identity_reason=? WHERE id=?").run("raiding", row.id);
+  const w = makeWorld();
+  w.ob.fetchBan = async () => ({ ok: true, ban: { reason: "appeal denied — harassment continues" } });
+
+  const res = await banService.finalizeExpiry(row.id, expiryDeps(w, cid, { maxExpiryAttempts: 2 }));
+  assert.equal(res.ok, true);
+  assert.equal(res.held, true, "#809 held stands unchanged by the valve");
+  const live = db.getBanRecord(row.id);
+  assert.equal(live.status, "expired_held");
+  assert.equal(live.expiry_attempts, 0, "HELD is a decision, never an attempt");
+});
+
+test("#810: production default ceiling is UNannotated (the /max suffix is seam-only)", async () => {
+  const cid = freshCid();
+  const row = seedExpiredActive(cid);
+  const w = makeWorld();
+  w.ob.unbanResult = { ok: false, error: "Forbidden" };
+
+  const res = await banService.finalizeExpiry(row.id, expiryDeps(w, cid));
+  assert.equal(res.ok, false);
+  assert.match(res.error, /\(expiry attempt 1\)$/, "no ceiling shown without the test seam");
+  assert.equal(db.getBanRecord(row.id).expiry_attempts, 1);
+});

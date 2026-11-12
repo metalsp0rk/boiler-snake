@@ -819,3 +819,204 @@ describe("banRecords.markExpiryHeld — the #809 held-expiry settle", () => {
     assert.equal(res.error, "No such ban record.");
   });
 });
+
+/* ══ #810: noteExpiryAttempt / markExpiryFailed — the quarantine valve ══════ */
+
+describe("banRecords.noteExpiryAttempt — winner-side counting + terminal crossing (#810)", () => {
+  const CID = communityKey("810-repo-attempt");
+
+  const dueFor = (cid, nowMs = T0 + DAY_MS) =>
+    db.listDueExpiredBans(nowMs).filter((r) => r.community_id === cid);
+  const DAY_MS = 24 * 60 * 60 * 1000;
+
+  it("the ceiling constant is declared truth: 20 lease-paced attempts", () => {
+    assert.equal(db.EXPIRY_MAX_ATTEMPTS, 20);
+  });
+
+  it("bump law: ACTIVE-only, +1 per call, post-increment count, status untouched below the ceiling", () => {
+    const rec = mk(CID, uid("bump"), { expiresAt: T0 - MIN });
+    for (let expected = 1; expected <= 3; expected++) {
+      const res = db.noteExpiryAttempt(rec.id, { maxAttempts: 10, nowMs: T0 + expected * MIN });
+      assert.equal(res.ok, true, res.error);
+      assert.equal(res.won, true, "the row is ACTIVE — every winner-side call counts");
+      assert.equal(res.attempts, expected, "attempts is the POST-increment value");
+      assert.equal(res.quarantined, false, "below the ceiling nothing is terminal");
+    }
+    const row = db.getBanRecord(rec.id);
+    assert.equal(row.expiry_attempts, 3);
+    assert.equal(row.status, "active", "counting never mutates the status machine");
+    assert.equal(row.unban_claimed_at, null, "counting never forges a claim stamp");
+  });
+
+  it("the crossing pass quarantines: expiry_failed + reason stamped + OUT of both sweep reads", () => {
+    const rec = mk(CID, uid("crossing"), { expiresAt: T0 - MIN });
+    const crossing = db.noteExpiryAttempt(rec.id, {
+      maxAttempts: 2,
+      reason: "expiry QUARANTINED after repeated failed auto-unban attempts — last error: Missing Access",
+      nowMs: T0 + 5 * MIN,
+    });
+    assert.equal(crossing.ok, true);
+    assert.equal(crossing.won, true);
+    assert.equal(crossing.attempts, 1, "first of two — no crossing yet");
+    const crossed = db.noteExpiryAttempt(rec.id, {
+      maxAttempts: 2,
+      reason: "expiry QUARANTINED after repeated failed auto-unban attempts — last error: Missing Access",
+      nowMs: T0 + 6 * MIN,
+    });
+    assert.equal(crossed.quarantined, true, "the ceiling pass lands the terminal settle in the SAME call");
+    assert.equal(crossed.attempts, 2);
+
+    const row = db.getBanRecord(rec.id);
+    assert.equal(row.status, "expiry_failed", "terminal: the row LEAVES the sweep domain");
+    assert.match(row.unban_reason, /QUARANTINED/, "the human cause rides unban_reason for the audit read");
+    assert.equal(row.unban_claimed_at, T0 + 6 * MIN, "the crossing stamps the claim time (COALESCE law)");
+
+    // THE ANTI-STARVATION LAW: the quarantined row is invisible to BOTH
+    // sweep reads — N oldest failing rows can no longer own the slice.
+    assert.deepEqual(dueFor(CID).map((r) => r.id).includes(rec.id), false,
+      "listDueExpiredBans skips expiry_failed");
+    assert.deepEqual(
+      db.listReconcilableActiveBans(CID).filter((r) => r.id === rec.id).map((r) => r.id),
+      [],
+      "reconciliation skips expiry_failed too"
+    );
+    // And it is structurally UNWELCOMEABLE (claimWelcome's two-status domain).
+    const welcome = db.claimWelcome(rec.id);
+    assert.equal(welcome.won, false, "expiry_failed never earns a welcome DM");
+  });
+
+  it("the counter is NEVER ceiling-gated (crash-wedge doctrine): residue over the ceiling still walks terminal", () => {
+    const rec = mk(CID, uid("residue"), { expiresAt: T0 - MIN });
+    // Simulate the crash: a pass died BETWEEN the bump and the quarantine —
+    // the row is ACTIVE with attempts AT the ceiling.
+    db.db.prepare("UPDATE ban_records SET expiry_attempts=? WHERE id=?").run(5, rec.id);
+
+    const res = db.noteExpiryAttempt(rec.id, { maxAttempts: 5, reason: "residue heals", nowMs: T0 + MIN });
+    assert.equal(res.ok, true);
+    assert.equal(res.attempts, 6, "the increment moves PAST the ceiling — gating it would wedge the row ACTIVE forever");
+    assert.equal(res.quarantined, true, "the over-ceiling re-run lands the quarantine CAS right here");
+    assert.equal(db.getBanRecord(rec.id).status, "expiry_failed");
+    assert.match(db.getBanRecord(rec.id).unban_reason, /residue heals/);
+  });
+
+  it("CAS-loss law: a row that LEFT active is never counted, ever (count frozen, live row reported)", () => {
+    const rec = mk(CID, uid("frozen"), { expiresAt: T0 - MIN });
+    assert.equal(db.noteExpiryAttempt(rec.id, { maxAttempts: 9 }).attempts, 1);
+
+    // A concurrent settle wins the row (manual unban).
+    assert.equal(db.claimUnban(rec.id, T0 + MIN).won, true);
+    assert.equal(db.markUnbannedManual(rec.id, "staff lifted it").won, true);
+
+    const before = db.getBanRecord(rec.id);
+    const res = db.noteExpiryAttempt(rec.id, { maxAttempts: 9 });
+    assert.deepEqual({ ok: res.ok, won: res.won, quarantined: res.quarantined }, { ok: true, won: false, quarantined: false });
+    assert.equal(res.attempts, 1, "the count FROZE with the status — a settled row performs no attempts");
+    assert.deepEqual(db.getBanRecord(rec.id), before, "a losing note mutates NOTHING (byte-stable)");
+
+    // Even at the ceiling, a non-ACTIVE row never quarantines.
+    db.db.prepare("UPDATE ban_records SET expiry_attempts=? WHERE id=?").run(50, rec.id);
+    const after = db.noteExpiryAttempt(rec.id, { maxAttempts: 9 });
+    assert.equal(after.won, false);
+    assert.equal(after.quarantined, false);
+    assert.equal(db.getBanRecord(rec.id).status, "unbanned_manual", "the settle stands, terminal or not");
+  });
+
+  it("held rows (#809) are outside the domain too — HELD is a decision, not an attempt", () => {
+    const rec = mk(CID, uid("held"), { expiresAt: T0 - MIN });
+    assert.equal(db.markExpiryHeld(rec.id, "live ban is not ours", { nowMs: T0 + MIN }).won, true);
+    const res = db.noteExpiryAttempt(rec.id, { maxAttempts: 3 });
+    assert.equal(res.won, false);
+    assert.equal(res.quarantined, false);
+    assert.equal(db.getBanRecord(rec.id).status, "expired_held", "HELD never degrades into expiry_failed");
+  });
+
+  it("the injected clock is the ONLY clock; a NULL reason keeps the existing unban_reason", () => {
+    const rec = mk(CID, uid("clock"), { expiresAt: T0 - MIN });
+    assert.equal(
+      db.noteExpiryAttempt(rec.id, { maxAttempts: 1, nowMs: T0 + 42 * MIN }).quarantined,
+      true
+    );
+    const row = db.getBanRecord(rec.id);
+    assert.equal(row.unban_claimed_at, T0 + 42 * MIN, "the injected now rides the terminal settle");
+    assert.equal(row.unban_reason, null, "NULL reason stores NULL (COALESCE keeps the absent absent)");
+  });
+
+  it("runtime refusals: programmer-shape ids answer the record error, never throw", () => {
+    for (const bad of [0, -1, "abc", null, undefined, 1.5, {}]) {
+      const res = db.noteExpiryAttempt(bad, { maxAttempts: 3 });
+      assert.equal(res.ok, false, `${JSON.stringify(bad) ?? String(bad)} must be refused`);
+      assert.equal(res.error, "No such ban record.");
+    }
+  });
+
+  it("a never-existing id is a LOSS, not an error (won:false + null row, nothing counted)", () => {
+    const res = db.noteExpiryAttempt(999999, { maxAttempts: 3 });
+    assert.equal(res.ok, true, "a positive id that matches no row is the ghost-loss shape");
+    assert.equal(res.won, false);
+    assert.equal(res.quarantined, false);
+    assert.equal(res.attempts, 0);
+    assert.equal(res.record, null);
+  });
+});
+
+describe("banRecords.markExpiryFailed — the terminal CAS (#810)", () => {
+  const CID = communityKey("810-repo-failed");
+
+  it("ACTIVE → expiry_failed with COALESCE'd reason and claim stamp; loser gets the live truth", () => {
+    const rec = mk(CID, uid("cas"), { expiresAt: T0 - MIN });
+    // Pre-claim the lease so the COALESCE "keep the original stamp" law is observable.
+    assert.equal(db.claimUnban(rec.id, T0 + MIN).won, true);
+
+    const res = db.markExpiryFailed(rec.id, "dead community", { nowMs: T0 + 2 * MIN });
+    assert.deepEqual({ ok: res.ok, won: res.won }, { ok: true, won: true });
+    const row = db.getBanRecord(rec.id);
+    assert.equal(row.status, "expiry_failed");
+    assert.equal(row.unban_reason, "dead community");
+    assert.equal(row.unban_claimed_at, T0 + MIN, "the ORIGINAL claim stamp survives (COALESCE, never re-stamped)");
+
+    const second = db.markExpiryFailed(rec.id, "late passer", { nowMs: T0 + 3 * MIN });
+    assert.equal(second.won, false, "one winner: the terminal row is outside the ACTIVE domain");
+    assert.equal(second.record.status, "expiry_failed", "the loser reports the LIVE truth");
+    assert.equal(db.getBanRecord(rec.id).unban_reason, "dead community", "nothing clobbered");
+  });
+
+  it("a DECIDED row is untouched: expiry_failed never overwrites a human outcome", () => {
+    const rec = mk(CID, uid("decided"), { expiresAt: T0 - MIN });
+    assert.equal(db.finalizeUnban(rec.id, "expired_unbanned", null, { nowMs: T0 + MIN }).won, true);
+    const res = db.markExpiryFailed(rec.id, "stale quarantine", { nowMs: T0 + 2 * MIN });
+    assert.equal(res.won, false);
+    const row = db.getBanRecord(rec.id);
+    assert.equal(row.status, "expired_unbanned", "the settle stands");
+    assert.equal(row.unban_reason, null, "no reason clobbering on the losing pass");
+  });
+
+  it("programmer-shape ids answer the record error", () => {
+    const res = db.markExpiryFailed(0, "x");
+    assert.equal(res.ok, false);
+    assert.equal(res.error, "No such ban record.");
+  });
+});
+
+describe("banRecords.markCommunityReconciled — the rotation stamp (#810)", () => {
+  const CID = communityKey("810-repo-stamp");
+
+  it("upsert law: one row per community, the LATEST attempt wins, the clock is injected", () => {
+    assert.deepEqual(db.markCommunityReconciled(CID, { nowMs: T0 }), { ok: true });
+    assert.deepEqual(db.markCommunityReconciled(CID, { nowMs: T0 + 5 * MIN }), { ok: true });
+    const rows = db.db
+      .prepare("SELECT community_id, last_reconciled_at FROM ban_reconcile_state WHERE community_id=?")
+      .all(CID);
+    assert.equal(rows.length, 1, "ON CONFLICT upsert — never a second row");
+    assert.equal(rows[0].last_reconciled_at, T0 + 5 * MIN, "the newest attempt advances the stamp");
+  });
+
+  it("an unknown-but-valid community id is a CAUGHT failure ({ok:false}), never a throw", () => {
+    const res = db.markCommunityReconciled(987654, { nowMs: T0 });
+    assert.equal(res.ok, false);
+    assert.match(res.error, /Could not record the reconcile attempt/);
+  });
+
+  it("garbage community ids THROW (assertCommunityId programmer law)", () => {
+    assertGuarded("markCommunityReconciled", (bad) => db.markCommunityReconciled(bad));
+  });
+});

@@ -122,7 +122,7 @@ describe("db layer", () => {
     const { runMigrations } = require("../src/db/migrate");
     api.db.pragma("user_version = 0"); // #202 guard: force the FULL replay, not the fast-skip
     assert.doesNotThrow(() => runMigrations());
-    assert.equal(Number(api.db.pragma("user_version", { simple: true })), 76);
+    assert.equal(Number(api.db.pragma("user_version", { simple: true })), 77);
   });
 
   describe("gork settings (migration 021 + clamps)", () => {
@@ -819,6 +819,7 @@ describe("db layer", () => {
       "BAN_SOURCES", // #772: staff | automod ban provenance
       "MAX_BAN_REASON", // #772: ban reason cap (1000)
       "UNBAN_CLAIM_LEASE_MS", // #772: steal window for a crashed auto-unban claim
+      "EXPIRY_MAX_ATTEMPTS", // #810: winner-side attempts before the quarantine lands
       "BAN_APPEAL_STATUSES", // #773: ban_appeals status vocabulary (075) — append-only machine
       "APPEAL_OUTCOMES", // #773: the three claimable decided endings (granted | denied | closed)
       "APPEAL_FERRY_DIRECTIONS", // #773: user | ticket — keys the per-direction cursor columns

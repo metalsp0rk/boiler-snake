@@ -102,9 +102,9 @@ describe(`${id} — schema shape`, () => {
   });
 
   it("creates exactly the 074 columns, in order", () => {
-    // Append-only since 074: #773/075 widened the status CHECK (no column)
-    // and #809/076 appended ban_identity_reason. The pin stays EXACT —
-    // vocabulary only ever appends, never reorders.
+    // Append-only since 074: #773/075 widened the status CHECK (no column),
+    // #809/076 appended ban_identity_reason, #810/077 appended
+    // expiry_attempts. The pin stays EXACT — columns only ever append.
     assert.deepEqual(getColumns("ban_records"), [
       "id",
       "community_id",
@@ -121,6 +121,7 @@ describe(`${id} — schema shape`, () => {
       "unban_claimed_at",
       "unban_reason",
       "ban_identity_reason",
+      "expiry_attempts",
     ]);
   });
 
@@ -433,11 +434,11 @@ describe(`${id075} — ban_records CHECK rebuild preserved the 074 shape`, () =>
       .prepare(`SELECT sql FROM sqlite_master WHERE type='table' AND name='ban_records'`)
       .get().sql;
     // Exact read keeps earning its keep: 075 appended clemency_granted,
-    // 076 (#809) appended expired_held — both at the END. Any reorder or
-    // removal lands here.
+    // 076 (#809) appended expired_held, 077 (#810) appended expiry_failed —
+    // all at the END. Any reorder or removal lands here.
     assert.match(
       norm(ddl),
-      /status TEXT NOT NULL DEFAULT 'active' CHECK \(status IN \('active','expired_unbanned','unbanned_manual','pending_rejoin','welcomed','clemency_granted','expired_held'\)\)/,
+      /status TEXT NOT NULL DEFAULT 'active' CHECK \(status IN \('active','expired_unbanned','unbanned_manual','pending_rejoin','welcomed','clemency_granted','expired_held','expiry_failed'\)\)/,
       "the rebuilt DDL must read exactly like 074's + the appended entries",
     );
   });
@@ -445,8 +446,9 @@ describe(`${id075} — ban_records CHECK rebuild preserved the 074 shape`, () =>
   it("the rebuild preserved every column, in order, and all four indexes", () => {
     // PRAGMA reads the LIVE (rebuilt) table — byte-identical shape is the
     // 040-discipline contract: the copy used an explicit column list and the
-    // captured index SQL was re-issued. The trailing ban_identity_reason is
-    // 076's (#809) append; the 075 rebuild itself was column-preserving.
+    // captured index SQL was re-issued. The trailing ban_identity_reason /
+    // expiry_attempts are 076 (#809) / 077 (#810) appends; the 075 rebuild
+    // itself was column-preserving.
     assert.deepEqual(getColumns("ban_records"), [
       "id",
       "community_id",
@@ -463,6 +465,7 @@ describe(`${id075} — ban_records CHECK rebuild preserved the 074 shape`, () =>
       "unban_claimed_at",
       "unban_reason",
       "ban_identity_reason",
+      "expiry_attempts",
     ]);
     assert.deepEqual(banIndexNames(), [
       "idx_ban_records_due",
