@@ -52,14 +52,18 @@ const REMINDER_CRON = "* * * * *";
  * retries with backoff — it must never retire or discard the reminder.
  */
 const GONE_CHANNEL_CODES = new Set([10003, 10004]);
-// #350: 10008 is Unknown MESSAGE — an event fetch NEVER answers it. A
-// deleted scheduled event is 10066 (Unknown Guild Scheduled Event); with
-// the message-shaped code here both designed terminal branches (config
-// cleanup, persistent RETIRE) were dead on the delivery path: vanished
-// events churned pending→retry→backoff and persistent configs died as
-// `failed` instead of retiring. 10003/10004 (channel-shaped) live in
-// GONE_CHANNEL_CODES; nothing here owns 10008.
-const GONE_EVENT_CODES = new Set([10066]);
+// #350 tried to fix this seam but swapped 10008 → 10066 following the issue
+// text instead of the SDK: per the pinned discord-api-types v10
+// (rest/common.js) 10066 is UnknownApplicationCommandPermissions. A deleted
+// scheduled event answers with RESTJSONErrorCodes.UnknownGuildScheduledEvent
+// = 10070 (and UnknownGuildScheduledEventUser = 10071 on the per-user route).
+// With the wrong constant both designed terminal branches (config cleanup,
+// persistent RETIRE) stayed dead on the delivery path: vanished events
+// churned pending→retry→backoff and persistent configs died as `failed`
+// instead of retiring (#814). 10003/10004 (channel-shaped) live in
+// GONE_CHANNEL_CODES; nothing here owns 10008. test/event-gone-codes.test.js
+// pins this set against the SDK enum symbols so constant drift fails loudly.
+const GONE_EVENT_CODES = new Set([10070, 10071]);
 
 /**
  * Ticker-side cleanup is an automated state mutation (config + role removal)
@@ -444,6 +448,7 @@ module.exports = {
   REMINDER_CRON,
   GONE_CHANNEL_CODES,
   GONE_EVENT_CODES,
+  isGoneError,
   runEventReminderTick,
   startEventReminderTicker,
   deliverOne,
