@@ -107,9 +107,13 @@
  *    ticket is never orphaned. ZERO DMs anywhere: the member-visible
  *    opening IS the ticket channel's own open notice.
  *  - Commit-time NOTE-OVERLAP SCRUB (decision 4 spirit — enforcement, not
- *    prompt hope): the harness passes the subject's queued note narrative as
- *    the optional `queuedNoteNarrative` input (NEVER persisted into
- *    params_json). Normalized (trimmed, space-collapsed), a narrative of
+ *    prompt hope): the subject's queued note narrative rides the optional
+ *    `queuedNoteNarrative` input (NEVER persisted into params_json) — the
+ *    harness threads it from its in-memory queue on the AUTO path, and
+ *    `approveSuggestion` resolves the same case-note row from the DB on the
+ *    staff-Approve path (#812: without that the scrub was inert on the
+ *    suggest→Approve path nearly every case takes). Normalized (trimmed,
+ *    space-collapsed), a narrative of
  *    ≥ AUTOMOD_TICKET_NOTE_OVERLAP_MIN chars whose start the reason
  *    reproduces makes the reason a staff-note DUPLICATE — the row refuses
  *    naming the duplication. Shorter/absent narratives never refuse (the
@@ -1036,7 +1040,27 @@ async function approveSuggestion({
       }
       return outcomeFromRow(claimed.row);
     }
-    return await runClaimedAction(claimed.row, { deps, referrerUserId, nowMs });
+    // #812: the #735 commit-time overlap law on the APPROVE path. The
+    // harness threads `queuedNoteNarrative` from its in-memory queue on the
+    // AUTO path only — an Approve ran the ticket handler with a null
+    // narrative, so `ticketReasonDuplicatesNote` degenerated to `false` and
+    // an LLM reason reproducing the subject's private note shipped member-
+    // visible. The note row is already in the DB by Approve time (the
+    // harness's note pass commits it before the card posts), so resolve the
+    // SAME row the card's outcome-update reads: the shared caseNote
+    // discovery law, a pure DB scan — zero new Discord calls.
+    let queuedNoteNarrative = null;
+    if (claimed.row.action === "ticket") {
+      const caseRow = getAutomodCaseById(Number(claimed.row.case_id));
+      const note = findCaseNoteRow({
+        communityId: claimed.row.community_id,
+        userId: claimed.row.subject_user_id,
+        caseNumber: caseRow?.case_number ?? null,
+        botUserId: deps?.client?.user?.id ?? null,
+      });
+      queuedNoteNarrative = note?.content ?? null;
+    }
+    return await runClaimedAction(claimed.row, { deps, referrerUserId, nowMs, queuedNoteNarrative });
   } catch (err) {
     logFail("approve unexpected", { communityId: null, action: null, actionRowId }, err);
     return { ok: false, error: `Auto-mod approve failed: ${err?.message || err}` };

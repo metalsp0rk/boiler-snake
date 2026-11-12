@@ -1444,6 +1444,96 @@ describe("ticket tool (#735) — the member-visible case ticket through the real
     );
   });
 
+  // ── #812: the scrub must survive the suggest → Approve path ─────────────
+  // The harness threads the narrative from its IN-MEMORY queue (auto path
+  // only). Before #812 an Approve ran the ticket handler with a null
+  // narrative — the scrub was inert on the path nearly every case takes.
+  // approveSuggestion now resolves the case's ONE automod note from the DB
+  // (the shared caseNote discovery law the card's outcome-update reads).
+  const BOT = "1000000000000000101";
+
+  /** Recorded ticket suggestion for a real case; returns {rowId, caseRow, seams}. */
+  async function suggestTicket(reason) {
+    const cid = freshCommunity();
+    const c = db.createAutomodCase({
+      communityId: cid, referrerUserId: "staff-77", messageId: "411", channelId: "311",
+      targetUserId: SUBJECT, note: "ticket referral",
+    });
+    assert.equal(c.ok, true, c.error);
+    setMode(cid, "ticket", "suggest");
+    const seams = ticketSeams();
+    const { deps } = makeRecorder({ deps: { ...seams.deps, client: { user: { id: BOT } } } });
+    const sug = await executor.executeAutomodAction({
+      communityId: cid, guildId: GUILD, subjectUserId: SUBJECT, action: "ticket",
+      caseId: c.case.id, params: { reason }, referrerUserId: "staff-77", deps,
+    });
+    assert.equal(sug.state, "recorded_suggestion", JSON.stringify(sug));
+    return { cid, rowId: sug.actionRowId, caseRow: c.case, seams, deps };
+  }
+
+  const approveOf = ({ rowId, deps }) =>
+    executor.approveSuggestion({ actionRowId: rowId, claimant: "staff-1", deps });
+
+  it("#812 Approve resolves the harness note: a reason reproducing it REFUSES — zero opens", async () => {
+    const note = "posted repeated slurs at a member in general chat after two verbal asks to stop";
+    const s = await suggestTicket(`${note.slice(0, 40)}— we should talk it through in here`);
+    db.createStaffNote({
+      communityId: s.cid,
+      userId: SUBJECT,
+      authorId: BOT,
+      content: `${note} (automod case A-${s.caseRow.case_number})`,
+    });
+
+    const res = await approveOf(s);
+    assert.equal(res.ok, false, "the member-visible reason reproduces the private note");
+    assert.equal(res.state, "refused");
+    assert.match(res.error, new RegExp(`reproduces <@${SUBJECT}>'s queued staff-note narrative`));
+    assert.deepEqual(s.seams.opens, [], "the DB-resolved scrub precedes the open — nothing shipped");
+    assert.deepEqual(s.seams.claims, [], "…and the subject's rate slot stays untouched");
+    assert.equal(repo.getAutomodAction(s.rowId).state, "refused");
+    assert.deepEqual(
+      JSON.parse(repo.getAutomodAction(s.rowId).params_json),
+      { reason: `${note.slice(0, 40)}— we should talk it through in here` },
+      "the DB-resolved narrative is transient too — never params_json",
+    );
+  });
+
+  it("#812 Approve with a non-overlapping note executes normally (no false positive)", async () => {
+    const s = await suggestTicket("let's review the channel rules together");
+    db.createStaffNote({
+      communityId: s.cid,
+      userId: SUBJECT,
+      authorId: BOT,
+      content: `weighed the referral; verbal warning first, member apologized (automod case A-${s.caseRow.case_number})`,
+    });
+    const res = await approveOf(s);
+    assert.equal(res.ok, true, res.error);
+    assert.equal(res.state, "executed");
+    assert.equal(s.seams.opens.length, 1, "an unrelated private note never blocks the ticket");
+  });
+
+  it("#812 Approve with NO case note executes (absent narrative never refuses)", async () => {
+    const s = await suggestTicket("let's review the channel rules together");
+    const res = await approveOf(s);
+    assert.equal(res.ok, true, res.error);
+    assert.equal(res.state, "executed");
+    assert.equal(s.seams.opens.length, 1);
+  });
+
+  it("#812 a FOREIGN-author note quoting the case ref never feeds the scrub", async () => {
+    const note = "posted repeated slurs at a member in general chat after two verbal asks to stop";
+    const s = await suggestTicket(`${note.slice(0, 40)}— we should talk it through in here`);
+    db.createStaffNote({
+      communityId: s.cid,
+      userId: SUBJECT,
+      authorId: "2990000000000000999", // human staff quoting the case ref
+      content: `${note} (automod case A-${s.caseRow.case_number})`,
+    });
+    const res = await approveOf(s);
+    assert.equal(res.ok, true, res.error);
+    assert.equal(s.seams.opens.length, 1, "the discovery law skips foreign authors — the scrub never reads them");
+  });
+
   it("rate-limit refusal names BOTH minute counts and states the staff note stands; ZERO opens, no release (no stamp was taken)", async () => {
     const cid = freshCommunity();
     setMode(cid, "ticket", "auto");
