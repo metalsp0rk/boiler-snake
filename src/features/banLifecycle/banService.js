@@ -901,15 +901,84 @@ async function finalizeExpiry(recordOrId, deps = {}) {
       );
     }
 
+    // ── #810: the quarantine valve ──────────────────────────────────────────
+    // REAL winner-side attempts are the only ones counted — a claim loser
+    // performed no work and must never inflate the counter (the 10-minute
+    // lease would otherwise multiply every true failure ~10×). The bump (and
+    // the terminal settle at the ceiling) rides facade.noteExpiryAttempt;
+    // crossing returns a quarantined RESULT (ok:true — this pass settled
+    // something terminal), while below-ceiling failures keep answering the
+    // honest {ok:false} with the attempt count annotated.
+    const maxAttempts =
+      Number.isInteger(opts.maxExpiryAttempts) && opts.maxExpiryAttempts >= 1
+        ? opts.maxExpiryAttempts
+        : null;
+    const noteAttempt = (stage, error, code) => {
+      const cause = String(error ?? "unknown error");
+      let note = null;
+      try {
+        note = facade.noteExpiryAttempt(id, {
+          ...(maxAttempts != null ? { maxAttempts } : {}),
+          reason:
+            `expiry QUARANTINED after repeated failed auto-unban attempts — last error: ${cause.slice(0, 300)}`,
+          nowMs,
+        });
+      } catch (err) {
+        log.warn(
+          `${LOG_PREFIX} expiry attempt-count failed community=${communityId} user=${userId} ${banRef(row)}:`,
+          err?.message || err
+        );
+      }
+      if (note?.ok === true && note.quarantined === true) {
+        systemAudit(log, {
+          communityId,
+          action: "banLifecycle.expiry_quarantined",
+          targetType: "ban_record",
+          targetId: String(id),
+          actorUserId: null,
+          details: {
+            ban_number: row.ban_number,
+            subject_user_id: userId,
+            expires_at: row.expires_at,
+            source: row.source,
+            attempts: note.attempts,
+            last_error: cause.slice(0, 300),
+          },
+        });
+        log.error(
+          `${LOG_PREFIX} expiry QUARANTINED community=${communityId} user=${userId} ${banRef(row)}: ` +
+            `${note.attempts} failed auto-unban attempts (last: ${cause.slice(0, 200)}) — the row left the ` +
+            "sweep as expiry_failed; nothing was unbanned and no further passes will touch it. A staff member " +
+            "must handle the live ban by hand."
+        );
+        return {
+          ok: true,
+          acted: false,
+          quarantined: true,
+          record: note.record ?? facade.getBanRecord(id),
+          banNumber: banRef(row),
+          status: "expiry_failed",
+          attempts: note.attempts,
+          lastError: cause,
+          welcome: null,
+        };
+      }
+      const annotated =
+        note?.ok === true
+          ? `${cause} (expiry attempt ${note.attempts}${
+              maxAttempts != null ? `/${maxAttempts}` : ""
+            })`
+          : cause;
+      log.warn(`${LOG_PREFIX} ${stage} community=${communityId} user=${userId}: ${annotated}`);
+      return fail(annotated, code);
+    };
+
     // ── Winner: Discord unban with the §4 guild-side reason ────────────────
     const unbanReason = await buildExpiryUnbanReason(row, opts);
     const outbound = opts.outbound ?? null;
     if (typeof outbound?.unbanMember !== "function") {
-      return failLogged(
-        log,
+      return noteAttempt(
         "auto-unban impossible",
-        communityId,
-        userId,
         `Could not auto-unban: the outbound has no unbanMember surface — **${banRef(row)}** stays claimed for a lease retry.`
       );
     }
@@ -986,11 +1055,8 @@ async function finalizeExpiry(recordOrId, deps = {}) {
         };
       }
       if (live && live.ok !== true && live.code !== CODE_NOT_BANNED) {
-        return failLogged(
-          log,
+        return noteAttempt(
           "expiry verification unavailable",
-          communityId,
-          userId,
           `${live?.error || "fetchBan returned no result"} — refusing to unban a ban that cannot be verified (retrying on a later tick)`
         );
       }
@@ -1040,7 +1106,9 @@ async function finalizeExpiry(recordOrId, deps = {}) {
       status = "unbanned_manual";
     } else {
       const error = res?.error || "unbanMember returned no result";
-      return failLogged(log, "auto-unban failed", communityId, userId, error, res?.code);
+      // #810: a real Discord unban failure (MissingAccess, 50013, guild gone)
+      // is the canonical chronic failure — count it toward the quarantine.
+      return noteAttempt("auto-unban failed", error, res?.code);
     }
 
     // ── Facts out: audit + appeal close + welcome (embeds are the caller's layer) ──

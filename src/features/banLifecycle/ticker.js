@@ -81,8 +81,10 @@ const TICK_ROW_LIMIT = 50;
 /* Boot-sweep bounds (issue §2 "BOUNDED guild.bans sweep"). The repo exposes
  * per-community active lists only, so the community set comes from ONE
  * capped grouped read below; a bot back from downtime with thousands of
- * guilds full of active bans settles newest-first across boots instead of
- * pinning the event loop on start. */
+ * guilds full of active bans ROTATES the set across boots (#810):
+ * never-reconciled communities first, then least-recently-attempted (the
+ * ban_reconcile_state stamp), so every guild converges over successive
+ * boots instead of communities 26+ silently never being seen. */
 const RECONCILE_MAX_COMMUNITIES = 25;
 const RECONCILE_MAX_ROWS_PER_COMMUNITY = 200;
 
@@ -314,6 +316,66 @@ async function postExpiryHeldEmbed(outbound, guildId, row, result) {
   }
 }
 
+/* ── #810 quarantine embed ──────────────────────────────────────────────────
+ * The auto-unban gave up: the row crossed the attempt ceiling and settled
+ * terminal `expiry_failed`. Color is `danger` (the token's declared
+ * "danger / needs attention" meaning): unlike the held row (a human OWNS
+ * the live ban), this is an UNRESOLVED ban whose automation stopped — the
+ * term lapsed, nobody was unbanned, and the row now needs a human before
+ * anything happens. This embed is the loud signal the quarantine exists to
+ * emit; the row itself is silent forever after. */
+
+const COLOR_QUARANTINE = Color.danger;
+
+function buildExpiryQuarantinedEmbed({ row, result }) {
+  const embed = new EmbedBuilder()
+    .setColor(COLOR_QUARANTINE)
+    .setTitle("Ban expiry QUARANTINED — auto-unban gave up (staff action needed)")
+    .setDescription(
+      "The auto-unban failed enough times to cross the attempt ceiling. The " +
+        "record is now terminal `expiry_failed` and the sweep will NEVER try " +
+        "again — **the live ban (if any) is untouched and a staff member must " +
+        "handle it by hand** (lift it, or re-issue a tracked ban)."
+    )
+    .setTimestamp(new Date())
+    .addFields(
+      { name: "User", value: `<@${row.user_id}> (\`${row.user_id}\`)`, inline: true },
+      { name: "Ban", value: `${banRef(row)} (record ${row.id})`, inline: true },
+      { name: "Source", value: row.source === "automod" ? "Automod harness" : "Staff", inline: true },
+      { name: "Status", value: "expiry_failed", inline: true },
+      {
+        name: "Attempts",
+        value: String(result?.attempts ?? "—"),
+        inline: true,
+      },
+      {
+        name: "Expired",
+        value: row.expires_at ? `${tsTag(row.expires_at)} (${tsRelative(row.expires_at)})` : "—",
+        inline: true,
+      },
+    );
+  embed.addFields({
+    name: "Last error",
+    value: truncate(result?.lastError) || "*No cause reported*",
+  });
+  return embed;
+}
+
+/** Best-effort like the held/unban posters; embed/send failures log with ids. */
+async function postExpiryQuarantinedEmbed(outbound, guildId, row, result) {
+  if (!outbound || !guildId) return;
+  try {
+    const { sendAuditLog } = auditLogApi();
+    const embed = buildExpiryQuarantinedEmbed({ row, result });
+    await sendAuditLog(outbound, guildId, { embeds: [embed] });
+  } catch (err) {
+    console.error(
+      `${LOG_PREFIX} quarantine embed failed community=${row.community_id} user=${row.user_id} ${banRef(row)}:`,
+      err?.message || err,
+    );
+  }
+}
+
 /* ═══ 1. The minute tick — due-row expiry sweep (#772 §4) ═══════════════════ */
 
 /**
@@ -324,17 +386,27 @@ async function postExpiryHeldEmbed(outbound, guildId, row, result) {
  * @param {object|null} supervisor PR 7 supervisor ({ discord, fluxer,
  *        clientForCommunity }); null tolerated (rows then settle-claim and
  *        the service reports "no unbanMember surface" honestly — nothing crashes)
- * @param {{ now?: number, limit?: number, reconcile?: boolean }} [opts]
+ * @param {{ now?: number, limit?: number, reconcile?: boolean, maxExpiryAttempts?: number }} [opts]
  *        injectable clock + row bound (tests); `reconcile: true` runs the
  *        boot reconciliation after the sweep (start() does exactly that on
- *        the immediate first fire)
+ *        the immediate first fire); `maxExpiryAttempts` overrides the
+ *        quarantine ceiling (test seam; production rides the repo default)
  * @returns {Promise<{ processed: number, unbanned: number, welcomed: number,
- *          skipped: number, errors: number, reconciliation?: object }>}
+ *          held: number, quarantined: number, skipped: number, errors: number,
+ *          reconciliation?: object }>}
  */
 async function runBanExpiryTick(supervisor, opts = {}) {
   const nowMs = positiveInt(opts.now) ?? Date.now();
   const limit = positiveInt(opts.limit) ?? TICK_ROW_LIMIT;
-  const out = { processed: 0, unbanned: 0, welcomed: 0, held: 0, skipped: 0, errors: 0 };
+  const out = {
+    processed: 0,
+    unbanned: 0,
+    welcomed: 0,
+    held: 0,
+    quarantined: 0,
+    skipped: 0,
+    errors: 0,
+  };
 
   try {
     const facade = dbFacade();
@@ -365,6 +437,11 @@ async function runBanExpiryTick(supervisor, opts = {}) {
           // (channel fetch inside the shared close flow).
           client,
           resolveModeratorName: moderatorNameResolver(client),
+          // #810: the attempt ceiling is a test seam (production uses the
+          // repo default); only a real positive integer overrides it.
+          ...(Number.isInteger(opts.maxExpiryAttempts) && opts.maxExpiryAttempts >= 1
+            ? { maxExpiryAttempts: opts.maxExpiryAttempts }
+            : {}),
           ...(positiveInt(opts.now) ? { now: nowMs } : {}),
         });
 
@@ -380,6 +457,13 @@ async function runBanExpiryTick(supervisor, opts = {}) {
           // embed would lie; the held embed tells the truth instead).
           out.held += 1;
           await postExpiryHeldEmbed(outbound, guildId, row, result);
+        } else if (result?.ok === true && result.quarantined === true) {
+          // #810: this pass crossed the attempt ceiling — the row settled
+          // terminal expiry_failed (the sweep will never see it again). A
+          // terminal transition performed, NOT an error and NOT a skip;
+          // the danger embed is the loud staff signal.
+          out.quarantined += 1;
+          await postExpiryQuarantinedEmbed(outbound, guildId, row, result);
         } else {
           // { ok:false } — the service already logged the line it owns with
           // ids. The live status decides the bucket: a row that left
@@ -439,19 +523,45 @@ async function runBanExpiryTick(supervisor, opts = {}) {
  * Missing guild/client/list permission → log + skip; one community never
  * cancels the rest of the sweep. */
 
+/**
+ * The boot-reconcile community set (#810 rotation). LEFT JOIN the
+ * ban_reconcile_state stamp: never-reconciled communities (stamp NULL → 0)
+ * sort FIRST, then least-recently-attempted; `MAX(banned_at) DESC` only
+ * breaks ties within an equal-age cohort. Because reconcileCommunity stamps
+ * every ATTEMPT (not just successes), the LIMIT-N window is a genuine
+ * round-robin — with more than N active-ban guilds every one is reached
+ * over successive boots, rather than a deterministic top-N owning every
+ * boot forever (the audit A2-3 gap).
+ */
 const reconcileScopeSql = () =>
   dbFacade()
     .db.prepare(
       `SELECT b.community_id AS communityId
          FROM ban_records b
          JOIN communities c ON c.id = b.community_id
+         LEFT JOIN ban_reconcile_state s ON s.community_id = b.community_id
         WHERE b.status='active' AND c.platform='discord'
         GROUP BY b.community_id
-        ORDER BY MAX(b.banned_at) DESC
+        ORDER BY MIN(COALESCE(s.last_reconciled_at, 0)) ASC, MAX(b.banned_at) DESC
         LIMIT ?`
     );
 
 async function reconcileCommunity(supervisor, communityId, facade, opts, out) {
+  // #810: stamp the ATTEMPT (not the success) before anything else, so an
+  // unreachable guild rotates too instead of camping at the head of the
+  // scope forever because its pass failed. Community deletion cascades the
+  // stamp away (FK), so a departed guild stops being tracked.
+  try {
+    facade.markCommunityReconciled(communityId, {
+      ...(positiveInt(opts.now) ? { nowMs: positiveInt(opts.now) } : {}),
+    });
+  } catch (err) {
+    console.warn(
+      `${LOG_PREFIX} reconcile rotation stamp failed community=${communityId} (non-fatal, next boot still sweeps it):`,
+      err?.message || err,
+    );
+  }
+
   const community = communityApi().getCommunityById(communityId);
   const guildId = community?.externalGuildId ?? null;
   if (!guildId) {

@@ -1061,7 +1061,163 @@ describe("integration: ban lifecycle (#772)", () => {
     assert.equal(latestRecord(target).status, "expired_unbanned");
   });
 
-  /* ── 12. Fluxer no-parity (documented skip) ─────────────────────────────── */
+  /* ── 12. #810 quarantine + reconcile rotation ───────────────────────────── */
+
+  it("#810: a permanently failing expiry QUARANTINES its row — loud, terminal, and the sweep moves on", async () => {
+    const healthy = addBanTarget("810healthy");
+    const broken = addBanTarget("810broken");
+    await slashBan(healthy, { reason: "spam", duration: "24h" });
+    await slashBan(broken, { reason: "raiding", duration: "24h" });
+
+    // Only the BROKEN user's ban entry turns PERMANENTLY unreadable: the
+    // #809 fail-closed verify now feeds the quarantine valve (fail-closed
+    // forever = the chronic-failure shape the ceiling exists to fire on).
+    const realFetch = env.guild.bans.fetch;
+    env.guild.bans.fetch = async (arg) => {
+      if (String(arg) === broken.id) {
+        throw Object.assign(new Error("DiscordAPIError[50013]: Missing Access"), {
+          code: 50013,
+          status: 403,
+        });
+      }
+      return realFetch.call(env.guild.bans, arg);
+    };
+    try {
+      const t1 = Date.now() + DAY + 60_000;
+      const out1 = await banTicker.runBanExpiryTick(fakeSupervisor(env.client), {
+        now: t1,
+        maxExpiryAttempts: 2,
+      });
+      assert.equal(out1.unbanned, 1, "the healthy expiry lands beside the failing one");
+      assert.equal(out1.errors, 1, "attempt #1 counts as an error");
+      let row = latestRecord(broken);
+      assert.equal(row.status, "active");
+      assert.equal(row.expiry_attempts, 1, "winner-side failure counted exactly once");
+
+      // INSIDE the lease: the claim loser files NOTHING (anti-inflation).
+      const outL = await banTicker.runBanExpiryTick(fakeSupervisor(env.client), {
+        now: t1 + 60_000,
+        maxExpiryAttempts: 2,
+      });
+      assert.equal(outL.processed, 1);
+      assert.equal(latestRecord(broken).expiry_attempts, 1, "a pass that did no work files no attempt");
+
+      // PAST the lease: real attempt #2 crosses the ceiling → QUARANTINE.
+      const out2 = await banTicker.runBanExpiryTick(fakeSupervisor(env.client), {
+        now: t1 + leaseMs() + 60_000,
+        maxExpiryAttempts: 2,
+      });
+      assert.equal(out2.quarantined, 1, "the quarantine is its own honest bucket");
+      assert.equal(out2.errors, 0, "giving up is a TERMINAL action, not an error line");
+
+      row = latestRecord(broken);
+      assert.equal(row.status, "expiry_failed");
+      assert.equal(row.expiry_attempts, 2);
+      assert.match(row.unban_reason, /QUARANTINED/);
+
+      // Audit forensics.
+      const q = auditRowsFor("banLifecycle.expiry_quarantined", broken);
+      assert.equal(q.length, 1);
+      const det = JSON.parse(q[0].details_json);
+      assert.equal(det.attempts, 2);
+      assert.match(det.last_error, /Missing Access/);
+
+      // Nothing destructive ever landed: the broken ban is STILL live, the
+      // healthy one was unbanned exactly once, nobody was welcomed twice.
+      assert.equal(banCountFor(broken), 1, "quarantine never lifts a ban");
+      assert.deepEqual(
+        env.guild._unbans.map((u) => String(u.user.id)),
+        [healthy.id],
+        "exactly one unban call — for the healthy row"
+      );
+      assert.equal(welcomeDmsFor(broken).length, 0, "a quarantined row never welcomes");
+
+      // Terminal means terminal — AND the starvation is gone: a later pass
+      // selects NOTHING (the row no longer camps at the head of the slice).
+      const out3 = await banTicker.runBanExpiryTick(fakeSupervisor(env.client), {
+        now: t1 + 2 * leaseMs() + 120_000,
+      });
+      assert.equal(out3.processed, 0, "expiry_failed leaves the sweep forever");
+    } finally {
+      env.guild.bans.fetch = realFetch;
+    }
+  });
+
+  it("#810: boot reconciliation ROTATES the community window — every guild converges over boots", async () => {
+    const { ensureCommunity } = require("../../src/platform/community");
+    const stampOf = (cid) =>
+      env.db.db
+        .prepare("SELECT last_reconciled_at FROM ban_reconcile_state WHERE community_id=?")
+        .get(cid)?.last_reconciled_at ?? null;
+
+    // Two unreachable discord communities (no guilds in the mock client),
+    // each with ONE active permanent ban → both sit in the reconcile scope.
+    // Neither pass can ever LIST its bans: the audit finding was that a
+    // static top-N on ORDER BY banned_at let communities N+1… NEVER be
+    // reached. The attempt stamp (written whether or not the guild was
+    // reachable) must rotate the window.
+    const B = ensureCommunity({ platform: "discord", instanceKey: "discord", externalGuildId: "8100000000000000001" });
+    const C = ensureCommunity({ platform: "discord", instanceKey: "discord", externalGuildId: "8100000000000000002" });
+    const T1 = Date.UTC(2026, 10, 20, 1, 0, 0);
+    const mkRot = (cid, userId, bannedAt) => {
+      const r = env.db.createBanRecord({
+        communityId: cid,
+        userId,
+        moderatorId: env.users.adminUser.id,
+        source: "staff",
+        reason: "rotation probe",
+        bannedAt,
+        expiresAt: null,
+      });
+      assert.ok(r.ok, r.error);
+    };
+    env.db.db.prepare("DELETE FROM ban_reconcile_state").run(); // hermetic ordering
+    try {
+      mkRot(B, "810-rot-b", T1 - 2 * DAY); // OLDER ban
+      mkRot(C, "810-rot-c", T1 - DAY); // NEWER ban: the OLD static scope picked C on EVERY boot, forever
+
+      const boot1 = await banTicker.runBootReconciliation(fakeSupervisor(env.client), {
+        maxCommunities: 1,
+        now: T1,
+      });
+      assert.equal(boot1.communities, 1, "the LIMIT-N window held");
+      assert.equal(stampOf(C), T1, "never-reconciled tie → newest-ban community first (tie-break survives)");
+      assert.equal(stampOf(B), null, "exactly one community per capped boot");
+
+      const boot2 = await banTicker.runBootReconciliation(fakeSupervisor(env.client), {
+        maxCommunities: 1,
+        now: T1 + 1000,
+      });
+      assert.equal(boot2.communities, 1);
+      assert.equal(stampOf(B), T1 + 1000, "the NEVER-RECONCILED community jumps the stamped one — rotation, not status quo");
+      assert.equal(stampOf(C), T1, "the recently-stamped community waits its turn");
+
+      const T3 = T1 + 5000;
+      const boot3 = await banTicker.runBootReconciliation(fakeSupervisor(env.client), {
+        maxCommunities: 1,
+        now: T3,
+      });
+      assert.equal(boot3.communities, 1);
+      assert.equal(stampOf(C), T3, "least-recently-attempted next (C waited longest)");
+      assert.equal(stampOf(B), T1 + 1000, "only the picked community is stamped");
+
+      // The stamps recorded ATTEMPTS, not successes — neither fake external
+      // id resolves to a mock guild, so no pass "succeeded"; a broken guild
+      // rotates too (fairness over favoritism) instead of camping at the
+      // head of every boot forever.
+      assert.equal(
+        boot1.reconciled,
+        0,
+        "unreachable guilds settle nothing"
+      );
+    } finally {
+      env.db.db.prepare("DELETE FROM ban_records WHERE community_id IN (?,?)").run(B, C);
+      env.db.db.prepare("DELETE FROM ban_reconcile_state WHERE community_id IN (?,?)").run(B, C);
+      env.db.db.prepare("DELETE FROM communities WHERE id IN (?,?)").run(B, C);
+    }
+  });
+
+  /* ── 13. Fluxer no-parity (documented skip) ─────────────────────────────── */
 
   it.skip("Fluxer NOT_ON_FLUXER refusal — unreachable through the offline Discord harness", () => {
     // createIntegrationEnv wires the DISCORD router (src/commands/router.js)

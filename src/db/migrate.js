@@ -84,6 +84,7 @@ const migrations = [
   require("./migrations/074_ban_lifecycle"),
   require("./migrations/075_ban_appeals"),
   require("./migrations/076_ban_identity"),
+  require("./migrations/077_expiry_quarantine"),
 ];
 
 const helpers = {

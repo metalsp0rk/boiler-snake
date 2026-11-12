@@ -27,6 +27,14 @@ Expiry ticker `ban-expiry` (minute-aligned, immediate pass on boot)
               channel — staff owns whatever ban is live now
             unreadable (not the 10026 "not banned") → FAIL CLOSED: nothing is
               unbanned, the row stays claimed ACTIVE and retries past the lease
+        → #810 QUARANTINE VALVE: every REAL (claim-winning) failure counts one
+          `expiry_attempts` — a pass that LOST the claim did no work and files
+          nothing. After EXPIRY_MAX_ATTEMPTS (20 ≈ 3.3h of lease-paced retries)
+          the row settles terminal `expiry_failed`: it LEAVES the sweep forever
+          (chronically failing rows can no longer starve the oldest-first
+          slice), nothing is lifted, no welcome is possible, and staff get the
+          loud `banLifecycle.expiry_quarantined` audit + danger embed — a human
+          must handle the live ban by hand
 
 Any manual unban (other staff / another bot — GuildBanRemove)
         → record settles unbanned_manual (manual beats ticker) → same welcome DM
@@ -36,7 +44,11 @@ Welcome DM undeliverable (DMs closed, missed event) → record parks as pending_
 
 Bot downtime → boot: expired rows unban immediately on the first pass, then a
         bounded `guild.bans` reconciliation settles records whose ban vanished
-        (log-only — no retroactive DMs)
+        (log-only — no retroactive DMs). #810: the bounded community window
+        ROTATES across boots — never-reconciled guilds first, then
+        least-recently-reconciled (the `ban_reconcile_state` attempt stamp),
+        so with more active-ban guilds than the cap, every guild is reached
+        over successive boots instead of a static top-N owning every boot
 ```
 
 ## `/ban` + modal rules
@@ -289,6 +301,7 @@ One row per ban cycle in `ban_records`; human ref **B-{n}** is sequential per gu
 | `welcomed` | Rejoin welcome attempt made (regardless of delivery outcome) |
 | `clemency_granted` | Ban lifted by a granted ban appeal (#773 — appended by migration 075) |
 | `expired_held` | Term lapsed but the live ban does not match the record (#809 — appended by migration 076): the auto-unban was HELD, never executed, and no welcome DM is possible (the row was never lifted) |
+| `expiry_failed` | The auto-unban could not complete after the attempt ceiling (#810 quarantine — appended by migration 077): terminal ON PURPOSE, the sweep never touches the row again, nothing was lifted, and **staff own the live ban by hand** |
 
 ```sql
 CREATE TABLE ban_records (
@@ -303,18 +316,27 @@ CREATE TABLE ban_records (
   expires_at INTEGER,                 -- NULL = permanent
   status TEXT NOT NULL DEFAULT 'active'
     CHECK (status IN ('active','expired_unbanned','unbanned_manual','pending_rejoin',
-                      'welcomed','clemency_granted','expired_held')),
+                      'welcomed','clemency_granted','expired_held','expiry_failed')),
   ban_dm_sent INTEGER NOT NULL DEFAULT 0,
   welcome_dm_sent INTEGER NOT NULL DEFAULT 0,
   unban_claimed_at INTEGER,           -- CAS lease for the auto-unban claim
   unban_reason TEXT,
-  ban_identity_reason TEXT            -- #809: live ban reason captured at issue
+  ban_identity_reason TEXT,           -- #809: live ban reason captured at issue
                                       -- (the expiry guard's fingerprint;
                                       -- NULL = pre-#809 row / unreadable at issue)
+  expiry_attempts INTEGER NOT NULL DEFAULT 0
+                                      -- #810: REAL (winner-side) failed auto-unban
+                                      -- attempts; crossing EXPIRY_MAX_ATTEMPTS (20)
+                                      -- quarantines the row terminal `expiry_failed`
 );
+
+CREATE TABLE ban_reconcile_state (   -- #810: boot-reconciliation rotation stamps
+  community_id INTEGER PRIMARY KEY REFERENCES communities(id) ON DELETE CASCADE,
+  last_reconciled_at INTEGER NOT NULL -- last ATTEMPT (success or not) — broken
+);                                    -- guilds rotate too
 ```
 
-Migration `074_ban_lifecycle` (also adds `guild_settings.ban_dm` / `welcome_back_dm`, both `DEFAULT 1`). The record `id` is a stable handle by contract. All settles are first-writer-wins CAS (claim → act → finalize): a losing claimer performs zero outbound calls and reports the live row. Migration `075_ban_appeals` keeps 074 byte-frozen and *extends*: a table rebuild widens the status CHECK with `clemency_granted` (ids and B-n numbers preserved), and the migration adds `ban_appeals` + the `guild_settings.ban_appeals` toggle (above). Migration `076_ban_identity` (#809) extends the same way: the status CHECK gains `expired_held` and the table gains `ban_identity_reason` — the fingerprint the expiry sweep checks before it dares to unban.
+Migration `074_ban_lifecycle` (also adds `guild_settings.ban_dm` / `welcome_back_dm`, both `DEFAULT 1`). The record `id` is a stable handle by contract. All settles are first-writer-wins CAS (claim → act → finalize): a losing claimer performs zero outbound calls and reports the live row. Migration `075_ban_appeals` keeps 074 byte-frozen and *extends*: a table rebuild widens the status CHECK with `clemency_granted` (ids and B-n numbers preserved), and the migration adds `ban_appeals` + the `guild_settings.ban_appeals` toggle (above). Migration `076_ban_identity` (#809) extends the same way: the status CHECK gains `expired_held` and the table gains `ban_identity_reason` — the fingerprint the expiry sweep checks before it dares to unban. Migration `077_expiry_quarantine` (#810) extends it once more: the CHECK gains `expiry_failed`, the table gains `expiry_attempts`, and `ban_reconcile_state` lands (the boot-reconcile rotation stamps — one attempt timestamp per community, FK-cascaded so a departed guild stops being tracked).
 
 ## Audit
 
@@ -324,6 +346,7 @@ Migration `074_ban_lifecycle` (also adds `guild_settings.ban_dm` / `welcome_back
 | `banLifecycle.ban_dm_set` / `banLifecycle.welcome_dm_set` | `/bannotify` mutations (recordSlashAudit + audit embed) |
 | `banLifecycle.expiry_unban` / `banLifecycle.external_unban` / `banLifecycle.rejoin_welcome` | System (ticker / GuildBanRemove / rejoin); each auto-unban also posts a staff-log embed on the audit channel |
 | `banLifecycle.expiry_held` (#809) | System (re-ban guard held an expiry: issued vs. live reason both recorded); posts a caution embed — never the unban embed |
+| `banLifecycle.expiry_quarantined` (#810) | System (the auto-unban crossed the attempt ceiling and settled the row terminal `expiry_failed`: attempts + last error recorded); posts a **danger** embed — staff must handle the live ban by hand |
 
 ## Known gaps
 

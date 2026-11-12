@@ -55,6 +55,10 @@ const assertCommunityId = (id) =>
  *   pending_rejoin    unbanned, welcome DM not delivered — retry on rejoin
  *   welcomed          rejoin welcome attempt made (regardless of outcome)
  *   clemency_granted  appeal granted (#773): ban lifted early, invite path ran
+ *   expired_held      term lapsed but the live ban is NOT ours (#809): the
+ *                     auto-unban was HELD — nothing lifted, never welcomeable
+ *   expiry_failed     the auto-unban could not be completed after the
+ *                     attempt ceiling (#810 quarantine): staff owns the row
  */
 const BAN_RECORD_STATUSES = Object.freeze([
   "active",
@@ -66,6 +70,10 @@ const BAN_RECORD_STATUSES = Object.freeze([
   // #809 (migration 076): the expiry term lapsed but the live ban does not
   // match the record — the auto-unban was HELD, never executed, no welcome.
   "expired_held",
+  // #810 (migration 077): chronically failing expiry attempts quarantined —
+  // terminal ON PURPOSE (the sweep must stop selecting the row or it owns
+  // the oldest-first slice forever); staff handles the live ban by hand.
+  "expiry_failed",
 ]);
 
 /** Ban provenance vocabulary (migration 074 `source` CHECK). */
@@ -88,6 +96,17 @@ const MAX_BAN_REASON = 1000;
  * single outbound unban call — ten missed passes is already a long lie.
  */
 const UNBAN_CLAIM_LEASE_MS = 10 * 60 * 1000;
+
+/**
+ * #810: how many REAL (winner-side) auto-unban attempts a row gets before
+ * the quarantine lands. Winner-side attempts are lease-paced (~one per 10
+ * minutes), so 20 ≈ three and a half hours of consistent failure — long
+ * enough for any genuine transient (REST storm, restart lag, permission
+ * audit) to clear, short enough that "forever" is off the table. Counting
+ * only winner-side attempts keeps the claim-in-flight skips (a row's own
+ * lease, or a racing pass) from inflating the counter 10×.
+ */
+const EXPIRY_MAX_ATTEMPTS = 20;
 
 /**
  * Statuses finalizeUnban may move an ACTIVE row to — the ways a ban ends.
@@ -458,6 +477,136 @@ function markExpiryHeld(recordId, reason = null, { nowMs } = {}) {
 }
 
 /**
+ * #810: record ONE real winner-side expiry attempt and, once the row has
+ * crossed `maxAttempts`, QUARANTINE it — settle the ACTIVE row to the
+ * terminal `expiry_failed`. This is the anti-head-of-line-starvation valve:
+ * a chronically failing row (dead community, `MissingAccess`, permanent
+ * 50013) otherwise returns to `active` after every lease and owns the
+ * oldest-first `LIMIT` slice forever. Terminal means the sweep and
+ * reconciliation both stop selecting it (status ≠ 'active'); staff owns
+ * whatever ban is live.
+ *
+ * The counter ONLY moves while the row is ACTIVE, so a concurrent settle
+ * (manual unban, clemency, a HELD re-ban) both wins the CAS and freezes the
+ * count. The increment is NEVER gated on the ceiling — gating it is the
+ * crash-wedge: a pass that died between the bump and the quarantine must
+ * still walk the row terminal on the next attempt, which needs the counter
+ * to keep moving. The crossing test (attempts >= max) re-runs the
+ * quarantine CAS on every over-ceiling pass, so residue self-heals; the
+ * quarantine itself is its own single-winner CAS. `attempts` is the
+ * post-increment value; `quarantined` reports whether THIS pass landed the
+ * terminal settle.
+ *
+ * @param {number} recordId
+ * @param {{ maxAttempts?: number, reason?: string|null, nowMs?: number }} [opts]
+ *   ceiling (default the module's EXPIRY_MAX_ATTEMPTS), the human cause to
+ *   stamp on the quarantined row, injected clock
+ * @returns {{ ok: true, won: boolean, record: object|null, attempts: number,
+ *   quarantined: boolean } | { ok: false, error: string }}
+ */
+function noteExpiryAttempt(recordId, { maxAttempts = EXPIRY_MAX_ATTEMPTS, reason = null, nowMs } = {}) {
+  const { id, error } = recordIdOrError(recordId);
+  if (!id) return { ok: false, error };
+  const ts = timestampOr(nowMs, now());
+  const max = Number.isInteger(maxAttempts) && maxAttempts >= 1 ? maxAttempts : EXPIRY_MAX_ATTEMPTS;
+  try {
+    const res = db
+      .prepare(
+        `UPDATE ban_records SET expiry_attempts = expiry_attempts + 1
+          WHERE id=? AND status='active'`,
+      )
+      .run(id);
+    const record = getBanRecord(id);
+    if (res.changes === 0) {
+      // The row left ACTIVE (another settle won — report its truth; the
+      // count froze with it). Nothing to quarantine, nothing was counted.
+      return {
+        ok: true,
+        won: false,
+        record,
+        attempts: record?.expiry_attempts ?? 0,
+        quarantined: false,
+      };
+    }
+    const attempts = record?.expiry_attempts ?? 0;
+    if (attempts < max) {
+      return { ok: true, won: true, record, attempts, quarantined: false };
+    }
+    // AT/OVER the ceiling: settle terminal (CAS active — one winner; an
+    // over-ceiling ACTIVE row is crash residue and heals right here).
+    const settled = markExpiryFailed(id, reason, { nowMs: ts });
+    return {
+      ok: true,
+      won: true,
+      record: settled.record ?? record,
+      attempts,
+      quarantined: settled.won === true,
+    };
+  } catch (err) {
+    return { ok: false, error: `Could not record the ban expiry attempt: ${err?.message || err}` };
+  }
+}
+
+/**
+ * #810: the terminal quarantine settle (ACTIVE → `expiry_failed`). Reached
+ * through noteExpiryAttempt's crossing pass (and its residue re-run); kept
+ * separate so the CAS reads clean. NOT an UNBAN_OUTCOME (nothing was
+ * lifted) — its own CAS like markExpiryHeld. A concurrent settle wins; this
+ * returns won:false + live.
+ *
+ * @param {number} recordId
+ * @param {string|null} [reason] human cause (audit copy + unban_reason)
+ * @param {{ nowMs?: number }} [opts]
+ * @returns {{ ok: true, won: boolean, record: object|null } | { ok: false, error: string }}
+ */
+function markExpiryFailed(recordId, reason = null, { nowMs } = {}) {
+  const { id, error } = recordIdOrError(recordId);
+  if (!id) return { ok: false, error };
+  const ts = timestampOr(nowMs, now());
+  try {
+    const res = db
+      .prepare(
+        `UPDATE ban_records
+            SET status='expiry_failed',
+                unban_reason=COALESCE(?, unban_reason),
+                unban_claimed_at=COALESCE(unban_claimed_at, ?)
+          WHERE id=? AND status='active'`,
+      )
+      .run(optionalText(reason), ts, id);
+    return { ok: true, won: res.changes === 1, record: getBanRecord(id) };
+  } catch (err) {
+    return { ok: false, error: `Could not quarantine the ban expiry: ${err?.message || err}` };
+  }
+}
+
+/**
+ * #810: mark a community's boot-reconcile attempt so the NEXT reconcile
+ * scope can round-robin past it (ban_reconcile_state). Idempotent upsert —
+ * one row per community, timestamp refreshed to the LATEST attempt. Written
+ * at attempt START (see ticker), so an unreachable guild rotates too rather
+ * than camping at the head because its pass failed. Community deletion
+ * cascades the row away (FK), so a bot that leaves a guild stops tracking it.
+ *
+ * @param {number} communityId
+ * @param {{ nowMs?: number }} [opts]
+ * @returns {{ ok: true } | { ok: false, error: string }}
+ */
+function markCommunityReconciled(communityId, { nowMs } = {}) {
+  assertCommunityId(communityId);
+  const ts = timestampOr(nowMs, now());
+  try {
+    db.prepare(
+      `INSERT INTO ban_reconcile_state (community_id, last_reconciled_at)
+       VALUES (?, ?)
+       ON CONFLICT(community_id) DO UPDATE SET last_reconciled_at=excluded.last_reconciled_at`,
+    ).run(communityId, ts);
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: `Could not record the reconcile attempt: ${err?.message || err}` };
+  }
+}
+
+/**
  * Claim the cycle's ONE welcome DM (first-click-wins). The locked schema has
  * no separate welcome-claim column, so `welcome_dm_sent` doubles as the
  * claim stamp: flipping it 0→1 IS the claim (074 decision). Restricted to
@@ -564,6 +713,7 @@ module.exports = {
   BAN_SOURCES,
   MAX_BAN_REASON,
   UNBAN_CLAIM_LEASE_MS,
+  EXPIRY_MAX_ATTEMPTS,
   nextBanNumber,
   createBanRecord,
   getBanRecord,
@@ -574,6 +724,9 @@ module.exports = {
   finalizeUnban,
   markUnbannedManual,
   markExpiryHeld,
+  noteExpiryAttempt,
+  markExpiryFailed,
+  markCommunityReconciled,
   claimWelcome,
   markPendingRejoin,
   markWelcomed,

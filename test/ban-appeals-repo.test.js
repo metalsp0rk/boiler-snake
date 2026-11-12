@@ -139,8 +139,9 @@ describe("banAppeals — vocabulary mirrors the 075 CHECK", () => {
     // The constant↔CHECK mirror is the ban-records file's pin; this one
     // guards the append-only ORDER that #773's `appeal:<banRecordId>` seam
     // inherits from 074's stable-id contract. #809 appended `expired_held`
-    // at the END (076) — pinning the WHOLE sequence keeps the law: every
-    // earlier status keeps its slot, new vocabulary only ever appends.
+    // (076) and #810 appended `expiry_failed` (077), both at the END —
+    // pinning the WHOLE sequence keeps the law: every earlier status keeps
+    // its slot, new vocabulary only ever appends.
     assert.deepEqual(
       [...db.BAN_RECORD_STATUSES],
       [
@@ -151,6 +152,7 @@ describe("banAppeals — vocabulary mirrors the 075 CHECK", () => {
         "welcomed",
         "clemency_granted",
         "expired_held",
+        "expiry_failed",
       ],
     );
   });
