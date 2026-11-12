@@ -538,6 +538,91 @@ index 535851f..1cb0f7a 100644
        },
        baseUrl
      )
+diff --git a/src/routes/guild-advanced.ts b/src/routes/guild-advanced.ts
+index ed8a2a5..8b00604 100644
+--- a/src/routes/guild-advanced.ts
++++ b/src/routes/guild-advanced.ts
+@@ -755,7 +755,7 @@ export function createGuildAdvancedRoutes(db: Database): Hono<AppEnv> {
+     if (access instanceof Response) return access
+     return getGuildScheduledEvent(db, guildId, eventId)
+       ? c.json(getScheduledEventUserCounts(db, eventId))
+-      : unknown(c, 10_066, 'Unknown Guild Scheduled Event')
++      : unknown(c, 10_070, 'Unknown Guild Scheduled Event')
+   })
+   app.get('/guilds/:guildId/scheduled-events/:eventId/users', (c) => {
+     const { guildId, eventId } = c.req.param()
+@@ -763,7 +763,7 @@ export function createGuildAdvancedRoutes(db: Database): Hono<AppEnv> {
+     if (access instanceof Response) return access
+     return getGuildScheduledEvent(db, guildId, eventId)
+       ? c.json(listScheduledEventUsers(db, eventId))
+-      : unknown(c, 10_066, 'Unknown Guild Scheduled Event')
++      : unknown(c, 10_070, 'Unknown Guild Scheduled Event')
+   })
+   app.get(
+     '/guilds/:guildId/scheduled-events/:eventId/:exceptionId/users',
+@@ -773,7 +773,7 @@ export function createGuildAdvancedRoutes(db: Database): Hono<AppEnv> {
+       if (access instanceof Response) return access
+       return getScheduledEventException(db, eventId, exceptionId)
+         ? c.json(listScheduledEventUsers(db, eventId, exceptionId))
+-        : unknown(c, 10_066, 'Unknown Guild Scheduled Event')
++        : unknown(c, 10_070, 'Unknown Guild Scheduled Event')
+     }
+   )
+   app.post(
+@@ -786,7 +786,7 @@ export function createGuildAdvancedRoutes(db: Database): Hono<AppEnv> {
+         ? c.json(
+             createScheduledEventException(db, eventId, await parseJsonBody(c))
+           )
+-        : unknown(c, 10_066, 'Unknown Guild Scheduled Event')
++        : unknown(c, 10_070, 'Unknown Guild Scheduled Event')
+     }
+   )
+   app.patch(
+@@ -803,7 +803,7 @@ export function createGuildAdvancedRoutes(db: Database): Hono<AppEnv> {
+       )
+       return value
+         ? c.json(value)
+-        : unknown(c, 10_066, 'Unknown Guild Scheduled Event')
++        : unknown(c, 10_070, 'Unknown Guild Scheduled Event')
+     }
+   )
+   app.delete(
+@@ -814,7 +814,7 @@ export function createGuildAdvancedRoutes(db: Database): Hono<AppEnv> {
+       if (access instanceof Response) return access
+       return deleteScheduledEventException(db, eventId, exceptionId)
+         ? c.body(null, 204)
+-        : unknown(c, 10_066, 'Unknown Guild Scheduled Event')
++        : unknown(c, 10_070, 'Unknown Guild Scheduled Event')
+     }
+   )
+   app.get('/guilds/:guildId/scheduled-events/:eventId', (c) => {
+@@ -824,7 +824,7 @@ export function createGuildAdvancedRoutes(db: Database): Hono<AppEnv> {
+     const event = getGuildScheduledEvent(db, guildId, eventId)
+     return event
+       ? c.json(event)
+-      : unknown(c, 10_066, 'Unknown Guild Scheduled Event')
++      : unknown(c, 10_070, 'Unknown Guild Scheduled Event')
+   })
+   app.patch('/guilds/:guildId/scheduled-events/:eventId', async (c) => {
+     const { guildId, eventId } = c.req.param()
+@@ -838,7 +838,7 @@ export function createGuildAdvancedRoutes(db: Database): Hono<AppEnv> {
+     )
+     return event
+       ? c.json(event)
+-      : unknown(c, 10_066, 'Unknown Guild Scheduled Event')
++      : unknown(c, 10_070, 'Unknown Guild Scheduled Event')
+   })
+   app.delete('/guilds/:guildId/scheduled-events/:eventId', (c) => {
+     const { guildId, eventId } = c.req.param()
+@@ -846,7 +846,7 @@ export function createGuildAdvancedRoutes(db: Database): Hono<AppEnv> {
+     if (access instanceof Response) return access
+     return deleteGuildScheduledEvent(db, guildId, eventId)
+       ? c.body(null, 204)
+-      : unknown(c, 10_066, 'Unknown Guild Scheduled Event')
++      : unknown(c, 10_070, 'Unknown Guild Scheduled Event')
+   })
+ 
+   app.get('/guilds/:guildId/soundboard-sounds', (c) => {
 diff --git a/src/routes/guilds.ts b/src/routes/guilds.ts
 index 310fa2a..986e6cb 100644
 --- a/src/routes/guilds.ts

@@ -212,6 +212,12 @@ patch series without which the bot's handlers crash or silently no-op:
   guard. Read with `env.mock.inject(content, author, channel, { messageReference,
   snapshots })` (`roadmap/gork.md` §7.15).
 
+- **Scheduled-event gone code fidelity (#814)** — the mock answered every
+  vanished scheduled event with `10066`, which the pinned discord-api-types
+  reserves for `UnknownApplicationCommandPermissions`; it now answers
+  `10070` (`UnknownGuildScheduledEvent`) like real Discord, so the reminder
+  gone-flow is proven against the constant production actually sees.
+
 Still open in the patch series (issue #328): **voice states** (gap 6 — needs
 upstream design) and **DMs / guild-less interactions** (gap 7 — pairs with a
 router decision). Dependent feature rows stay `it.todo` citing the gap.

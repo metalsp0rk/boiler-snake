@@ -1221,13 +1221,15 @@ describe(
     });
 
     it("scheduled event gone: non-persistent config is cleaned up; persistent RETIRES (#350 fixed)", async () => {
-      // #350 FIXED: GONE_EVENT_CODES now carries 10066 (Unknown Guild
-      // Scheduled Event — what real Discord AND the mock answer for a
-      // vanished event). Both designed terminal branches are alive on the
-      // delivery path: non-persistent config is cleaned up by DELIVERY
-      // (not only safetyCleanup), and the persistent config KEEPS while
-      // its offset RETIRES (never fires again) instead of retrying toward
-      // 'failed'.
+      // #350 FIXED / #814 RE-FIXED: GONE_EVENT_CODES carries
+      // RESTJSONErrorCodes.UnknownGuildScheduledEvent (10070, +10071) — what
+      // real Discord AND the patched mock answer for a vanished event (the
+      // mock used to answer the 10066 = UnknownApplicationCommandPermissions
+      // impostor; scripts/e2e/fauxcord-e2e.patch corrects it to 10070). Both
+      // designed terminal branches are alive on the delivery path:
+      // non-persistent config is cleaned up by DELIVERY (not only
+      // safetyCleanup), and the persistent config KEEPS while its offset
+      // RETIRES (never fires again) instead of retrying toward 'failed'.
       const gone = {
         communityId: env.communityId,
         scheduledEventId: "900000000000000777",
@@ -1262,7 +1264,7 @@ describe(
       );
 
       // Persistent: safetyCleanup skips, and delivery now RETIRES the
-      // offset (10066 classified as gone) — config kept, row terminal,
+      // offset (10070 classified as gone) — config kept, row terminal,
       // never fires again. The old bug retried pending→failed forever.
       const d = await poll(async () => {
         const row = env.dbmod
