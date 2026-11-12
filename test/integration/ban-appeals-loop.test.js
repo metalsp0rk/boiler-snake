@@ -73,6 +73,7 @@ describe("integration: ban appeals full loop (#773)", () => {
   let ferry; // src/features/banAppeals/ferry (FERRY_COPY exact strings)
   let outcomes; // src/features/banAppeals/outcomes (unban reason + modal field)
   let banEvents; // src/features/banLifecycle/events (the GuildBanRemove twin)
+  let banTicker; // src/features/banLifecycle/ticker (#811: ban-end → appeal close)
 
   /* ── offline transport (byte server + DNS tripwire, ticket-reports law) ─── */
   const PUBLIC_IP = "93.184.216.34"; // public example address (no traffic)
@@ -98,6 +99,7 @@ describe("integration: ban appeals full loop (#773)", () => {
     ferry = require("../../src/features/banAppeals/ferry");
     outcomes = require("../../src/features/banAppeals/outcomes");
     banEvents = require("../../src/features/banLifecycle/events");
+    banTicker = require("../../src/features/banLifecycle/ticker");
     // REAL gateway binds, exactly the two calls boot's load.js makes for the
     // feature pair: the guildless intake lane + ferry lanes + ChannelDelete
     // (banAppeals) and the GuildBanRemove settle listener (banLifecycle, for
@@ -248,6 +250,46 @@ describe("integration: ban appeals full loop (#773)", () => {
 
   function appealRowFor(record) {
     return env.db.getAppealByBanRecord(env.communityId, record.id);
+  }
+
+  /* ── #811 ban-end plumbing (drives the REAL settle → appeal-close edges) ──
+   * A supervisor mirror for direct runBanExpiryTick / runBootReconciliation
+   * calls (ban-lifecycle exemplar). clientForCommunity answers the outbound. */
+  function fakeSupervisor(client) {
+    const { getDiscordOutbound } = require("../../src/platform/discord/outbound");
+    return {
+      discord: client,
+      fluxer: new Map(),
+      clientForCommunity: () => getDiscordOutbound(client),
+    };
+  }
+
+  /** Appeal CLOSED? (the #811 truth the ferry lane keys on). */
+  const appealClosed = (appeal) => {
+    const row = env.db.getAppealById(appeal.id);
+    return row && row.status === "closed";
+  };
+
+  /** The user's OPEN-appeal ferry lanes (listOpenAppealsByUser is THE lane). */
+  const ferryLanes = (user) => env.db.listOpenAppealsByUser(user.id);
+
+  /** Emit GuildBanRemove (a staff lift OUTSIDE the bot) + drain the twin. */
+  async function emitGuildBanRemove(user, reason = "staff lifted the ban") {
+    env.client.emit(Events.GuildBanRemove, { guild: env.guild, user, reason });
+    await drain();
+  }
+
+  /** Staff lift outside the bot: real mock-REST unban + its gateway echo. */
+  async function staffLiftsBanExternally(user, reason = "staff lifted the ban") {
+    await env.guild.members.unban(user.id, reason);
+    await emitGuildBanRemove(user, reason);
+  }
+
+  /** Replace the live ban entry (staff lifted + re-banned; bot missed both). */
+  function reissueBanExternally(user, newReason) {
+    const idx = env.guild._bans.findIndex((b) => String(b.userId) === user.id);
+    assert.ok(idx >= 0, "the bot-issued ban is live before the re-issue");
+    env.guild._bans.splice(idx, 1, { userId: user.id, reason: newReason });
   }
 
   function auditRows(action) {
@@ -1297,7 +1339,178 @@ describe("integration: ban appeals full loop (#773)", () => {
     assert.equal(row.ferry_ticket_msg_id, "msg-staff-1");
   });
 
-  /* ══ 15. documented skips (unit-tier coverage pointers) ════════════════════ */
+  /* ══ 15. #811 — the ban ends, the appeal closes with it ═══════════════════ */
+
+  it("#811 expiry sweep auto-closes the open appeal: ticket note + close, ferry dead, no extra DM, audited", async () => {
+    const { target, record, appeal, ch } = await openAppealCycle("811expire");
+    assert.equal(appeal.status, "open");
+    const sendsBefore = target.sends.length;
+    const sentBefore = ch.sent.length;
+
+    const out = await banTicker.runBanExpiryTick(fakeSupervisor(env.client), {
+      now: Date.now() + DAY + 60_000,
+    });
+    assert.equal(out.unbanned, 1, "the identity matches — the auto-unban runs");
+
+    // Appeal: closed by the SYSTEM decider with the expiry cause.
+    const row = env.db.getAppealById(appeal.id);
+    assert.equal(row.status, "closed");
+    assert.equal(row.decided_by, env.db.APPEAL_BAN_END_DECIDER);
+    assert.match(row.denial_reason, /the ban expired and was auto-unbanned/);
+
+    // Ticket: staff note BEFORE the close, then the shared close lands.
+    const note = ch.sent
+      .slice(sentBefore)
+      .find((p) => String(p?.content ?? "").includes("System — ban ended"));
+    assert.ok(note, "the honest system note reached the ticket channel");
+    assert.match(note.content, /expired and was auto-unbanned/);
+    assert.deepEqual(note.allowedMentions, { parse: [] }, "the note can never ping");
+    assert.equal(String(env.db.getTicketByChannel(env.communityId, ch.id).status), "closed");
+
+    // THE FERRY IS DEAD: the user's DM finds no lane, the ticket stays quiet.
+    assert.deepEqual(ferryLanes(target).filter((a) => a.id === appeal.id), []);
+    const sentAfterSweep = ch.sent.length;
+    await emitUserDm(target, { id: "811-post-close-dm", content: "hello? still banned?" });
+    assert.equal(ch.sent.length, sentAfterSweep, "the closed lane relayed NOTHING");
+
+    // No second lifecycle DM ever: the sweep's own welcome is the user's
+    // last word (the auto-close never DMs).
+    assert.equal(target.sends.length, sendsBefore + 1, "exactly the welcome-back DM");
+    assert.ok(
+      target.sends.every((p) => !String(p?.content ?? "").includes("auto-closed")),
+      "the appeal-close silence law holds",
+    );
+
+    // Audit forensics.
+    const audited = auditRowsFor("banAppeals.closed_ban_ended", target.id);
+    assert.equal(audited.length, 1);
+    assert.equal(audited[0].origin, "system");
+    const det = JSON.parse(audited[0].details_json);
+    assert.equal(det.prior_status, "open");
+    assert.equal(det.cause, "the ban expired and was auto-unbanned");
+    assert.equal(det.ticket_closed, true);
+    assert.equal(det.ban_number, record.ban_number);
+
+    // A second sweep re-acts NOTHING (settled rows ride no sweep; a dup
+    // pass must not re-note or re-close).
+    const sentMid = ch.sent.length;
+    const again = await banTicker.runBanExpiryTick(fakeSupervisor(env.client), {
+      now: Date.now() + DAY + 120_000,
+    });
+    assert.equal(again.processed, 0);
+    assert.equal(ch.sent.length, sentMid, "no second system note, ever");
+  });
+
+  it("#811 a staff lift OUTSIDE the bot closes the appeal through the real GuildBanRemove listener", async () => {
+    const { target, appeal, ch } = await openAppealCycle("811lift");
+
+    await staffLiftsBanExternally(target, "appeal accepted off-platform");
+
+    const row = env.db.getAppealById(appeal.id);
+    assert.equal(row.status, "closed", "the event path closes the appeal too");
+    assert.equal(row.decided_by, env.db.APPEAL_BAN_END_DECIDER);
+    assert.match(row.denial_reason, /lifted outside the bot/);
+    assert.equal(String(env.db.getTicketByChannel(env.communityId, ch.id).status), "closed");
+    assert.deepEqual(ferryLanes(target).filter((a) => a.id === appeal.id), []);
+
+    const audited = auditRowsFor("banAppeals.closed_ban_ended", target.id);
+    assert.equal(audited.length, 1, "exactly one auto-close (the event twin law holds through it)");
+    assert.equal(JSON.parse(audited[0].details_json).cause, "the ban was lifted outside the bot");
+
+    // And the record truth stands untouched by the appeal layer.
+    assert.equal(env.db.findActiveBanRecord(env.communityId, target.id), null);
+  });
+
+  it("#809×#811: a HELD expiry never closes the appeal — the ban is still in force", async () => {
+    const { target, record, appeal } = await openAppealCycle("811held");
+
+    // Staff lifted our ban and issued their own during downtime: mismatch.
+    reissueBanExternally(target, "appeal denied — harassment continues");
+
+    const out = await banTicker.runBanExpiryTick(fakeSupervisor(env.client), {
+      now: Date.now() + DAY + 60_000,
+    });
+    assert.equal(out.held, 1, "#809 held the auto-unban");
+    assert.equal(env.db.getBanRecord(record.id).status, "expired_held");
+
+    // THE APPEAL LEGITIMATELY STAYS OPEN: the live ban is a human's, and
+    // the appeal is exactly the channel to talk about it.
+    assert.equal(env.db.getAppealById(appeal.id).status, "open");
+    assert.deepEqual(
+      ferryLanes(target).filter((a) => a.id === appeal.id).map((a) => a.id),
+      [appeal.id],
+      "the ferry lane SURVIVES a held expiry",
+    );
+
+    // No auto-close audit ever (the held arm never touches appeals).
+    assert.deepEqual(auditRowsFor("banAppeals.closed_ban_ended", target.id), []);
+  });
+
+  it("#811 boot reconciliation closes the appeal with its own honest cause — and still DMs nobody", async () => {
+    const { target, appeal } = await openAppealCycle("811recon");
+    const sendsBefore = target.sends.length;
+
+    // The ban vanished while the bot slept (lifted by hand in the client).
+    const idx = env.guild._bans.findIndex((b) => String(b.userId) === target.id);
+    env.guild._bans.splice(idx, 1);
+
+    const out = await banTicker.runBootReconciliation(env.supervisor);
+    assert.equal(out.reconciled, 1, "the detached ban settled through reconcile");
+
+    const row = env.db.getAppealById(appeal.id);
+    assert.equal(row.status, "closed");
+    assert.match(row.denial_reason, /vanished while the bot was offline/);
+
+    // Log-only law: reconciliation DMs nobody — and the appeal close does
+    // not silently add a second voice.
+    assert.equal(target.sends.length, sendsBefore, "zero new DMs through reconcile + close");
+    const audited = auditRowsFor("banAppeals.closed_ban_ended", target.id);
+    assert.equal(audited.length, 1);
+    assert.equal(
+      JSON.parse(audited[0].details_json).cause,
+      "the ban vanished while the bot was offline (boot reconciliation)",
+    );
+  });
+
+  it("#811 the FILED shape closes too (no ticket, no crash, honest audit)", async () => {
+    const target = addAppealTarget("811filed");
+    await slashBan(target);
+    const record = activeRecord(target);
+    const filed = env.db.fileAppeal({
+      communityId: env.communityId,
+      banRecordId: record.id,
+      appealStatement: "typed later — never reached a ticket",
+      createdAt: Date.now(),
+    });
+    assert.equal(filed.ok, true, filed.error);
+    assert.equal(filed.appeal.status, "filed");
+    assert.equal(filed.appeal.ticket_channel_id, null);
+
+    const out = await banTicker.runBanExpiryTick(fakeSupervisor(env.client), {
+      now: Date.now() + DAY + 60_000,
+    });
+    assert.equal(out.unbanned, 1);
+
+    const row = env.db.getAppealById(filed.appeal.id);
+    assert.equal(row.status, "closed", "the dead-pending row stops reading as 'already filed'");
+    assert.equal(row.decided_by, env.db.APPEAL_BAN_END_DECIDER);
+
+    const det = JSON.parse(auditRowsFor("banAppeals.closed_ban_ended", target.id)[0].details_json);
+    assert.equal(det.prior_status, "filed");
+    assert.equal(det.ticket_closed, false, "there was never a ticket to close");
+
+    // Intake honesty after the close: a replayed press learns the ban is
+    // over (NOT_ACTIVE), never the stale ALREADY_FILED sentence.
+    const banDmMsg = target._dmStore.get(dmMessageId(target));
+    const press = await emitGuildless(
+      guildlessPress({ user: target, customId: `${C.APPEAL_PREFIX}${record.id}`, message: banDmMsg }),
+    );
+    const copy = JSON.stringify(press.replies ?? press);
+    assert.match(copy, /no longer active/i, "the closed row reads honestly to its author");
+    assert.equal(env.db.getAppealById(filed.appeal.id).status, "closed", "the press changed nothing");
+  });
+
+  /* ══ 16. documented skips (unit-tier coverage pointers) ════════════════════ */
 
   it.skip("Fluxer NO-PARITY refusal — unreachable through the offline Discord harness", () => {
     // Same posture as test/integration/ban-lifecycle.test.js: the Fluxer

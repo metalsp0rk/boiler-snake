@@ -254,6 +254,53 @@ function systemAudit(log, entry) {
   }
 }
 
+/**
+ * #811: a cycle just ENDED on our side (expiry auto-unban, external lift,
+ * reconciliation) — close any appeal still riding it. Delegates to
+ * banAppeals' system-close outcome: its one-winner CAS owns the appeal row
+ * (a staff decision landing mid-flight wins and this reports the live
+ * status), and closing STRUCTURALLY stops the DM ferry + converges the
+ * ticket. Best-effort by construction: an appeal-close failure is logged
+ * with ids and NEVER rewrites the ban settle that already shipped — the
+ * ban's truth is durable before this line runs.
+ *
+ * NEVER call for `expired_held` (#809): a held ban is still in force — its
+ * appeal legitimately stays open for staff to decide.
+ */
+async function settleEndedBanAppeals(record, cause, opts, log) {
+  try {
+    // CALL-TIME require (#699 + direction law): banAppeals is required FROM
+    // banLifecycle by design (dmButton.js header pins it) — never the reverse.
+    const appealsOutcomes = require("../banAppeals/outcomes");
+    const res = await appealsOutcomes.closeOnBanEnd({
+      communityId: Number(record.community_id),
+      banRecordId: Number(record.id),
+      cause,
+      deps: {
+        client: opts?.client ?? null,
+        outbound: opts?.outbound ?? null,
+        log,
+        ...(positiveFinite(opts?.now) ? { nowMs: Number(opts.now) } : {}),
+      },
+    });
+    if (res && res.ok !== true) {
+      log.error(
+        `${LOG_PREFIX} appeal auto-close failed community=${record.community_id} ` +
+          `user=${record.user_id} ${banRef(record)}: ` +
+          (res?.error || "closeOnBanEnd reported no cause")
+      );
+    }
+    return res;
+  } catch (err) {
+    log.error(
+      `${LOG_PREFIX} appeal auto-close errored community=${record.community_id} ` +
+        `user=${record.user_id} ${banRef(record)}:`,
+      err?.message || err
+    );
+    return null;
+  }
+}
+
 /* ── Staff-subject guard — mirror of automod executor guardSubject (#729) ───
  * executor.js guardSubject is NOT exported; this is the ban-surface twin with
  * the same semantics: staff_roles membership blocks outright, an UNRESOLVABLE
@@ -996,7 +1043,7 @@ async function finalizeExpiry(recordOrId, deps = {}) {
       return failLogged(log, "auto-unban failed", communityId, userId, error, res?.code);
     }
 
-    // ── Facts out: audit + welcome (embeds are the caller's layer) ─────────
+    // ── Facts out: audit + appeal close + welcome (embeds are the caller's layer) ──
     systemAudit(log, {
       communityId,
       action: externallyUnbanned
@@ -1013,6 +1060,17 @@ async function finalizeExpiry(recordOrId, deps = {}) {
         not_banned: externallyUnbanned,
       },
     });
+    // #811: the cycle is over — an appeal still riding it closes now (the
+    // ferry stops structurally, the ticket converges). Best-effort; never
+    // rewrites the settle above.
+    await settleEndedBanAppeals(
+      row,
+      externallyUnbanned
+        ? "the ban was lifted outside the bot"
+        : "the ban expired and was auto-unbanned",
+      opts,
+      log
+    );
     const guildName = await resolveGuildName(opts, outbound, communityId);
     const welcome = await attemptWelcome(
       communityId,
@@ -1119,6 +1177,16 @@ async function handleExternalUnban(opts = {}) {
         unban_reason: optionalText(opts.unbanReason),
       },
     });
+
+    // #811: the ban is gone — close any appeal still riding it (event path
+    // AND the boot reconciliation, which funnels through this entry with its
+    // own cause). Best-effort; never rewrites the settle above.
+    await settleEndedBanAppeals(
+      active,
+      optionalText(opts.banEndCause) ?? "the ban was lifted outside the bot",
+      opts,
+      log
+    );
 
     const outbound = opts.outbound ?? null;
     const guildName = await resolveGuildName(opts, outbound, communityId);

@@ -451,6 +451,64 @@ function claimAppealOutcome(appealId, opts = {}) {
 }
 
 /**
+ * #811: who decides an auto-close. `decided_by` is a free-text attribution
+ * column (staff ids ride it on the decided outcomes); the system marker
+ * names the mechanism, never a fake user id.
+ */
+const APPEAL_BAN_END_DECIDER = "system:ban-ended";
+
+/**
+ * #811: the ban behind this appeal ENDED (expired auto-unban, external lift,
+ * reconciliation) — close any appeal still awaiting a staff decision. Unlike
+ * the DECISION claim (open-only: a decision needs the ticket context the
+ * filed row never got), this CAS admits BOTH pending shapes:
+ *
+ *   filed → closed  the dead-pending row (ticket never opened) must stop
+ *                   reading as "already filed" to a user whose ban is over
+ *   open  → closed  the live ferry lane — closing it STRUCTURALLY stops
+ *                   the DM relay (listOpenAppealsByUser filters open rows)
+ *                   and the ticket's buttons die on the next click with the
+ *                   honest "already decided" copy (the CAS is the truth).
+ *
+ * Already-decided or closed rows are untouched (won:false + live row). One
+ * winner by the same WHERE-status CAS law as claimAppealOutcome: a staff
+ * decision landing between the ban-end read and this write simply wins.
+ *
+ * @param {number} appealId
+ * @param {{ reason?: string|null, nowMs?: number }} [opts] `reason` rides
+ *   denial_reason (capped like every other outcome note) so the ticket and
+ *   any later read show WHY the close happened in human words.
+ * @returns {{ ok: true, won: boolean, appeal: object|null } | { ok: false, error: string }}
+ */
+function closeAppealOnBanEnd(appealId, { reason = null, nowMs } = {}) {
+  const { id, error } = appealIdOrError(appealId);
+  if (!id) return { ok: false, error };
+  const note = optionalText(reason);
+  if (note && note.length > MAX_DENIAL_REASON) {
+    return {
+      ok: false,
+      error: `The ban-ended close reason is too long (max ${MAX_DENIAL_REASON} characters).`,
+    };
+  }
+  const ts = timestampOr(nowMs, now());
+  try {
+    const res = db
+      .prepare(
+        `UPDATE ban_appeals
+            SET status='closed', decided_by=?, decided_at=?, denial_reason=?, updated_at=?
+          WHERE id=? AND status IN ('filed','open')`,
+      )
+      .run(APPEAL_BAN_END_DECIDER, ts, note, ts, id);
+    return { ok: true, won: res.changes === 1, appeal: getAppealById(id) };
+  } catch (err) {
+    return {
+      ok: false,
+      error: `Could not close the appeal on ban end: ${err?.message || err}`,
+    };
+  }
+}
+
+/**
  * Persist the relay cursor for ONE direction (last-write-wins — the relay
  * is single-flow per direction; see the header law). Always writes the PAIR
  * (message id + timestamp): half a cursor is a resume-time lie.
@@ -573,6 +631,8 @@ module.exports = {
   attachAppealTicketChannel,
   openAppeal,
   claimAppealOutcome,
+  closeAppealOnBanEnd,
+  APPEAL_BAN_END_DECIDER,
   saveAppealCursor,
   loadAppealCursor,
   setAppealFerryPaused,

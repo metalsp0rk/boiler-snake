@@ -1,12 +1,21 @@
 /**
  * Ban appeals — OUTCOME ENGINE (#773 §4 + §5 + §6) — the staff-decision side.
  *
- * Three entries, one law: the decision is the CLAIM. Every path starts with
- * `claimAppealOutcome` (`UPDATE … WHERE status='open'`, the resolveAutomodCase
- * idiom) — first decision wins, a losing click mutates NOTHING and answers
- * with the LIVE row's truth (`ALREADY_DECIDED` + the actual status). Once the
- * status leaves `open` the ferry stops structurally (ferry.js's status guard,
- * no side-channel flag), and nothing here has to touch the relay.
+ * Three staff-decision entries, one law: the decision is the CLAIM. Every
+ * path starts with `claimAppealOutcome` (`UPDATE … WHERE status='open'`, the
+ * resolveAutomodCase idiom) — first decision wins, a losing click mutates
+ * NOTHING and answers with the LIVE row's truth (`ALREADY_DECIDED` + the
+ * actual status). Once the status leaves `open` the ferry stops structurally
+ * (ferry.js's status guard, no side-channel flag), and nothing here has to
+ * touch the relay.
+ *
+ * The FOURTH entry (`closeOnBanEnd`, #811) is a SYSTEM close, not a decision:
+ * it runs a DIFFERENT CAS (`closeAppealOnBanEnd` over 'filed'|'open' →
+ * 'closed') because the ban ending is not a judgment on the appeal, the
+ * filed shape has no ticket context to decide against, and a staff decision
+ * racing it simply wins the row (the CAS reports the live status). Same
+ * structural ferry stop — closing leaves `open` — but no claimWelcome spend,
+ * no invite, NO user DM (the ban-end itself already speaks).
  *
  * ── Locked ORDER for grantClemency (issue §4, acceptance law) ──────────────
  *  1. claim 'granted'            — loser: specific already-decided reply,
@@ -147,6 +156,9 @@ const OUTCOME_CODES = Object.freeze({
 const AUDIT_ACTION_CLEMENCY = "banAppeals.clemency_granted";
 const AUDIT_ACTION_DENIED = "banAppeals.denied";
 const AUDIT_ACTION_CLOSED = "banAppeals.closed";
+/** #811: system auto-close when the BAN behind the appeal ends (distinct
+ * from the neutral plain-close so staff can grep the mechanism apart). */
+const AUDIT_ACTION_BAN_ENDED_CLOSE = "banAppeals.closed_ban_ended";
 const AUDIT_ACTION_INVITE = "banAppeals.invite_created";
 
 /**
@@ -1460,6 +1472,189 @@ async function plainClose({
   }
 }
 
+/* ══ 4. closeOnBanEnd — the #811 system auto-close ══════════════════════════ */
+
+/**
+ * The ban behind an appeal ENDED outside the appeal machine (expiry
+ * auto-unban, external lift, boot reconciliation) — close whatever appeal
+ * is still pending so the ferry stops, the ticket converges, and the user
+ * is never again mirrored into a dead staff channel (#811).
+ *
+ * NOT a decision: no claimAppealOutcome (a decision needs ticket context;
+ * filed rows have none). The CAS is `closeAppealOnBanEnd` — one winner over
+ * BOTH pending shapes ('filed' and 'open'); a staff decision landing
+ * mid-flight simply wins the row and this reports the live status.
+ *
+ * NO user DM — deliberately: the ban-end itself already speaks to the user
+ * (welcome-back DM, or the log-only reconciliation law); a second lifecycle
+ * DM here would double-message on the SAME fact and dilute the one-per-
+ * cycle welcome law. The ticket gets a staff-side system note, then the
+ * SHARED close flow; the audit row is the durable record.
+ *
+ * @param {object} params
+ * @param {number} params.communityId
+ * @param {number} params.banRecordId the record whose cycle just ended
+ * @param {string} params.cause human phrase for the ticket note + audit
+ *   ("the ban expired and was auto-unbanned", …)
+ * @param {object} [params.deps] same seam family (client, outbound, log,
+ *   getAppealByBanRecord, closeAppealOnBanEnd, sendChannel, …)
+ * @returns {Promise<object>} never rejects; `{ ok:true, acted:false,
+ *   skipped:true }` is the COMMON answer (no appeal behind the ban — true
+ *   for almost every ban ever issued)
+ */
+async function closeOnBanEnd({ communityId, banRecordId, cause = null, deps = {} } = {}) {
+  const d = deps || {};
+  const log = pickLog(d);
+  const ids = idsOf(null);
+
+  try {
+    const cid = positiveIntOrNull(communityId);
+    const rid = positiveIntOrNull(banRecordId);
+    if (cid == null || rid == null) {
+      return fail(CODE_NO_TARGET, "closeOnBanEnd needs communityId + banRecordId.");
+    }
+
+    const read =
+      d.getAppealByBanRecord || ((c, r) => dbApi().getAppealByBanRecord(c, r));
+    const appeal = read(cid, rid) ?? null;
+    if (!appeal) return { ok: true, acted: false, skipped: true, communityId: cid, banRecordId: rid };
+    Object.assign(ids, idsOf(appeal));
+
+    const priorStatus = String(appeal.status);
+    if (priorStatus !== "filed" && priorStatus !== "open") {
+      // Decided (granted/denied) or already closed — their own flows own
+      // the ticket; a second close would be noise.
+      return {
+        ok: true,
+        acted: false,
+        skipped: true,
+        code: CODE_NOT_OPEN,
+        status: priorStatus,
+        appealId: appeal.id,
+        communityId: cid,
+      };
+    }
+
+    const causeNote = optionalText(cause) ?? "the ban ended";
+    const closeReason = `Ban ended (${causeNote}) — appeal auto-closed by the system`;
+
+    // ── THE CAS (#811): 'filed'|'open' → 'closed', system attribution ──────
+    const closeFn =
+      d.closeAppealOnBanEnd || ((id, opts) => dbApi().closeAppealOnBanEnd(id, opts));
+    const claimed = await closeFn(appeal.id, { reason: closeReason, nowMs: d.nowMs });
+    if (!claimed || claimed.ok !== true) {
+      const error = claimed?.error || "closeAppealOnBanEnd returned no result";
+      logWith(log, "error", "ban-ended close CAS failed", ids, error);
+      return fail(CODE_CLAIM_FAILED, error, { appealId: appeal.id, communityId: cid });
+    }
+    if (claimed.won !== true) {
+      // A staff decision (or an earlier ban-ended pass) won the row between
+      // the read and the CAS: THEIR flow owns the ticket — say nothing more.
+      const liveStatus = claimed.appeal?.status ?? "unknown";
+      logWith(log, "info", `ban-ended close LOST the CAS (live=${liveStatus})`, ids, null);
+      return {
+        ok: true,
+        acted: false,
+        skipped: true,
+        code: CODE_ALREADY_DECIDED,
+        liveStatus,
+        appealId: appeal.id,
+        communityId: cid,
+      };
+    }
+    logWith(
+      log,
+      "info",
+      `ban ended — appeal A-${appeal.id} auto-closed (prior=${priorStatus}; ${causeNote})`,
+      ids,
+      null
+    );
+
+    const record = readBanRecord(d, appeal.ban_record_id, log, ids);
+    Object.assign(ids, idsOf(appeal, { userId: record?.user_id }));
+    const facts = outcomeFacts(appeal, record);
+    const warnings = [];
+
+    // ── staff-side system note BEFORE the close (channel still warm) ───────
+    if (optionalText(appeal.ticket_channel_id)) {
+      const outbound = resolveOutbound(d);
+      const send = seam(d, "sendChannel", outbound, "sendChannel");
+      try {
+        const res = await send(String(appeal.ticket_channel_id), {
+          content:
+            `📜 **System — ban ended.** ${causeNote.charAt(0).toUpperCase()}${causeNote.slice(1)}. ` +
+            `The appeal was **auto-closed** (ferry stopped, ticket closing) — ` +
+            `no staff action is needed. A late button click answers "already decided".`,
+          allowedMentions: { parse: [] },
+        });
+        if (!res || res.ok !== true) {
+          const note = `Ticket notice not posted: ${res?.error || "sendChannel returned no result"}`;
+          warnings.push(note);
+          logWith(log, "warn", "ban-ended ticket note not posted", ids, res?.error || "no result");
+        }
+      } catch (err) {
+        warnings.push(`Ticket notice failed: ${err?.message || err}`);
+        logWith(log, "warn", "ban-ended ticket note threw (non-fatal)", ids, err);
+      }
+    }
+
+    // ── the SHARED close flow (best-effort; never fails the close) ─────────
+    let close = { closed: false, warnings: [] };
+    if (optionalText(appeal.ticket_channel_id)) {
+      // Filed rows without a channel never got a ticket — nothing to close.
+      // A filed row WITH a channel (intake crashed between attach and open)
+      // converges here too: the staff channel exists, so it gets closed.
+      close = await closeAppealTicket({
+        appeal,
+        communityId: cid,
+        closedBy: null,
+        closeReason,
+        deps: d,
+        log,
+        ids,
+      });
+      warnings.push(...close.warnings);
+    }
+
+    // ── audit (durable record; staff greps this to reconstruct the cycle) ──
+    outcomeAudit(
+      d,
+      {
+        action: AUDIT_ACTION_BAN_ENDED_CLOSE,
+        communityId: cid,
+        targetType: "ban_appeal",
+        targetId: String(appeal.id),
+        actorUserId: null,
+        details: {
+          ban_record_id: appeal.ban_record_id,
+          ban_number: record?.ban_number ?? null,
+          subject_user_id: record?.user_id ?? null,
+          prior_status: priorStatus,
+          cause: causeNote,
+          ticket_channel_id: appeal.ticket_channel_id ?? null,
+          ticket_closed: close.closed === true,
+        },
+      },
+      log,
+      ids,
+    );
+
+    return {
+      ok: true,
+      acted: true,
+      ...facts,
+      priorStatus,
+      ticketClosed: close.closed,
+      closeWarnings: close.warnings,
+      warnings,
+    };
+  } catch (err) {
+    const error = `Could not auto-close the appeal on ban end: ${err?.message || err}`;
+    logWith(log, "error", "ban-ended close errored", ids, err);
+    return fail(CODE_INTERNAL, error, {});
+  }
+}
+
 module.exports = {
   LOG_PREFIX,
   OUTCOME_CODES,
@@ -1480,6 +1675,7 @@ module.exports = {
   AUDIT_ACTION_CLEMENCY,
   AUDIT_ACTION_DENIED,
   AUDIT_ACTION_CLOSED,
+  AUDIT_ACTION_BAN_ENDED_CLOSE,
   AUDIT_ACTION_INVITE,
   CLEMENCY_UNBAN_REASON,
   MODAL_DENY_TITLE,
@@ -1494,6 +1690,7 @@ module.exports = {
   grantClemency,
   deny,
   plainClose,
+  closeOnBanEnd,
   // pure/white-box seams (units pin without Discord/db):
   internals: {
     pickInviteChannel,
