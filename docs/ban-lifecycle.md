@@ -15,9 +15,18 @@ Staff: /ban <member> [reason] [duration]   or   right-click → Apps → Ban mem
         → Discord ban executes → record row B-n (expires_at NULL = permanent)
 
 Expiry ticker `ban-expiry` (minute-aligned, immediate pass on boot)
-        → due rows: CAS claim → Discord unban
-          ("Expired — auto-unban (banned <t:F> by <staff>)") → expired_unbanned
-        → welcome-back DM (exactly one per ban cycle)
+        → due rows: CAS claim → #809 RE-BAN GUARD: fetch the LIVE ban and
+          compare its reason against the fingerprint captured at issue
+          (`ban_identity_reason`):
+            match (or pre-#809 row, marker NULL) → Discord unban
+              ("Expired — auto-unban (banned <t:F> by <staff>)") → expired_unbanned
+              → welcome-back DM (exactly one per ban cycle)
+            MISMATCH (staff lifted + re-banned meanwhile) → HELD: the auto-unban
+              is never executed, no welcome DM, row terminal `expired_held`
+              + `banLifecycle.expiry_held` audit + caution embed on the audit
+              channel — staff owns whatever ban is live now
+            unreadable (not the 10026 "not banned") → FAIL CLOSED: nothing is
+              unbanned, the row stays claimed ACTIVE and retries past the lease
 
 Any manual unban (other staff / another bot — GuildBanRemove)
         → record settles unbanned_manual (manual beats ticker) → same welcome DM
@@ -268,6 +277,7 @@ One row per ban cycle in `ban_records`; human ref **B-{n}** is sequential per gu
 | `pending_rejoin` | Unbanned, welcome DM not delivered — retry parked for rejoin |
 | `welcomed` | Rejoin welcome attempt made (regardless of delivery outcome) |
 | `clemency_granted` | Ban lifted by a granted ban appeal (#773 — appended by migration 075) |
+| `expired_held` | Term lapsed but the live ban does not match the record (#809 — appended by migration 076): the auto-unban was HELD, never executed, and no welcome DM is possible (the row was never lifted) |
 
 ```sql
 CREATE TABLE ban_records (
@@ -281,15 +291,19 @@ CREATE TABLE ban_records (
   banned_at INTEGER NOT NULL,
   expires_at INTEGER,                 -- NULL = permanent
   status TEXT NOT NULL DEFAULT 'active'
-    CHECK (status IN ('active','expired_unbanned','unbanned_manual','pending_rejoin','welcomed')),
+    CHECK (status IN ('active','expired_unbanned','unbanned_manual','pending_rejoin',
+                      'welcomed','clemency_granted','expired_held')),
   ban_dm_sent INTEGER NOT NULL DEFAULT 0,
   welcome_dm_sent INTEGER NOT NULL DEFAULT 0,
   unban_claimed_at INTEGER,           -- CAS lease for the auto-unban claim
-  unban_reason TEXT
+  unban_reason TEXT,
+  ban_identity_reason TEXT            -- #809: live ban reason captured at issue
+                                      -- (the expiry guard's fingerprint;
+                                      -- NULL = pre-#809 row / unreadable at issue)
 );
 ```
 
-Migration `074_ban_lifecycle` (also adds `guild_settings.ban_dm` / `welcome_back_dm`, both `DEFAULT 1`). The record `id` is a stable handle by contract. All settles are first-writer-wins CAS (claim → act → finalize): a losing claimer performs zero outbound calls and reports the live row. Migration `075_ban_appeals` keeps 074 byte-frozen and *extends*: a table rebuild widens the status CHECK with `clemency_granted` (ids and B-n numbers preserved), and the migration adds `ban_appeals` + the `guild_settings.ban_appeals` toggle (above).
+Migration `074_ban_lifecycle` (also adds `guild_settings.ban_dm` / `welcome_back_dm`, both `DEFAULT 1`). The record `id` is a stable handle by contract. All settles are first-writer-wins CAS (claim → act → finalize): a losing claimer performs zero outbound calls and reports the live row. Migration `075_ban_appeals` keeps 074 byte-frozen and *extends*: a table rebuild widens the status CHECK with `clemency_granted` (ids and B-n numbers preserved), and the migration adds `ban_appeals` + the `guild_settings.ban_appeals` toggle (above). Migration `076_ban_identity` (#809) extends the same way: the status CHECK gains `expired_held` and the table gains `ban_identity_reason` — the fingerprint the expiry sweep checks before it dares to unban.
 
 ## Audit
 
@@ -298,6 +312,7 @@ Migration `074_ban_lifecycle` (also adds `guild_settings.ban_dm` / `welcome_back
 | `banLifecycle.ban` | Staff command layer (per executed ban) + system row for automod-origin bans |
 | `banLifecycle.ban_dm_set` / `banLifecycle.welcome_dm_set` | `/bannotify` mutations (recordSlashAudit + audit embed) |
 | `banLifecycle.expiry_unban` / `banLifecycle.external_unban` / `banLifecycle.rejoin_welcome` | System (ticker / GuildBanRemove / rejoin); each auto-unban also posts a staff-log embed on the audit channel |
+| `banLifecycle.expiry_held` (#809) | System (re-ban guard held an expiry: issued vs. live reason both recorded); posts a caution embed — never the unban embed |
 
 ## Known gaps
 

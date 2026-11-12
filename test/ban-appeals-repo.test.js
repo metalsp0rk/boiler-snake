@@ -138,8 +138,21 @@ describe("banAppeals — vocabulary mirrors the 075 CHECK", () => {
   it("the widened ban_records domain keeps its append at the END (stable-id + order law)", () => {
     // The constant↔CHECK mirror is the ban-records file's pin; this one
     // guards the append-only ORDER that #773's `appeal:<banRecordId>` seam
-    // inherits from 074's stable-id contract.
-    assert.equal(db.BAN_RECORD_STATUSES.at(-1), "clemency_granted");
+    // inherits from 074's stable-id contract. #809 appended `expired_held`
+    // at the END (076) — pinning the WHOLE sequence keeps the law: every
+    // earlier status keeps its slot, new vocabulary only ever appends.
+    assert.deepEqual(
+      [...db.BAN_RECORD_STATUSES],
+      [
+        "active",
+        "expired_unbanned",
+        "unbanned_manual",
+        "pending_rejoin",
+        "welcomed",
+        "clemency_granted",
+        "expired_held",
+      ],
+    );
   });
 });
 

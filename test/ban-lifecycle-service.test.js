@@ -746,3 +746,26 @@ test("rejoin with no parked cycle is an honest no-op", async () => {
   assert.match(res.reason, /no pending welcome-back record/);
   assert.equal(w.calls.length, 0);
 });
+
+// ── #809: the identity fingerprint's equality law ────────────────────────────
+
+test("#809 identityReasonMatches — normalized equality, nothing cleverer", () => {
+  const { identityReasonMatches } = banService.internals;
+
+  assert.equal(identityReasonMatches("spam", "spam"), true, "exact");
+  assert.equal(
+    identityReasonMatches("Posted  Slurs AT members", "posted slurs at members"),
+    true,
+    "case-fold + internal-whitespace collapse: cosmetic drift is NOT a re-ban"
+  );
+  assert.equal(identityReasonMatches("  padded \n", "padded"), true, "trim on both sides");
+
+  assert.equal(identityReasonMatches("spam", "appeal denied"), false, "a different story IS a re-ban");
+  assert.equal(identityReasonMatches("spam spam", "spam"), false, "collapse never erases WORDS");
+  assert.equal(
+    identityReasonMatches("spam", null),
+    false,
+    "a live ban whose reason vanished is not our fingerprint — the guard holds and staff look"
+  );
+  assert.equal(identityReasonMatches("spam", undefined), false, "same via undefined");
+});

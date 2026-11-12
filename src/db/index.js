@@ -719,6 +719,7 @@ module.exports = {
   claimUnban: banRecords.claimUnban,
   finalizeUnban: banRecords.finalizeUnban,
   markUnbannedManual: banRecords.markUnbannedManual,
+  markExpiryHeld: banRecords.markExpiryHeld,
   claimWelcome: banRecords.claimWelcome,
   markPendingRejoin: banRecords.markPendingRejoin,
   markWelcomed: banRecords.markWelcomed,

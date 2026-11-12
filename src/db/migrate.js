@@ -83,6 +83,7 @@ const migrations = [
   require("./migrations/073_automod_rules_channel"),
   require("./migrations/074_ban_lifecycle"),
   require("./migrations/075_ban_appeals"),
+  require("./migrations/076_ban_identity"),
 ];
 
 const helpers = {

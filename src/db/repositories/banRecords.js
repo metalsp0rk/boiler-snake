@@ -63,6 +63,9 @@ const BAN_RECORD_STATUSES = Object.freeze([
   "pending_rejoin",
   "welcomed",
   "clemency_granted",
+  // #809 (migration 076): the expiry term lapsed but the live ban does not
+  // match the record — the auto-unban was HELD, never executed, no welcome.
+  "expired_held",
 ]);
 
 /** Ban provenance vocabulary (migration 074 `source` CHECK). */
@@ -160,6 +163,11 @@ function nextBanNumber(communityId) {
  * @param {string} opts.reason required, ≤ MAX_BAN_REASON — audit AND Discord reason
  * @param {number|null} [opts.bannedAt] ms epoch (default now)
  * @param {number|null} [opts.expiresAt] absolute ms; NULL/absent = permanent
+ * @param {string|null} [opts.banIdentityReason] #809: the LIVE ban reason
+ *   captured via fetchBan at issue-time — the record's fingerprint of the ban
+ *   it owns, so the expiry sweep can tell its own ban from a moderator
+ *   re-issue. NULL = never captured (pre-#809 rows / failed identity read);
+ *   expiry then falls back to the historical unban-anything behavior.
  * @returns {{ ok: true, record: object } | { ok: false, error: string, code?: string }}
  */
 function createBanRecord(opts = {}) {
@@ -171,6 +179,7 @@ function createBanRecord(opts = {}) {
     reason,
     bannedAt,
     expiresAt,
+    banIdentityReason,
   } = opts || {};
   assertCommunityId(communityId);
 
@@ -209,8 +218,9 @@ function createBanRecord(opts = {}) {
     const insert = db.prepare(`
       INSERT INTO ban_records (
         community_id, ban_number, user_id, moderator_id, source, reason,
-        banned_at, expires_at, status, ban_dm_sent, welcome_dm_sent
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', 0, 0)
+        banned_at, expires_at, status, ban_dm_sent, welcome_dm_sent,
+        ban_identity_reason
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', 0, 0, ?)
     `);
     const banNumber = nextBanNumber(communityId);
     const info = insert.run(
@@ -221,7 +231,8 @@ function createBanRecord(opts = {}) {
       source,
       reasonText,
       t,
-      expires
+      expires,
+      optionalText(banIdentityReason)
     );
     return Number(info.lastInsertRowid);
   });
@@ -413,6 +424,40 @@ function markUnbannedManual(recordId, unbanReason = null) {
 }
 
 /**
+ * #809: settle a CLAIMED (still ACTIVE) expiry row as `expired_held` — the
+ * term lapsed but the live ban does NOT match the record (a moderator
+ * re-issue), so the auto-unban is HELD: never executed, no welcome DM, the
+ * ban a human owns stays exactly where it is. Terminal, so the sweep stops
+ * selecting the row; NOT an UNBAN_OUTCOME (nothing was lifted), hence its
+ * own CAS instead of riding finalizeUnban. Same single-winner law: a
+ * concurrent manual settle wins and the caller reports the live truth.
+ *
+ * @param {number} recordId
+ * @param {string|null} [reason] what was observed (audit + unban_reason column)
+ * @param {{ nowMs?: number }} [opts]
+ * @returns {{ ok: true, won: boolean, record: object|null } | { ok: false, error: string }}
+ */
+function markExpiryHeld(recordId, reason = null, { nowMs } = {}) {
+  const { id, error } = recordIdOrError(recordId);
+  if (!id) return { ok: false, error };
+  const ts = timestampOr(nowMs, now());
+  try {
+    const res = db
+      .prepare(
+        `UPDATE ban_records
+            SET status='expired_held',
+                unban_reason=COALESCE(?, unban_reason),
+                unban_claimed_at=COALESCE(unban_claimed_at, ?)
+          WHERE id=? AND status='active'`
+      )
+      .run(optionalText(reason), ts, id);
+    return { ok: true, won: res.changes === 1, record: getBanRecord(id) };
+  } catch (err) {
+    return { ok: false, error: `Could not record the held ban expiry: ${err?.message || err}` };
+  }
+}
+
+/**
  * Claim the cycle's ONE welcome DM (first-click-wins). The locked schema has
  * no separate welcome-claim column, so `welcome_dm_sent` doubles as the
  * claim stamp: flipping it 0→1 IS the claim (074 decision). Restricted to
@@ -528,6 +573,7 @@ module.exports = {
   claimUnban,
   finalizeUnban,
   markUnbannedManual,
+  markExpiryHeld,
   claimWelcome,
   markPendingRejoin,
   markWelcomed,

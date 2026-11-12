@@ -755,3 +755,67 @@ describe("banRecords — the status machine, end to end (injected clock througho
     assert.equal(final.unban_reason, "staff lift");
   });
 });
+
+describe("banRecords.markExpiryHeld — the #809 held-expiry settle", () => {
+  const CID = communityKey("772-repo-held");
+
+  it("CAS from ACTIVE: stamps expired_held + cause, keeps the original claim stamp", () => {
+    const rec = mk(CID, uid("held"), { expiresAt: T0 + MIN });
+    const claim = db.claimUnban(rec.id, T0 + MIN);
+    assert.equal(claim.won, true);
+
+    const held = db.markExpiryHeld(rec.id, "expiry HELD: live ban differs", { nowMs: T0 + MIN });
+    assert.deepEqual({ ok: held.ok, won: held.won }, { ok: true, won: true });
+    assert.equal(held.record.status, "expired_held");
+    assert.equal(held.record.unban_reason, "expiry HELD: live ban differs");
+    assert.equal(held.record.unban_claimed_at, T0 + MIN, "COALESCE — the original claim instant stands");
+  });
+
+  it("CAS loses to a concurrent settle: the live status is reported, nothing overwritten", () => {
+    const rec = mk(CID, uid("race"), { expiresAt: T0 + MIN });
+    assert.equal(db.claimUnban(rec.id, T0 + MIN).won, true);
+    // The manual path beats the in-flight pass (events-keep-truth law).
+    assert.equal(db.markUnbannedManual(rec.id, "staff lift").won, true);
+
+    const held = db.markExpiryHeld(rec.id, "too late", { nowMs: T0 + 2 * MIN });
+    assert.equal(held.ok, true);
+    assert.equal(held.won, false);
+    assert.equal(held.record.status, "unbanned_manual", "the winner's truth stands verbatim");
+    assert.equal(held.record.unban_reason, "staff lift", "no reason clobbering");
+  });
+
+  it("a held row is TERMINAL for the sweep and NEVER welcome-claimable", () => {
+    const cid = communityKey("772-repo-held-terminal");
+    const rec = mk(cid, uid("term"), { expiresAt: T0 + MIN });
+    assert.equal(db.markExpiryHeld(rec.id, "held", { nowMs: T0 + MIN }).won, true);
+
+    assert.deepEqual(
+      db
+        .listDueExpiredBans(T0 + 10 * MIN)
+        .filter((r) => r.community_id === cid)
+        .map((r) => r.id),
+      [],
+      "expired_held leaves the sweep's active selection — terminal means terminal"
+    );
+    const welcome = db.claimWelcome(rec.id);
+    assert.equal(welcome.ok, true);
+    assert.equal(welcome.won, false, "a held row was NEVER lifted — structurally unwelcomeable");
+  });
+
+  it("createBanRecord persists banIdentityReason (trim-to-null law), absent = NULL", () => {
+    const withMark = mk(CID, uid("mark"), { banIdentityReason: "  posted slurs  " });
+    assert.equal(withMark.ban_identity_reason, "posted slurs", "trimmed like every other text field");
+
+    const bare = mk(CID, uid("nomark"));
+    assert.equal(bare.ban_identity_reason, null, "legacy shape: no marker = NULL (guard skips)");
+
+    const empty = mk(CID, uid("empty"), { banIdentityReason: "   " });
+    assert.equal(empty.ban_identity_reason, null, "blank identity is absent, never an empty string");
+  });
+
+  it("programmer-shape ids answer the honest record error, never throw", () => {
+    const res = db.markExpiryHeld(0, "x");
+    assert.equal(res.ok, false);
+    assert.equal(res.error, "No such ban record.");
+  });
+});
