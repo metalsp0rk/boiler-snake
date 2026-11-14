@@ -60,6 +60,6 @@
   },
   "allowScripts": {
     "esbuild@0.21.5": true,
-    "puppeteer@25.16.0": true
+    "puppeteer@25.17.0": true
   }
 }
