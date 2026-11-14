@@ -53,9 +53,14 @@ ENV CI=true \
 
 COPY package.json package-lock.json ./
 RUN npm ci
+# Canary: puppeteer's OWN pinned Chrome must exist AND run. The path comes
+# from puppeteer itself (never hard-coded here), so bumping puppeteer must
+# not require editing this file.
 RUN rm -rf /root/.cache/puppeteer \
   && PUPPETEER_SKIP_DOWNLOAD=0 npx puppeteer browsers install chrome \
-  && test -x /root/.cache/puppeteer/chrome/linux-156.0.8078.47/chrome-linux64/chrome
+  && CHROME_BIN="$(node -e 'Promise.resolve(require("puppeteer").executablePath()).then((p) => { if (!p) process.exit(1); console.log(p) })')" \
+  && test -x "$CHROME_BIN" \
+  && "$CHROME_BIN" --version
 
 COPY vite.web.config.mjs vite.export.config.mjs ./
 COPY src ./src
