@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.40.1](https://github.com/metalsp0rk/boiler-snake/compare/v1.40.0...v1.40.1) (2026-11-14)
+
+
+### Bug Fixes
+
+* **automod:** thread the note-overlap scrub through the Approve path ([1d41483](https://github.com/metalsp0rk/boiler-snake/commit/1d4148365af207147a05519011a085be8a08f15c))
+* **banAppeals:** a ban that ENDS must take its pending appeal with it ([03e97d2](https://github.com/metalsp0rk/boiler-snake/commit/03e97d243930d9f30a209eeee87468c6ff5225fc))
+* **banLifecycle:** quarantine chronically failing expiries; rotate the reconcile window ([01c01bb](https://github.com/metalsp0rk/boiler-snake/commit/01c01bb17cfa4d30810f46b86d17a253094d4046))
+* **banLifecycle:** the expiry sweep must recognize ITS OWN ban before lifting it ([b2ec15c](https://github.com/metalsp0rk/boiler-snake/commit/b2ec15c38c2746d68ea288e3846ae30b25986adf))
+* **db:** make migration 057 crash-atomic — heal residue, one transaction ([7ce1f76](https://github.com/metalsp0rk/boiler-snake/commit/7ce1f76315d8fafe3a1f8564a0a4161287dbff46))
+* **eventReminders:** retire vanished events with real gone codes 10070/10071 ([0b2e3da](https://github.com/metalsp0rk/boiler-snake/commit/0b2e3da0f8de2b829f64c76c95c706182a6a870c))
+* **visual:** resolve the forge Chrome canary from puppeteer itself ([4ef7206](https://github.com/metalsp0rk/boiler-snake/commit/4ef72069fd5f134b46f45e83e3af3e0e739ffce5))
+
 ## [1.40.0](https://github.com/metalsp0rk/boiler-snake/compare/v1.39.1...v1.40.0) (2026-11-03)
 
 
