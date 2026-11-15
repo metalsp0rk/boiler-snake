@@ -666,6 +666,23 @@ index dd89b8b..0db0b5f 100644
          default: {
            // Unknown opcodes are ignored (real Discord also ignores unknown
            // opcodes from clients).
+diff --git a/src/model-based-full-explorer.test.ts b/src/model-based-full-explorer.test.ts
+index 6d889fa..2d9782e 100644
+--- a/src/model-based-full-explorer.test.ts
++++ b/src/model-based-full-explorer.test.ts
+@@ -60,6 +60,12 @@ describe('full model-based API explorer', () => {
+         'GET /oauth2/authorize',
+         'POST /oauth2/token',
+         'POST /oauth2/token/revoke',
++        // SPIKE PATCH (boiler-snake e2e): bot DM-channel list. The fetched
++        // Discord spec omits the GET operation for this path (only POST is
++        // listed), so the manifest cannot cover it — implement it here the
++        // same way the other off-manifest routes are (boiler-snake #328
++        // gap 7).
++        'GET /users/@me/channels',
+       ])
+ 
+       expect([...implemented].filter((route) => !covered.has(route))).toEqual(
 diff --git a/src/routes/channel-messages.ts b/src/routes/channel-messages.ts
 index 535851f..1cb0f7a 100644
 --- a/src/routes/channel-messages.ts
@@ -1023,6 +1040,137 @@ index 543d9ef..2fc5c7e 100644
    })
  
    // POST /_test/polls/:messageId/votes — Inject a poll vote for testing
+diff --git a/src/routes/users.test.ts b/src/routes/users.test.ts
+index 9229855..c039394 100644
+--- a/src/routes/users.test.ts
++++ b/src/routes/users.test.ts
+@@ -544,3 +544,94 @@ describe('POST /users/@me/channels', () => {
+     expect(secondBody.id).not.toBe(firstBody.id)
+   })
+ })
++
++// SPIKE PATCH (boiler-snake e2e): GET /users/@me/channels — the bot's DM
++// list (boiler-snake issue #328 gap 7).
++describe('GET /users/@me/channels', () => {
++  let db: ReturnType<typeof createFullTestApp>['db']
++  let app: ReturnType<typeof createFullTestApp>['app']
++  let cleanup: () => void
++
++  beforeEach(() => {
++    const ctx = createFullTestApp()
++    db = ctx.db
++    app = ctx.app
++    cleanup = ctx.cleanup
++  })
++
++  afterEach(() => {
++    cleanup()
++  })
++
++  const auth = (t: string) => ({
++    Authorization: t,
++    'Content-Type': 'application/json',
++  })
++
++  it('lists the DM channels the bot participates in (with recipients)', async () => {
++    seedBot(db, 'Bot testtoken')
++    const alice = createTestUser(db, { username: 'Alice' })
++    const bob = createTestUser(db, { username: 'Bob' })
++
++    for (const recipient of [alice, bob]) {
++      const created = await app.request('/users/@me/channels', {
++        method: 'POST',
++        headers: auth('Bot testtoken'),
++        body: JSON.stringify({ recipient_id: recipient.id }),
++      })
++      expect(created.status).toBe(200)
++    }
++    // Idempotent re-create must not duplicate the list entry.
++    await app.request('/users/@me/channels', {
++      method: 'POST',
++      headers: auth('Bot testtoken'),
++      body: JSON.stringify({ recipient_id: alice.id }),
++    })
++
++    const res = await app.request('/users/@me/channels', {
++      headers: auth('Bot testtoken'),
++    })
++    expect(res.status).toBe(200)
++    const list = (await res.json()) as {
++      type: number
++      recipients: { id: string }[]
++    }[]
++    expect(list).toHaveLength(2)
++    expect(list.every((ch) => ch.type === 1)).toBe(true)
++    expect(
++      list.some((ch) => ch.recipients.some((r) => r.id === alice.id)) &&
++        list.some((ch) => ch.recipients.some((r) => r.id === bob.id))
++    ).toBe(true)
++  })
++
++  it('excludes DMs opened by a DIFFERENT bot with the same user', async () => {
++    seedBot(db, 'Bot testtoken')
++    seedBot(db, 'Bot othertoken', '222222222222222222')
++    const target = createTestUser(db, { username: 'Shared' })
++
++    await app.request('/users/@me/channels', {
++      method: 'POST',
++      headers: auth('Bot othertoken'),
++      body: JSON.stringify({ recipient_id: target.id }),
++    })
++
++    const res = await app.request('/users/@me/channels', {
++      headers: auth('Bot testtoken'),
++    })
++    expect(((await res.json()) as unknown[]).length).toBe(0)
++  })
++
++  it('lists group-DM channels too', async () => {
++    seedBot(db, 'Bot testtoken')
++    await app.request('/users/@me/channels', {
++      method: 'POST',
++      headers: auth('Bot testtoken'),
++      body: JSON.stringify({ access_tokens: ['dummy-token'] }),
++    })
++    const res = await app.request('/users/@me/channels', {
++      headers: auth('Bot testtoken'),
++    })
++    const list = (await res.json()) as { type: number }[]
++    expect(list.map((ch) => ch.type)).toEqual([3])
++  })
++})
+diff --git a/src/routes/users.ts b/src/routes/users.ts
+index e748a76..5221b94 100644
+--- a/src/routes/users.ts
++++ b/src/routes/users.ts
+@@ -17,6 +17,7 @@ import { getBotGuilds } from '../services/guilds'
+ import {
+   getOrCreateDmChannel,
+   createGroupDmChannel,
++  getDmChannelsForRecipient,
+ } from '../services/channels'
+ import { validateCurrentUserUpdate } from '../validators/user'
+ import { requiredError } from '../validators/common'
+@@ -423,6 +424,19 @@ export function createUserRoutes(db: Database): Hono<AppEnv> {
+     )
+   })
+ 
++  // GET /users/@me/channels — SPIKE PATCH (boiler-snake e2e): list the
++  // bot's DM/group-DM channels (real Discord always answers; without it
++  // DM-sent content is unverifiable against the mock — boiler-snake #328
++  // gap 7). Participation comes from channel_recipients: both parties of
++  // every mock DM are recipient rows.
++  app.get('/users/@me/channels', (c) => {
++    const bot = c.get('bot')
++    if (!bot) {
++      return c.json({ message: '401: Unauthorized', code: 0 }, 401)
++    }
++    return c.json(getDmChannelsForRecipient(db, bot.user_id))
++  })
++
+   // GET /applications/@me — Retrieve application information
+   app.get('/applications/@me', (c) => {
+     const bot = c.get('bot')
 diff --git a/src/routes/webhooks.test.ts b/src/routes/webhooks.test.ts
 index 4690343..8c98a10 100644
 --- a/src/routes/webhooks.test.ts
@@ -1524,7 +1672,7 @@ index 49c12e3..d8e34e0 100644
  /** Maximum attachment size (25MB) */
  export const MAX_FILE_SIZE = 25 * 1024 * 1024
 diff --git a/src/services/channels.ts b/src/services/channels.ts
-index fd0421d..cd1adff 100644
+index fd0421d..57daacd 100644
 --- a/src/services/channels.ts
 +++ b/src/services/channels.ts
 @@ -370,6 +370,12 @@ export interface ChannelUpdatePayload {
@@ -1615,6 +1763,42 @@ index fd0421d..cd1adff 100644
  
    gatewayBus.emit('channel.create', {
      channel: result as unknown as Record<string, unknown>,
+@@ -604,3 +660,35 @@ export function createGroupDmChannel(
+   if (!channel) throw new Error('Failed to create group DM channel')
+   return channel
+ }
++
++/**
++ * SPIKE PATCH (boiler-snake e2e): lists the DM/group-DM channels a user
++ * (the authenticated bot) participates in — the mock's
++ * `GET /users/@me/channels` counterpart. DM participation is tracked in
++ * `channel_recipients` (both parties are rows), so the bot's own recipient
++ * row scopes the list without any extra ownership column. Real Discord
++ * always answers this for bots; DM-sending features cannot be verified
++ * against the mock without it (boiler-snake issue #328, gap 7).
++ * @param db - Database
++ * @param userId - The bot's own user ID
++ * @returns DM (type 1) and group-DM (type 3) channel objects
++ */
++export function getDmChannelsForRecipient(
++  db: Database,
++  userId: string
++): ChannelObject[] {
++  const rows = db
++    .prepare(
++      `SELECT c.id FROM channels c
++       WHERE c.type IN (1, 3)
++         AND EXISTS (
++           SELECT 1 FROM channel_recipients cr
++           WHERE cr.channel_id = c.id AND cr.user_id = ?
++         )
++       ORDER BY c.id`
++    )
++    .all(userId) as { id: string }[]
++  return rows
++    .map((row) => getChannel(db, row.id))
++    .filter((channel): channel is ChannelObject => channel !== null)
++}
 diff --git a/src/services/guild-members.ts b/src/services/guild-members.ts
 index b16fa10..15553c0 100644
 --- a/src/services/guild-members.ts
@@ -2297,10 +2481,10 @@ index ba966e1..8300e46 100644
    if (payload.embeds !== undefined) {
      db.prepare('DELETE FROM embeds WHERE message_id = ?').run(messageId)
 diff --git a/src/services/test-control.test.ts b/src/services/test-control.test.ts
-index 43ed722..d4c0c90 100644
+index 43ed722..8b281e7 100644
 --- a/src/services/test-control.test.ts
 +++ b/src/services/test-control.test.ts
-@@ -1,12 +1,14 @@
+@@ -1,12 +1,15 @@
  import { describe, it, expect, beforeEach } from 'vitest'
  import { initializeDatabase } from '../db'
  import type { Database } from '../db'
@@ -2312,10 +2496,11 @@ index 43ed722..d4c0c90 100644
  } from './test-control'
  import { createCommand } from './application-commands'
 +import { createMessage } from './messages'
++import { getOrCreateDmChannel } from './channels'
  
  describe('createTestInteraction', () => {
    let db: Database
-@@ -72,6 +74,158 @@ describe('createTestInteraction', () => {
+@@ -72,6 +75,158 @@ describe('createTestInteraction', () => {
    })
  })
  
@@ -2474,8 +2659,51 @@ index 43ed722..d4c0c90 100644
  describe('deleteTestSetup / resetTestData — application command & interaction cleanup', () => {
    let db: Database
    const token = 'Bot cleanuptoken'
+@@ -104,6 +259,42 @@ describe('deleteTestSetup / resetTestData — application command & interaction
+     expect(interactions).toHaveLength(0)
+   })
+ 
++  // SPIKE PATCH (boiler-snake e2e): DM channels have no guild to cascade
++  // from — setup deletion must explicit-remove them (boiler-snake #328).
++  it('deleteTestSetup removes the bot DM channels and their messages', () => {
++    db.prepare(
++      "INSERT INTO users (id, username, discriminator, bot) VALUES ('555555555555555555', 'DmTarget', '0', 0)"
++    ).run()
++    const dm = getOrCreateDmChannel(db, applicationId, '555555555555555555')
++    createMessage(
++      db,
++      {
++        messageId: generateSnowflake(),
++        channelId: dm.id,
++        authorId: applicationId,
++        authorToken: token,
++        content: 'dm history',
++      },
++      ''
++    )
++    expect(
++      db
++        .prepare('SELECT id FROM channels WHERE id = ?')
++        .get(dm.id)
++    ).toBeTruthy()
++
++    deleteTestSetup(db, token)
++
++    expect(
++      db.prepare('SELECT id FROM channels WHERE id = ?').get(dm.id)
++    ).toBeUndefined()
++    expect(
++      db
++        .prepare('SELECT id FROM messages WHERE channel_id = ?')
++        .all(dm.id)
++    ).toHaveLength(0)
++  })
++
+   it('resetTestData removes interactions but keeps application_commands', () => {
+     resetTestData(db, token)
+     const commands = db
 diff --git a/src/services/test-control.ts b/src/services/test-control.ts
-index 000b187..02ad077 100644
+index 000b187..811443a 100644
 --- a/src/services/test-control.ts
 +++ b/src/services/test-control.ts
 @@ -10,9 +10,12 @@ import { generateSnowflake } from '../snowflake'
@@ -2491,7 +2719,27 @@ index 000b187..02ad077 100644
    getGuildIdForChannel,
    type MessageObject,
  } from './messages'
-@@ -348,8 +351,55 @@ export function createTestUser(
+@@ -216,6 +219,19 @@ export function deleteTestSetup(db: Database, token: string): boolean {
+   // application_commands and every interactions row have no FK to bots
+   // (there is no applications table), so they are cleaned up explicitly.
+   db.prepare('DELETE FROM bots WHERE token = ?').run(token)
++  // SPIKE PATCH (boiler-snake e2e): DM/group-DM channels carry no guild,
++  // so guild cascade deletion never reaches them — remove every DM the
++  // bot participates in (messages/embeds/attachments cascade from the
++  // channel) so re-provisioning starts with zero DM history and DM
++  // assertions stay deterministic (boiler-snake #328 gap 7).
++  db.prepare(
++    `DELETE FROM channels
++     WHERE type IN (1, 3)
++       AND id IN (
++         SELECT cr.channel_id FROM channel_recipients cr
++         WHERE cr.user_id = ?
++       )`
++  ).run(bot.user_id)
+   db.prepare(
+     'DELETE FROM application_commands WHERE application_id = ? AND guild_id IS NULL'
+   ).run(bot.user_id)
+@@ -348,8 +364,55 @@ export function createTestUser(
  
  /** Request payload for injecting a message authored by a pre-registered user */
  export interface InjectTestMessageRequest {
@@ -2548,7 +2796,7 @@ index 000b187..02ad077 100644
  }
  
  /**
-@@ -397,8 +447,18 @@ export function injectTestMessage(
+@@ -397,8 +460,18 @@ export function injectTestMessage(
        // Neither a real bot token nor the webhook sentinel value, so this
        // message resolves to a plain, non-bot, non-webhook author.
        authorToken: '',
@@ -2569,7 +2817,7 @@ index 000b187..02ad077 100644
      },
      baseUrl
    )
-@@ -408,21 +468,221 @@ export function injectTestMessage(
+@@ -408,21 +481,221 @@ export function injectTestMessage(
  export interface TestInteractionRequest {
    application_id: string
    type?: number
@@ -2793,7 +3041,7 @@ index 000b187..02ad077 100644
  }
  
  /**
-@@ -430,18 +690,111 @@ interface CommandIdRow {
+@@ -430,18 +703,111 @@ interface CommandIdRow {
   * Discord client. Prefers a guild-scoped command match (when `guild_id` is
   * given) and falls back to a global command of the same name; a request
   * with no `guild_id` only ever matches a global command.
@@ -2907,7 +3155,7 @@ index 000b187..02ad077 100644
          )
          .get(request.application_id, request.guild_id, request.command_name) as
          CommandIdRow | undefined)
-@@ -451,7 +804,7 @@ export function createTestInteraction(
+@@ -451,7 +817,7 @@ export function createTestInteraction(
      ? undefined
      : (db
          .prepare(
@@ -2916,7 +3164,7 @@ index 000b187..02ad077 100644
          )
          .get(request.application_id, request.command_name) as
          CommandIdRow | undefined)
-@@ -459,12 +812,49 @@ export function createTestInteraction(
+@@ -459,12 +825,49 @@ export function createTestInteraction(
    const command = guildCommand ?? globalCommand
    if (!command) return { ok: false, reason: 'unknown_command' }
  
@@ -2972,7 +3220,7 @@ index 000b187..02ad077 100644
  
    const interaction = createInteraction(db, {
      interactionId,
-@@ -474,8 +864,9 @@ export function createTestInteraction(
+@@ -474,8 +877,9 @@ export function createTestInteraction(
      guildId: request.guild_id,
      channelId: request.channel_id,
      commandId: command.id,

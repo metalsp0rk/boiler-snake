@@ -15,10 +15,10 @@ const { poll } = require("./helpers/mockenv");
  * + modal submits run end-to-end here on gateway payloads.
  *
  * Honest scope notes:
- *  - "Zero DMs to the reported user" is proven at the tier-4 level by the
- *    ticket MEMBERSHIP + mention surface (the subject is never added to the
- *    ticket channel and never appears in the card's allowed mentions);
- *    DM TRANSPORT itself remains mock gap 7 (#328) until it lands.
+ *  - "Zero DMs to the reported user" is proven at tier-4 by the STRONGEST
+ *    available form since #328 gap 7: the DM channel row IS the evidence,
+ *    so GET /users/@me/channels simply never lists one for the subject
+ *    (plus the card's inert code mention and the ticket-membership belt).
  *  - Evidence FILE re-upload (attachment bytes) is pinned offline by the
  *    integration tier (#754); content snapshots run live here.
  * Namespace 25.
@@ -377,13 +377,21 @@ describe("e2e: context-menu reports (Report Post / Report User / Open-ticket-for
     );
     assert.equal(String(fields["Reported by"]), `<@${env.ids.human}>`);
 
-    // Zero-contact posture (tier-4 honest scope, see suite header): the
-    // reported user is NOT a member of the ticket channel.
+    // Zero-contact posture, strongest tier-4 form (#328 gap 7): the user is
+    // NOT a member of the ticket channel…
     const ticket = env.dbmod.getTicketByChannel(env.communityId, channelId);
     const members = env.dbmod.listTicketMembers(ticket.id);
     assert.ok(
       !members.some((r) => String(r.user_id) === env.ids.target),
       "reported user never joins the ticket",
+    );
+    // …and no DM channel with them EXISTS at all — a report never dials
+    // the subject (channel row = DM evidence; the mock's createDM is
+    // idempotent, so "never sent" ⇔ "no channel").
+    assert.equal(
+      await env.mock.dmChannel(env.ids.target),
+      null,
+      "ZERO DMs to the reported user (no DM channel was ever opened)",
     );
   });
 

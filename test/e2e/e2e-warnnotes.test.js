@@ -38,8 +38,10 @@ const { poll, namespaceIds } = require("./helpers/mockenv");
  * **Add staff note**" hint.
  *
  * Mock invariants used: DM create+send works (wizard handshake), so the
- * staff-side dmNote pins "Member notified by DM." for real; DM *content*
- * stays unassertable (GET /users/@me/channels is 404 — documented todo).
+ * staff-side dmNote pins "Member notified by DM." for real — and since
+ * #328 gap 7 (DM enumeration) GET /users/@me/channels answers, so the
+ * member-side DM embed CONTENT is asserted too (issued/voided/expired
+ * copies + zero-DM belt for untouched members).
  * listExpiredActiveWarnings(now) is clock-injectable through
  * runWarnExpiryTick(supervisor, {now}) — no DB surgery needed.
  */
@@ -756,11 +758,86 @@ describe(
       assert.match(list, /· 3 total/);
     });
 
-    // Staff-side dmNote pins ("Member notified by DM." / "DM skipped
-    // (silent)." / disabled copy) are asserted above; the member-side embed
-    // render needs GET /users/@me/channels + message read in fauxcord.
-    it.todo(
-      "warn/void/expiry DM EMBED CONTENT stays unassertable (mock cannot list DM channels)",
-    );
+    // #328 gap 7 FLIPPED (was it.todo): GET /users/@me/channels + DM message
+    // reads exist in the mock now — the member-side render is assertable.
+    it("member-side DM embeds: issued (W-1, W-3, W-4), voided (W-1), expired (W-4) + zero DMs to strangers", async () => {
+      const dmChan = await env.mock.dmChannel(env.ids.target);
+      assert.ok(dmChan, "bot↔target DM channel exists (idempotent createDM)");
+      const msgs = (await env.mock.dmMessages(env.ids.target))
+        .slice()
+        .sort((a, b) => (BigInt(a.id) < BigInt(b.id) ? -1 : 1));
+      assert.deepEqual(
+        [...new Set(msgs.map((m) => String(m.author.id)))],
+        [String(env.ids.app)],
+        "every DM is bot-authored",
+      );
+      const fieldsOf = (e) =>
+        Object.fromEntries((e.fields ?? []).map((f) => [f.name, f.value]));
+      const dm = msgs.map((m) => m.embeds?.[0]).filter(Boolean);
+      // The ticket-wizard rows in this suite also DM the target (close
+      // notice) — pinned at the tail so the WARN sequence can't silently
+      // gain or lose a member DM (the silent W-2 arm sends NOTHING).
+      assert.deepEqual(
+        dm.map((e) => e.title),
+        [
+          "Warning issued in E2E Guild",
+          "Warning issued in E2E Guild",
+          "Warning voided in E2E Guild",
+          "Warning issued in E2E Guild",
+          "Warning expired in E2E Guild",
+          "Ticket #1 closed",
+        ],
+        "five warn DMs in arc order, then the ticket-close DM — nothing else",
+      );
+      const warns = dm.slice(0, 5);
+      for (const e of warns) {
+        assert.equal(
+          e.footer?.text,
+          "View your history anytime with /warn mine",
+          "shared footer",
+        );
+      }
+
+      const f1 = fieldsOf(warns[0]);
+      assert.equal(f1.Warning, "W-1");
+      assert.equal(f1["Issued by"], "E2EOperator");
+      assert.equal(f1["Active warnings"], "1");
+      assert.equal(f1.Reason, "spam in general");
+      assert.match(String(f1.When), /^<t:\d+:F>$/, "full-timestamp mention");
+      assert.match(String(f1.Expires), /^<t:\d+:F>$/, "30d expiry rides the DM");
+
+      const f3 = fieldsOf(warns[1]);
+      assert.equal(f3.Warning, "W-3");
+      assert.equal(f3.Reason, "harassment (paired with note)");
+      assert.equal(f3["Active warnings"], "3");
+
+      const fv = fieldsOf(warns[2]);
+      assert.equal(fv.Warning, "W-1");
+      assert.equal(fv["Voided by"], "E2EOperator");
+      assert.equal(fv["Active warnings remaining"], "2");
+      assert.equal(fv["Void reason"], "resolved with member");
+
+      const f4 = fieldsOf(warns[3]);
+      assert.equal(f4.Warning, "W-4");
+      assert.equal(f4.Reason, "short fuse");
+
+      const fe = fieldsOf(warns[4]);
+      assert.equal(fe.Warning, "W-4");
+      assert.equal(fe["Active warnings remaining"], "2");
+      assert.equal(
+        fe.Note,
+        "This warning reached its expiry date and was automatically voided. " +
+          "It remains in your history as voided.",
+        "auto-void note copy verbatim",
+      );
+
+      // Zero-contact belt: a member nothing was issued to has NO DM channel
+      // at all — the strongest tier-4 form (channel row = DM evidence).
+      assert.equal(
+        await env.mock.dmChannel(env.ids.outsider),
+        null,
+        "no DM channel was ever opened with the outsider",
+      );
+    });
   },
 );
