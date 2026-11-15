@@ -370,6 +370,34 @@ class MockEnv {
   }
 
   /**
+   * Simulate a CONTEXT-MENU command invocation (ApplicationCommandType
+   * USER/MESSAGE): the mock resolves `command` to its registered row, and
+   * `targetId` becomes `data.target_id` with real-Discord
+   * `resolved.users/members/messages` built from stored rows — exactly what
+   * discord.js feeds `options.getUser('user')` / `options.getMessage`
+   * (`message`) for right-click → Apps flows (patch support, #757).
+   * @param {{command: string, targetId: string, userId?: string, channelId?: string}} req
+   */
+  async contextMenu({
+    command,
+    targetId,
+    userId = this.ids.human,
+    channelId = this.ids.general,
+  }) {
+    return j(`${this.base}/_test/interactions`, {
+      method: "POST",
+      body: JSON.stringify({
+        application_id: this.ids.app,
+        command_name: command,
+        target_id: targetId,
+        guild_id: this.ids.guild,
+        channel_id: channelId,
+        user_id: userId,
+      }),
+    });
+  }
+
+  /**
    * Stored interaction row incl. the bot's persisted callback payload:
    * `response_json` = {type: 9 modal display | type 8 autocomplete choices
    * | type 4 reply | ...} once the handler has responded.
