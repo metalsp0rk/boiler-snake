@@ -15,14 +15,15 @@ safe to run from CI and dev machines with no network access to `discord.com`.
 └────────────┘ ◀──────────────────────────── │ fauxcord-e2e.patch    │
       ▲        INTERACTION_CREATE /          └──────────────────────┘
       └────────── MESSAGE_CREATE dispatch    POST /_test/interactions
-                                             (slash + button clicks)
+                                             (slash, buttons, modals,
+                                             autocomplete, Apps menus)
 ```
 
 ## Running locally
 
 ```bash
 scripts/e2e/start-mock.sh        # clone pinned fauxcord + apply patch + start :3100
-npm run test:e2e                 # 24 suites, one namespace (bot/guild/ids) each
+npm run test:e2e                 # 25 suites, one namespace (bot/guild/ids) each
 scripts/e2e/stop-mock.sh         # stop the mock
 ```
 
@@ -103,6 +104,7 @@ starved-run rerun SOP above still applies to genuine failures.
 | `test/e2e/e2e-gork.test.js` | 22 | gork config/moderation offline: the FULL subcommand matrix with exact copies (`keyword/context/cooldown/rules/search/ste/enable/log/bans/memory/budget/summarize(-budget)/status`) incl. handler refusals vs silent settings-layer CLAMPS (`-500→blocked`, `99999→64000`), all-16-field `/gork status` default render (incl. the `Role trigger` and `Q&A Log` fallback rows), the 10-action `gork.*` admin_audit roster + deliberate ZERO-audit pins for memory/budget/log, bans idempotency (`INSERT OR IGNORE`), memory seeded round-trips (`gorkMemoryUpsert` → show/forget/clear-preview+confirm), budget channel/category rules + kind mismatches + list embed, the summarize refusal ladder (mode-gate copies verbatim → armed 10-min cooldown via the in-process seam → keyless **config-failure degrade** with real range-read + interaction-log row + singular `(`1` row` interpolation); **keyless keyword trigger pinned FULLY SILENT** (matrix row 1: silence IS the design) and the FAKE-KEY network degradation (`AI_API_KEY=ns22-fake` + discard-port `AI_BASE_URL` seam → locked lunch reply, banned users get it unexplained — differential proof the oracle discriminates); **BUG #368 FIXED pin (ee00a38)**: generic audit redaction now matches whole **word components** and **masks** instead of dropping → `gork.summarize_budget_set` records `{ summarize_input_tokens: 9000 }` (the count-sense plural survives) while genuine credential keys land as `"[redacted]"`; **the #705 live-verification block (recorded 2026-10-26)** drives the REAL router→gates→queue→`chatWithTools` loop against a SCRIPTED loopback mock LLM on the same call-time base-URL seam (fake key `lv705-fake`): never-set surfaces (status `50 (global)` + `/settings` `Rounds **50**`), a 4×`read_discord` chain surviving PAST the historical 3-round cap (5 wire rounds; shipped qa row pins `maxToolRounds 50` / `timeoutMs 2090000`; the fed-back tool messages carry the REAL channel window — the log's event capture truncates long outputs, the wire does not), `/gork toolrounds 20` → `~14.8 min` deadline disclosure + DB/audit round-trip + the 5–300 handler gate, `GORK_LLM_TIMEOUT_MS=1500` killing a REACHABLE slow model mid-loop (canned reply + `timeout:`-caused failure row, `maxToolRounds` untouched), and a raw-SQL-poisoned column (`100000`) → `300` disclosed, capped `timeoutMs 2700000`, NULL restore returns `50 (global)`; **the #683 live-verification block (recorded 2026-10-26)** puts https-stub images on HUMAN injects (the new inject-attachments patch hunk) and asserts the vision WIRE: `[question, caption, image, caption, image]` with per-uploader roster labels (`@E2EOperator` first = asker, `@E2ETarget` = the context uploader) and byte-equal base64 payloads, a forced-download-failure arm — `(Image notes: image "b.png" from E2ETarget could not be included: …)` + `of 1` renumber + the answer survives — and a `GORK_VISION_MAX_IMAGES=0` plain-string parity arm with the `GORK_VISION_MODEL` override provably dormant; **the #175/#176 live block (recorded 2026-10-26)** injects a reply to a stored history message (full-shape `message_reference` via the new patch hunks) and a reply forwarding a well-formed `message_snapshots` body — both answer, proving repaired payloads construct cleanly — while a poisoned `reference_type: 7` tape row and a garbage-shaped snapshot array prove the repaired shapes hit the wire (`LV175-*` sentinels), and the #176 gate is pinned dead-reference-snowflake-silent vs live-reply-triggers |
 | `test/e2e/e2e-mockgaps.test.js` | 23 | patch proofs for the interaction gaps: note-**modal** display/submit/validation round-trip, **autocomplete** choices over seeded rows, **human reaction** injection → reaction XP + cooldown + remove, **deferred editReply** + persisted panel components (ticket panel), and **ticket-channel overwrite fidelity** (creation-time set + PATCH replace via `/ticket adduser`) |
 | `test/e2e/e2e-multipart.test.js` | 24 | multipart route proofs (#312): `channel.send({files})` byte round-trip via UPLOAD_PATH, webhook execute multipart **persisted on both wait branches** (wait=true answers the hydrated message), two-file `files[N]` ↔ `attachments[]` stub positional pairing, `/attachments/…` byte-exact serving |
+| `test/e2e/e2e-reports.test.js` | 25 | Apps-menu report flows through the context-menu simulation (#745 via #757): picker-tier registration of all three menus (ManageGuild), non-staff invoke denied BEFORE any target read, Report Post modal (32-hex one-shot `customId`, `rep_context`+`rep_delete` order, no phantom message), `no` submit (staff-self ticket + reason + `is_sensitive 0`, `ticket_reports` row, evidence embed `Original kept:` line, original survives, audit details), `yes` submit (EVIDENCE-BEFORE-DELETE: deleted-disposition embed, original REST-404s, `message_deleted 1`), duplicate nudge naming the earlier ticket (decision 12), unrecognized delete answer echoed verbatim + kept + `snapshot_note`, consumed-token replay refused with zero side effects (decision 3), Report User (context-only modal, card code-mention/live-mention split, subject NEVER joins the ticket — DM transport itself stays gap 7 #328), self-report refusal, mock target-validation 400 proof, and the #794 "Open ticket for user" twin (subject owns + joins the proxy ticket) |
 
 Each file gets its own **namespace** (`test/e2e/helpers/mockenv.js` →
 `namespaceIds(ns)`): unique bot token, app id, guild, channels, and users, so
@@ -155,6 +157,16 @@ patch series without which the bot's handlers crash or silently no-op:
   reaction from an arbitrary user and dispatches `MESSAGE_REACTION_ADD`/
   `_REMOVE`, so the reaction pipeline (XP, reaction roles, honeypot) runs
   end-to-end (the REST `@me` routes only ever react as the bot) (#328, gap 3).
+- **Context-menu command simulation** — `POST /_test/interactions` resolves
+  `command_name` against the command's REGISTERED type, so USER (type 2) and
+  MESSAGE (type 3) Apps-menu commands execute through `target_id`: the mock
+  builds real Discord's `data.target_id` + `data.resolved.users/members/
+  messages` (message targets carry the full stored message + author), which
+  discord.js `ContextMenuCommandInteraction` resolves into
+  `options.getUser('user')` / `options.getMessage('message')`. Target misuse
+  answers 400 Invalid Form Body (missing / unknown / not-applicable
+  `target_id` — a bogus target never reads as "command not registered");
+  unknown commands keep the 404 (#757).
 - **Deferred replies behave like real Discord** — a type-5 defer creates the
   placeholder message (id = interaction id, flags honored), and the webhook
   message routes resolve the URL-encoded `@original` literal (`%40original`,
