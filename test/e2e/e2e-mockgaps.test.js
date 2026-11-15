@@ -9,8 +9,9 @@ const { poll } = require("./helpers/mockenv");
  * Tier-4 proof suites for the fauxcord patch series part 2 (issue #328):
  * every simulated interaction kind proven here must round-trip through the
  * REAL bot (gateway → router → handler → callback → DB). One group per
- * mock gap. Voice states (gap 6) and DMs (gap 7) remain open per #328 —
- * the dependent feature rows stay `it.todo` in their coverage suites.
+ * mock gap. Voice states (gap 6) remain open per #328; DMs (gap 7) shipped
+ * with the gap-7 patch (DM enumeration + reads — the warnnotes/reactions
+ * DM rows flipped from `it.todo` to live arms).
  * Namespace 23.
  */
 describe("e2e: mock-gap proofs (fauxcord patch series part 2)", { concurrency: 1 }, () => {

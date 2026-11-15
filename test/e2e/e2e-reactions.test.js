@@ -35,9 +35,11 @@ const { j, poll, namespaceIds } = require("./helpers/mockenv");
  * #356 FIXED and pinned here: live claim/revoke POST the audit
  * embed (raw Client passed where OutboundClient required; silent catch).
  *
- * Documented dark arms (todos at the bottom): member-side DM copies (mock
- * cannot list DM channels). The honeypot warning-notice PNG was the last
- * multipart-gap casualty (#312) — delivered, now a live arm.
+ * Member-side DM copies were the last documented dark arm — #328 gap 7
+ * delivered DM enumeration, and the level-gate copy is now a live arm (the
+ * honeypot ban leg is DM-free BY DECISION, #772). The honeypot
+ * warning-notice PNG was the last multipart-gap casualty (#312) — delivered,
+ * now a live arm.
  */
 describe(
   "e2e: reaction pipeline — /reactionrole pending-emoji flow, claims via injected reactions, honeypot enforcement",
@@ -652,9 +654,70 @@ describe(
       assert.equal(await msgExists(trap, String(plain.id)), true, "messages survive after disarm");
     });
 
-    // Members receive BAN/level-gate DM copies — unassertable while the
-    // mock cannot enumerate DM channels (GET /users/@me/channels 404).
-    it.todo("honeypot BAN DM + level-gate DM embed content (mock cannot list DM channels)");
+    // #328 gap 7 FLIPPED (was it.todo): DM enumeration exists — member-side
+    // copies are assertable. The honeypot ban leg is UNTRACKED (#772: no
+    // ban_records), but it still DMs BEFORE banning (contact-before-ban law)
+    // — with DM reads live, that copy pin + the level-gate copy now run.
+    it("member-side DM copies: level-gate claim refusal + honeypot pre-ban DM", async () => {
+      const dm = (await env.mock.dmMessages(env.ids.outsider))
+        .slice()
+        .sort((a, b) => (BigInt(a.id) < BigInt(b.id) ? -1 : 1));
+      assert.deepEqual(
+        [...new Set(dm.map((m) => String(m.author.id)))],
+        [String(env.ids.app)],
+        "both DMs are bot-authored",
+      );
+      assert.equal(
+        dm.length,
+        2,
+        `exactly the level-gate + pre-ban copies (got: ${JSON.stringify(
+          dm.map((m) => String(m.content).slice(0, 60)),
+        )})`,
+      );
+
+      // 1. Level-gate refusal (reaction-role claim, ⭐ min-level 5).
+      const { levelFromXp } = require("../../src/core/xpMath");
+      const xp =
+        env.dbmod.db
+          .prepare(
+            "SELECT xp FROM users WHERE community_id = ? AND user_id = ?",
+          )
+          .get(env.communityId, env.ids.outsider)?.xp ?? 0;
+      const level = levelFromXp(
+        xp,
+        env.dbmod.getGuildSettings(env.communityId).level_xp_factor,
+      );
+      assert.ok(level < 5, `the outsider really is below the gate (level ${level})`);
+      assert.equal(
+        String(dm[0].content),
+        `You need **Level 5** to claim **E2E RR Star** in **E2E Guild**. ` +
+          `(You are currently Level ${level}.)`,
+      );
+
+      // 2. Honeypot pre-ban copy — verbatim, and ordered BEFORE the ban
+      //    landed (the DM rides the shared guild; the ban ends it).
+      assert.equal(
+        String(dm[1].content),
+        "You have been **banned** from **E2E Guild**.\n\n" +
+          "**Reason:** You posted in a restricted channel that is used to " +
+          "catch spam accounts and raids. If you believe this was a mistake, " +
+          "contact the server staff through another channel.",
+      );
+
+      // Namespace-wide zero-contact belt: the outsider is the ONLY member
+      // ever DM'd — the staff-role / exempt-role arms deleted WITHOUT a ban
+      // and therefore without any DM, and no other surface dials anyone.
+      const allDms = await env.mock.dmChannels();
+      assert.equal(
+        allDms.length,
+        1,
+        `exactly one DM channel exists in this namespace (got ${allDms.length})`,
+      );
+      assert.ok(
+        (allDms[0].recipients ?? []).some((r) => String(r.id) === String(env.ids.outsider)),
+        "and it is the bot↔outsider channel",
+      );
+    });
 
     // #312 DELIVERED: channel-send multipart persists uploads — the former
     // "warning-notice PNG blocked" todo became this arm. The exemptions arm

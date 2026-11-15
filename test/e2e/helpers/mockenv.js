@@ -500,6 +500,41 @@ class MockEnv {
     });
   }
 
+  /**
+   * The bot's DM/group-DM channels (patch #328 gap 7: GET
+   * /users/@me/channels — real Discord always answers this for bots).
+   * Each entry carries `recipients` with BOTH parties.
+   */
+  async dmChannels() {
+    return j(`${this.base}/api/users/@me/channels`, { headers: this.auth });
+  }
+
+  /**
+   * DM channel id between the bot and `userId`, or null. Null is the
+   * STRONG zero-DM assertion: the mock's POST /users/@me/channels is
+   * idempotent and the channel row IS the DM evidence — a feature that
+   * never DMs the user has no channel at all, not merely an empty one.
+   */
+  async dmChannel(userId) {
+    const list = await this.dmChannels();
+    const ch = list.find(
+      (c) =>
+        c.type === 1 &&
+        (c.recipients ?? []).some((r) => String(r.id) === String(userId)),
+    );
+    return ch ? ch.id : null;
+  }
+
+  /**
+   * Messages in the bot's DM channel with `userId` ([] when no DM exists)
+   * — full-fidelity REST reads (embeds intact), the tier-4 counterpart of
+   * "what did the member actually receive in DM".
+   */
+  async dmMessages(userId) {
+    const id = await this.dmChannel(userId);
+    return id ? this.messages(id) : [];
+  }
+
   /** DELETE /channels/:id — dispatches CHANNEL_DELETE (cache-eviction tests). */
   async deleteChannel(channelId) {
     return j(`${this.base}/api/channels/${channelId}`, {

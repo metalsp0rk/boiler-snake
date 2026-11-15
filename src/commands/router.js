@@ -71,7 +71,21 @@ function interactionLogContext(interaction) {
  */
 async function runCommandArm(interaction, ctx, invoke) {
   const { registry } = ctx;
-  if (!interaction.guild) return;
+  if (!interaction.guild) {
+    // Guild-less command invocation (DM picker / forged payload): no
+    // registered handler tolerates a guild-less context, so the drop is
+    // the security posture. Logged when the command is OURS (#328 gap-7
+    // review) — a user reporting "the command does nothing" in a DM is
+    // otherwise invisible in logs; unknown names stay silent (a stranger's
+    // invocation is not our signal, and we never reply guild-less).
+    if (registry.getHandler(interaction.commandName)) {
+      console.warn(
+        "[router] dropping guild-less command invocation:",
+        interactionLogContext(interaction),
+      );
+    }
+    return;
+  }
 
   try {
     if (!commandsAllowed(interaction)) {
@@ -139,7 +153,21 @@ async function handleInteraction(interaction, ctx) {
   }
 
   if (interaction.isModalSubmit()) {
-    if (!interaction.guild) return;
+    if (!interaction.guild) {
+      // Guild-less modal submit: features with a sanctioned DM lane own
+      // their customIds there (banAppeals' `appeal:s:*` — its events.js
+      // listener, the declared pattern; the router stays guild-only). Warn
+      // only when the id IS registered (#328 gap-7 review): a guild control
+      // surfaced in a DM must not spin forever unlogged. Unknown ids stay
+      // a silent drop — replying would let any DM user probe the registry.
+      if (registry.getModalHandler(interaction.customId)) {
+        console.warn(
+          "[router] dropping guild-scoped modal outside a guild:",
+          interactionLogContext(interaction),
+        );
+      }
+      return;
+    }
     try {
       const fn = registry.getModalHandler(interaction.customId);
       if (!fn) {
@@ -171,7 +199,19 @@ async function handleInteraction(interaction, ctx) {
   }
 
   if (interaction.isButton()) {
-    if (!interaction.guild) return;
+    if (!interaction.guild) {
+      // Guild-less button press: see the modal arm — same handler-first
+      // visibility rule. banAppeals' `appeal:<recordId>` press lives in the
+      // feature's own DM lane and is NOT registry-registered, so it stays
+      // silent here by design.
+      if (registry.getButtonHandler(interaction.customId)) {
+        console.warn(
+          "[router] dropping guild-scoped button outside a guild:",
+          interactionLogContext(interaction),
+        );
+      }
+      return;
+    }
     try {
       const fn = registry.getButtonHandler(interaction.customId);
       if (!fn) {
