@@ -45,10 +45,10 @@ index fda0398..1ff7d3f 100644
      app.route(prefix, createStageInstanceRoutes(db))
      app.route(prefix, createCatalogRoutes(db))
 diff --git a/src/db.ts b/src/db.ts
-index b4549a7..44eac1e 100644
+index b4549a7..cceecb4 100644
 --- a/src/db.ts
 +++ b/src/db.ts
-@@ -43,6 +43,48 @@ const CHANNELS_FEATURE_COLUMNS: Record<string, string> = {
+@@ -43,6 +43,59 @@ const CHANNELS_FEATURE_COLUMNS: Record<string, string> = {
    typing_at: 'TEXT',
  }
  
@@ -74,12 +74,23 @@ index b4549a7..44eac1e 100644
 +  url: 'TEXT',
 +}
 +
-+/** Adds the E2E-fidelity columns to messages/interactions/attachments when missing. */
++/**
++ * #328 gap 6 (boiler-snake spike): guild-level AFK channel pointer. The
++ * voice-XP ticker treats `guild.afkChannelId` as the AFK-exclusion target,
++ * so tier-4 tests need a provisionable `afk_channel_id` (real Discord
++ * returns it on every guild object).
++ */
++const GUILDS_E2E_COLUMNS: Record<string, string> = {
++  afk_channel_id: 'TEXT',
++}
++
++/** Adds the E2E-fidelity columns to messages/interactions/attachments/guilds when missing. */
 +function migrateE2eFidelityColumns(db: Database): void {
 +  for (const [table, cols] of [
 +    ['messages', MESSAGES_E2E_COLUMNS],
 +    ['interactions', INTERACTIONS_E2E_COLUMNS],
 +    ['attachments', ATTACHMENTS_E2E_COLUMNS],
++    ['guilds', GUILDS_E2E_COLUMNS],
 +  ] as const) {
 +    const existing = new Set(
 +      (db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[]).map(
@@ -97,7 +108,7 @@ index b4549a7..44eac1e 100644
  /**
   * Adds channel feature columns (currently just voice_status) to an
   * existing `channels` table when missing. Kept separate from
-@@ -802,6 +844,7 @@ export function initializeDatabase(dbPath: string): Database {
+@@ -802,6 +855,7 @@ export function initializeDatabase(dbPath: string): Database {
  
    migrateChannelsThreadColumns(db)
    migrateChannelsFeatureColumns(db)
@@ -106,7 +117,7 @@ index b4549a7..44eac1e 100644
    return db
  }
 diff --git a/src/e2e-control-api.test.ts b/src/e2e-control-api.test.ts
-index b122764..42f37e2 100644
+index b122764..a10c068 100644
 --- a/src/e2e-control-api.test.ts
 +++ b/src/e2e-control-api.test.ts
 @@ -1,6 +1,7 @@
@@ -117,7 +128,7 @@ index b122764..42f37e2 100644
  import { createRealServer } from './test-helpers'
  
  const token = 'Bot control-api-token'
-@@ -294,4 +295,428 @@ describe('Fauxcord control APIs over a real server', () => {
+@@ -294,4 +295,727 @@ describe('Fauxcord control APIs over a real server', () => {
        d: { data: { name: 'ping' } },
      })
    })
@@ -399,7 +410,7 @@ index b122764..42f37e2 100644
 +    const mangledMsg = (await mangled.json()) as { message_snapshots?: unknown }
 +    expect(mangledMsg.message_snapshots).toBe('yes')
 +  })
-+})
+ })
 +
 +// SPIKE PATCH (boiler-snake e2e): USER/MESSAGE context-menu invocation over
 +// POST /_test/interactions — registration, target resolution, and granular
@@ -545,7 +556,328 @@ index b122764..42f37e2 100644
 +      code: 0,
 +    })
 +  })
- })
++})
++
++  // SPIKE PATCH (boiler-snake e2e, #328 gap 6): POST /_test/voice-states —
++  // the tier-4 path that puts HUMANS in voice (no ws connection of their
++  // own) and makes a connected BOT see VOICE_STATE_UPDATE. Rows mirror
++  // exactly what the boiler-snake MockEnv voice helpers do.
++  describe('POST /_test/voice-states', () => {
++    let closeVoice: (() => Promise<void>) | undefined
++    afterEach(async () => {
++      await closeVoice?.()
++      closeVoice = undefined
++    })
++
++    /** Setup with a text channel + two voice channels; returns ids. */
++    async function voiceSetup(server: { baseUrl: string }) {
++      const vcA = '100000000000000021'
++      const vcB = '100000000000000022'
++      const setup = await fetch(`${server.baseUrl}/_test/setup`, {
++        method: 'POST',
++        headers: { 'Content-Type': 'application/json' },
++        body: JSON.stringify({
++          token,
++          user: { id: applicationId, username: 'ControlBot' },
++          guilds: [
++            {
++              id: guildId,
++              name: 'Voice Control Guild',
++              channels: [
++                { id: channelId, name: 'text', type: 0 },
++                { id: vcA, name: 'vc-a', type: 2 },
++                { id: vcB, name: 'vc-b', type: 2 },
++              ],
++            },
++          ],
++        }),
++      })
++      expect(setup.status).toBe(201)
++      // Type passthrough: a type-2 setup channel stays VOICE.
++      await expect(setup.json()).resolves.toMatchObject({
++        guilds: [
++          {
++            channels: [
++              { id: channelId, type: 0 },
++              { id: vcA, type: 2 },
++              { id: vcB, type: 2 },
++            ],
++          },
++        ],
++      })
++
++      const userResponse = await fetch(`${server.baseUrl}/_test/users`, {
++        method: 'POST',
++        headers: { 'Content-Type': 'application/json' },
++        body: JSON.stringify({ username: 'Speaker' }),
++      })
++      expect(userResponse.status).toBe(201)
++      const user = (await userResponse.json()) as { id: string }
++
++      // Membership via an injected message (same as MockEnv#member).
++      const injected = await fetch(
++        `${server.baseUrl}/_test/channels/${channelId}/messages`,
++        {
++          method: 'POST',
++          headers: { 'Content-Type': 'application/json' },
++          body: JSON.stringify({
++            content: 'membership upsert',
++            author: { id: user.id },
++          }),
++        }
++      )
++      expect(injected.status).toBe(201)
++      return { user, vcA, vcB }
++    }
++
++    it('joins, flags, moves and leaves through the production store', async () => {
++      const server = await createRealServer()
++      closeVoice = server.close
++      const { user, vcA, vcB } = await voiceSetup(server)
++
++      const post = (body: Record<string, unknown>) =>
++        fetch(`${server.baseUrl}/_test/voice-states`, {
++          method: 'POST',
++          headers: { 'Content-Type': 'application/json' },
++          body: JSON.stringify(body),
++        })
++
++      const join = await post({
++        guild_id: guildId,
++        user_id: user.id,
++        channel_id: vcA,
++      })
++      expect(join.status).toBe(201)
++      await expect(join.json()).resolves.toMatchObject({
++        guild_id: guildId,
++        channel_id: vcA,
++        user_id: user.id,
++        mute: false,
++        self_mute: false,
++      })
++
++      // The state lives in the PRODUCTION store: REST GET sees it.
++      const rest = await fetch(
++        `${server.baseUrl}/guilds/${guildId}/voice-states/${user.id}`,
++        { headers: { Authorization: token } }
++      )
++      expect(rest.status).toBe(200)
++      await expect(rest.json()).resolves.toMatchObject({
++        channel_id: vcA,
++        user_id: user.id,
++      })
++
++      const moved = await post({
++        guild_id: guildId,
++        user_id: user.id,
++        channel_id: vcB,
++        self_mute: true,
++      })
++      expect(moved.status).toBe(201)
++      await expect(moved.json()).resolves.toMatchObject({
++        channel_id: vcB,
++        self_mute: true,
++      })
++
++      const left = await post({
++        guild_id: guildId,
++        user_id: user.id,
++        channel_id: null,
++      })
++      expect(left.status).toBe(201)
++      await expect(left.json()).resolves.toMatchObject({
++        channel_id: null,
++        self_mute: true,
++      })
++    })
++
++    it('dispatches VOICE_STATE_UPDATE to the connected bot (the MockEnv path)', async () => {
++      const server = await createRealServer()
++      closeVoice = server.close
++      const { user, vcA } = await voiceSetup(server)
++
++      const ws = new WebSocket(server.baseUrl.replace('http:', 'ws:'))
++      await new Promise((resolve) => ws.once('message', resolve)) // HELLO
++      ws.send(
++        JSON.stringify({
++          op: GatewayOp.Identify,
++          d: {
++            token,
++            // Guilds (1 << 0) | GuildVoiceStates (1 << 7) — what the
++            // boiler-snake bot identifies with once voice XP is configured.
++            intents: (1 << 0) | (1 << 7),
++          },
++        })
++      )
++      const frames: Record<string, unknown>[] = []
++      ws.on('message', (raw: Buffer) =>
++        frames.push(JSON.parse(raw.toString()))
++      )
++      const deadline = Date.now() + 2000
++      while (
++        Date.now() < deadline &&
++        !frames.some((f) => f.t === 'READY')
++      ) {
++        await new Promise((r) => setTimeout(r, 20))
++      }
++
++      await fetch(`${server.baseUrl}/_test/voice-states`, {
++        method: 'POST',
++        headers: { 'Content-Type': 'application/json' },
++        body: JSON.stringify({
++          guild_id: guildId,
++          user_id: user.id,
++          channel_id: vcA,
++        }),
++      })
++
++      const vsDeadline = Date.now() + 2000
++      let hit: Record<string, unknown> | undefined
++      while (Date.now() < vsDeadline && !hit) {
++        hit = frames.find(
++          (f) => f.op === GatewayOp.Dispatch && f.t === 'VOICE_STATE_UPDATE'
++        )
++        if (!hit) await new Promise((r) => setTimeout(r, 20))
++      }
++      ws.close()
++
++      expect(hit).toBeTruthy()
++      expect(hit!.d).toMatchObject({
++        guild_id: guildId,
++        channel_id: vcA,
++        user_id: user.id,
++      })
++      // Member embedded — what discord.js needs for voiceState.member.
++      expect((hit!.d as Record<string, unknown>).member).toBeTruthy()
++    })
++
++    it('provisions afk_channel_id on the guild (voice XP AFK exclusion)', async () => {
++      const server = await createRealServer()
++      closeVoice = server.close
++      const afkVc = '100000000000000023'
++      const setup = await fetch(`${server.baseUrl}/_test/setup`, {
++        method: 'POST',
++        headers: { 'Content-Type': 'application/json' },
++        body: JSON.stringify({
++          token,
++          user: { id: applicationId, username: 'ControlBot' },
++          guilds: [
++            {
++              id: guildId,
++              name: 'Afk Guild',
++              afk_channel_id: afkVc,
++              channels: [
++                { id: channelId, name: 'text', type: 0 },
++                { id: afkVc, name: 'afk', type: 2 },
++              ],
++            },
++          ],
++        }),
++      })
++      expect(setup.status).toBe(201)
++
++      const guild = await fetch(
++        `${server.baseUrl}/guilds/${guildId}`,
++        { headers: { Authorization: token } }
++      )
++      expect(guild.status).toBe(200)
++      await expect(guild.json()).resolves.toMatchObject({
++        id: guildId,
++        afk_channel_id: afkVc,
++      })
++
++      // A reconnecting bot's GUILD_CREATE must carry it too (that is what
++      // hydrates guild.afkChannelId — the ticker's AFK gate).
++      const ws = new WebSocket(server.baseUrl.replace('http:', 'ws:'))
++      await new Promise((resolve) => ws.once('message', resolve)) // HELLO
++      ws.send(
++        JSON.stringify({
++          op: GatewayOp.Identify,
++          d: { token, intents: 1 << 0 }, // Guilds — replays GUILD_CREATE
++        })
++      )
++      const frames: Record<string, unknown>[] = []
++      ws.on('message', (raw: Buffer) =>
++        frames.push(JSON.parse(raw.toString()))
++      )
++      const deadline = Date.now() + 2000
++      let gc: Record<string, unknown> | undefined
++      while (Date.now() < deadline && !gc) {
++        gc = frames.find(
++          (f) => f.op === GatewayOp.Dispatch && f.t === 'GUILD_CREATE'
++        )
++        if (!gc) await new Promise((r) => setTimeout(r, 20))
++      }
++      ws.close()
++      expect(gc).toBeTruthy()
++      expect((gc!.d as Record<string, unknown>).afk_channel_id).toBe(afkVc)
++    })
++
++    it('refuses unknown guilds, non-members, and non-voice channels (400)', async () => {
++      const server = await createRealServer()
++      closeVoice = server.close
++      const { user, vcA } = await voiceSetup(server)
++
++      const post = (body: Record<string, unknown>) =>
++        fetch(`${server.baseUrl}/_test/voice-states`, {
++          method: 'POST',
++          headers: { 'Content-Type': 'application/json' },
++          body: JSON.stringify(body),
++        })
++
++      const badGuild = await post({
++        guild_id: '100000000000009999',
++        user_id: user.id,
++        channel_id: vcA,
++      })
++      expect(badGuild.status).toBe(400)
++      expect(await badGuild.json()).toMatchObject({ code: 50035 })
++
++      const nonMember = await post({
++        guild_id: guildId,
++        user_id: '100000000000009998',
++        channel_id: vcA,
++      })
++      expect(nonMember.status).toBe(400)
++
++      const textChannel = await post({
++        guild_id: guildId,
++        user_id: user.id,
++        channel_id: channelId,
++      })
++      expect(textChannel.status).toBe(400)
++      expect(await textChannel.json()).toMatchObject({ code: 50035 })
++
++      // The refusals changed nothing: the real member has no voice state.
++      const rest = await fetch(
++        `${server.baseUrl}/guilds/${guildId}/voice-states/${user.id}`,
++        { headers: { Authorization: token } }
++      )
++      expect(rest.status).toBe(404)
++    })
++  })
+diff --git a/src/gateway/bus.ts b/src/gateway/bus.ts
+index 10c64f2..e783737 100644
+--- a/src/gateway/bus.ts
++++ b/src/gateway/bus.ts
+@@ -53,6 +53,17 @@ export interface GatewayBusEvents {
+     applicationId: string
+     interaction: Record<string, unknown>
+   }
++  /**
++   * SPIKE PATCH (boiler-snake e2e, #328 gap 6): a voice state was created,
++   * moved or left. `state` is the full VoiceState object in the real
++   * Discord shape (guild_id/channel_id/user_id/session_id + boolean flags,
++   * `member` embedded when the user is a guild member — what real Discord
++   * sends on VOICE_STATE_UPDATE).
++   */
++  'voice.state.update': {
++    guildId: string
++    state: Record<string, unknown>
++  }
+ }
+ 
+ /**
 diff --git a/src/gateway/opcodes.ts b/src/gateway/opcodes.ts
 index 175d2c7..d14b1ee 100644
 --- a/src/gateway/opcodes.ts
@@ -666,6 +998,242 @@ index dd89b8b..0db0b5f 100644
          default: {
            // Unknown opcodes are ignored (real Discord also ignores unknown
            // opcodes from clients).
+diff --git a/src/gateway/subscribe.ts b/src/gateway/subscribe.ts
+index fd84c19..072475b 100644
+--- a/src/gateway/subscribe.ts
++++ b/src/gateway/subscribe.ts
+@@ -204,6 +204,20 @@ export function registerGatewaySubscriptions(
+     )
+   }
+ 
++  // SPIKE PATCH (boiler-snake e2e, #328 gap 6): voice-state transitions
++  // ride the GuildVoiceStates intent — the same gate real Discord applies
++  // to VOICE_STATE_UPDATE for guild voice channels.
++  const onVoiceStateUpdate: Parameters<
++    typeof gatewayBus.on<'voice.state.update'>
++  >[1] = (payload) => {
++    broadcastToAll(
++      manager,
++      'VOICE_STATE_UPDATE',
++      payload.state,
++      GatewayIntentBits.GuildVoiceStates
++    )
++  }
++
+   gatewayBus.on('message.create', onMessageCreate)
+   gatewayBus.on('message.update', onMessageUpdate)
+   gatewayBus.on('message.delete', onMessageDelete)
+@@ -220,6 +234,7 @@ export function registerGatewaySubscriptions(
+   gatewayBus.on('guild.role.update', onGuildRoleUpdate)
+   gatewayBus.on('guild.role.delete', onGuildRoleDelete)
+   gatewayBus.on('interaction.create', onInteractionCreate)
++  gatewayBus.on('voice.state.update', onVoiceStateUpdate)
+ 
+   return () => {
+     gatewayBus.off('message.create', onMessageCreate)
+@@ -238,5 +253,6 @@ export function registerGatewaySubscriptions(
+     gatewayBus.off('guild.role.update', onGuildRoleUpdate)
+     gatewayBus.off('guild.role.delete', onGuildRoleDelete)
+     gatewayBus.off('interaction.create', onInteractionCreate)
++    gatewayBus.off('voice.state.update', onVoiceStateUpdate)
+   }
+ }
+diff --git a/src/gateway/voice-dispatch.test.ts b/src/gateway/voice-dispatch.test.ts
+new file mode 100644
+index 0000000..a82bfa9
+--- /dev/null
++++ b/src/gateway/voice-dispatch.test.ts
+@@ -0,0 +1,190 @@
++import { describe, it, expect, afterEach } from 'vitest'
++import WebSocket from 'ws'
++import { GatewayIntentBits } from 'discord-api-types/v10'
++import {
++  createTestGatewayServer,
++  seedBot,
++  seedGuild,
++  seedVoiceChannel,
++} from '../test-helpers'
++import { GatewayOp } from './opcodes'
++
++// SPIKE PATCH (boiler-snake e2e, #328 gap 6): VOICE_STATE_UPDATE transport.
++// A PATCH voice-state REST call is only REAL once connected clients hear
++// it — these rows pin the dispatch, the GuildVoiceStates intent gate, and
++// GUILD_CREATE's voice_states seeding (the cache path a (re)connecting
++// bot relies on).
++describe('VOICE_STATE_UPDATE dispatch (integration)', () => {
++  let close: (() => Promise<void>) | undefined
++  afterEach(async () => {
++    await close?.()
++    close = undefined
++  })
++
++  /** Opens a ws, consumes HELLO, identifies, and records dispatch names. */
++  async function connect(
++    url: string,
++    intents: number
++  ): Promise<{
++    ws: WebSocket
++    frames: Record<string, unknown>[]
++    waitFor: (t: string, ms?: number) => Promise<Record<string, unknown>>
++  }> {
++    const ws = new WebSocket(url)
++    await new Promise((resolve) => ws.once('message', resolve)) // HELLO
++    const frames: Record<string, unknown>[] = []
++    ws.on('message', (raw: Buffer) => {
++      frames.push(JSON.parse(raw.toString()))
++    })
++    ws.send(
++      JSON.stringify({
++        op: GatewayOp.Identify,
++        d: { token: 'Bot gwtoken', intents },
++      })
++    )
++    const waitFor = async (t: string, ms = 2000) => {
++      const deadline = Date.now() + ms
++      for (;;) {
++        const hit = frames.find(
++          (f) => f.op === GatewayOp.Dispatch && f.t === t
++        )
++        if (hit) return hit
++        if (Date.now() > deadline)
++          throw new Error(
++            `no ${t} within ${ms}ms (seen: ${JSON.stringify(
++              frames.map((f) => `${f.op}:${f.t ?? ''}`)
++            )})`
++          )
++        await new Promise((r) => setTimeout(r, 20))
++      }
++    }
++    await waitFor('READY')
++    return { ws, frames, waitFor }
++  }
++
++  it('dispatches VOICE_STATE_UPDATE after a PATCH voice-state (GuildVoiceStates intent)', async () => {
++    const { db, url, close: c } = await createTestGatewayServer()
++    close = c
++    const bot = seedBot(db, 'Bot gwtoken')
++    const guild = seedGuild(db, bot, '410000000000000001')
++    const vc = seedVoiceChannel(db, guild)
++
++    const { ws, waitFor } = await connect(
++      url,
++      GatewayIntentBits.GuildVoiceStates | GatewayIntentBits.Guilds
++    )
++
++    const httpUrl = url.replace('ws://', 'http://')
++    const res = await fetch(
++      `${httpUrl}/api/v10/guilds/${guild}/voice-states/@me`,
++      {
++        method: 'PATCH',
++        headers: {
++          Authorization: 'Bot gwtoken',
++          'Content-Type': 'application/json',
++        },
++        body: JSON.stringify({ channel_id: vc }),
++      }
++    )
++    expect(res.status).toBe(204)
++
++    const dispatch = await waitFor('VOICE_STATE_UPDATE')
++    const d = dispatch.d as Record<string, unknown>
++    expect(d.guild_id).toBe(guild)
++    expect(d.channel_id).toBe(vc)
++    expect(d.session_id).toBeTruthy()
++    expect(typeof d.mute).toBe('boolean')
++    expect(typeof d.self_mute).toBe('boolean')
++
++    ws.close()
++  })
++
++  it('stays silent for sessions WITHOUT the GuildVoiceStates intent', async () => {
++    const { db, url, close: c } = await createTestGatewayServer()
++    close = c
++    const bot = seedBot(db, 'Bot gwtoken')
++    const guild = seedGuild(db, bot, '410000000000000002')
++    const vc = seedVoiceChannel(db, guild)
++    const text = (() => {
++      db.prepare(
++        'INSERT INTO channels (id, guild_id, type, name) VALUES (?, ?, 0, ?)'
++      ).run('600000000000000009', guild, 'text')
++      return '600000000000000009'
++    })()
++
++    // GuildMessages ONLY — a session real Discord would never send
++    // VOICE_STATE_UPDATE to.
++    const { ws, frames, waitFor } = await connect(
++      url,
++      GatewayIntentBits.GuildMessages | GatewayIntentBits.Guilds
++    )
++
++    const httpUrl = url.replace('ws://', 'http://')
++    await fetch(`${httpUrl}/api/v10/guilds/${guild}/voice-states/@me`, {
++      method: 'PATCH',
++      headers: {
++        Authorization: 'Bot gwtoken',
++        'Content-Type': 'application/json',
++      },
++      body: JSON.stringify({ channel_id: vc }),
++    })
++    // Liveness probe on the SAME session: MESSAGE_CREATE proves dispatches
++    // flow — if a VOICE_STATE_UPDATE slipped through, it would land first.
++    await fetch(`${httpUrl}/api/v10/channels/${text}/messages`, {
++      method: 'POST',
++      headers: {
++        Authorization: 'Bot gwtoken',
++        'Content-Type': 'application/json',
++      },
++      body: JSON.stringify({ content: 'gate probe' }),
++    })
++    await waitFor('MESSAGE_CREATE')
++
++    expect(
++      frames.filter(
++        (f) => f.op === GatewayOp.Dispatch && f.t === 'VOICE_STATE_UPDATE'
++      )
++    ).toHaveLength(0)
++
++    ws.close()
++  })
++
++  it('seeds voice_states in GUILD_CREATE from the store', async () => {
++    const { db, url, close: c } = await createTestGatewayServer()
++    close = c
++    const bot = seedBot(db, 'Bot gwtoken')
++    const guild = seedGuild(db, bot, '410000000000000003')
++    const vc = seedVoiceChannel(db, guild)
++
++    // Join BEFORE the second connection comes up.
++    const httpUrl = url.replace('ws://', 'http://')
++    const res = await fetch(
++      `${httpUrl}/api/v10/guilds/${guild}/voice-states/@me`,
++      {
++        method: 'PATCH',
++        headers: {
++          Authorization: 'Bot gwtoken',
++          'Content-Type': 'application/json',
++        },
++        body: JSON.stringify({ channel_id: vc }),
++      }
++    )
++    expect(res.status).toBe(204)
++
++    // Fresh connection: its GUILD_CREATE must carry the live voice state
++    // (real Discord behavior; how a reconnecting bot's cache starts right).
++    const { ws, waitFor } = await connect(
++      url,
++      GatewayIntentBits.Guilds | GatewayIntentBits.GuildVoiceStates
++    )
++    const guildCreate = await waitFor('GUILD_CREATE')
++    const d = guildCreate.d as Record<string, unknown>
++    const states = d.voice_states as Record<string, unknown>[]
++    expect(Array.isArray(states)).toBe(true)
++    expect(
++      states.some((s) => s.user_id && s.channel_id === vc)
++    ).toBe(true)
++
++    ws.close()
++  })
++})
 diff --git a/src/model-based-full-explorer.test.ts b/src/model-based-full-explorer.test.ts
 index 6d889fa..2d9782e 100644
 --- a/src/model-based-full-explorer.test.ts
@@ -702,10 +1270,18 @@ index 535851f..1cb0f7a 100644
        baseUrl
      )
 diff --git a/src/routes/guild-advanced.ts b/src/routes/guild-advanced.ts
-index ed8a2a5..8b00604 100644
+index ed8a2a5..8cd2038 100644
 --- a/src/routes/guild-advanced.ts
 +++ b/src/routes/guild-advanced.ts
-@@ -755,7 +755,7 @@ export function createGuildAdvancedRoutes(db: Database): Hono<AppEnv> {
+@@ -48,6 +48,7 @@ import {
+   listGuildStickers,
+   listGuildTemplates,
+   listScheduledEventUsers,
++  dispatchGuildVoiceState,
+   setGuildOnboarding,
+   setGuildVoiceState,
+   setGuildWelcomeScreen,
+@@ -755,7 +756,7 @@ export function createGuildAdvancedRoutes(db: Database): Hono<AppEnv> {
      if (access instanceof Response) return access
      return getGuildScheduledEvent(db, guildId, eventId)
        ? c.json(getScheduledEventUserCounts(db, eventId))
@@ -714,7 +1290,7 @@ index ed8a2a5..8b00604 100644
    })
    app.get('/guilds/:guildId/scheduled-events/:eventId/users', (c) => {
      const { guildId, eventId } = c.req.param()
-@@ -763,7 +763,7 @@ export function createGuildAdvancedRoutes(db: Database): Hono<AppEnv> {
+@@ -763,7 +764,7 @@ export function createGuildAdvancedRoutes(db: Database): Hono<AppEnv> {
      if (access instanceof Response) return access
      return getGuildScheduledEvent(db, guildId, eventId)
        ? c.json(listScheduledEventUsers(db, eventId))
@@ -723,7 +1299,7 @@ index ed8a2a5..8b00604 100644
    })
    app.get(
      '/guilds/:guildId/scheduled-events/:eventId/:exceptionId/users',
-@@ -773,7 +773,7 @@ export function createGuildAdvancedRoutes(db: Database): Hono<AppEnv> {
+@@ -773,7 +774,7 @@ export function createGuildAdvancedRoutes(db: Database): Hono<AppEnv> {
        if (access instanceof Response) return access
        return getScheduledEventException(db, eventId, exceptionId)
          ? c.json(listScheduledEventUsers(db, eventId, exceptionId))
@@ -732,7 +1308,7 @@ index ed8a2a5..8b00604 100644
      }
    )
    app.post(
-@@ -786,7 +786,7 @@ export function createGuildAdvancedRoutes(db: Database): Hono<AppEnv> {
+@@ -786,7 +787,7 @@ export function createGuildAdvancedRoutes(db: Database): Hono<AppEnv> {
          ? c.json(
              createScheduledEventException(db, eventId, await parseJsonBody(c))
            )
@@ -741,7 +1317,7 @@ index ed8a2a5..8b00604 100644
      }
    )
    app.patch(
-@@ -803,7 +803,7 @@ export function createGuildAdvancedRoutes(db: Database): Hono<AppEnv> {
+@@ -803,7 +804,7 @@ export function createGuildAdvancedRoutes(db: Database): Hono<AppEnv> {
        )
        return value
          ? c.json(value)
@@ -750,7 +1326,7 @@ index ed8a2a5..8b00604 100644
      }
    )
    app.delete(
-@@ -814,7 +814,7 @@ export function createGuildAdvancedRoutes(db: Database): Hono<AppEnv> {
+@@ -814,7 +815,7 @@ export function createGuildAdvancedRoutes(db: Database): Hono<AppEnv> {
        if (access instanceof Response) return access
        return deleteScheduledEventException(db, eventId, exceptionId)
          ? c.body(null, 204)
@@ -759,7 +1335,7 @@ index ed8a2a5..8b00604 100644
      }
    )
    app.get('/guilds/:guildId/scheduled-events/:eventId', (c) => {
-@@ -824,7 +824,7 @@ export function createGuildAdvancedRoutes(db: Database): Hono<AppEnv> {
+@@ -824,7 +825,7 @@ export function createGuildAdvancedRoutes(db: Database): Hono<AppEnv> {
      const event = getGuildScheduledEvent(db, guildId, eventId)
      return event
        ? c.json(event)
@@ -768,7 +1344,7 @@ index ed8a2a5..8b00604 100644
    })
    app.patch('/guilds/:guildId/scheduled-events/:eventId', async (c) => {
      const { guildId, eventId } = c.req.param()
-@@ -838,7 +838,7 @@ export function createGuildAdvancedRoutes(db: Database): Hono<AppEnv> {
+@@ -838,7 +839,7 @@ export function createGuildAdvancedRoutes(db: Database): Hono<AppEnv> {
      )
      return event
        ? c.json(event)
@@ -777,7 +1353,7 @@ index ed8a2a5..8b00604 100644
    })
    app.delete('/guilds/:guildId/scheduled-events/:eventId', (c) => {
      const { guildId, eventId } = c.req.param()
-@@ -846,7 +846,7 @@ export function createGuildAdvancedRoutes(db: Database): Hono<AppEnv> {
+@@ -846,7 +847,7 @@ export function createGuildAdvancedRoutes(db: Database): Hono<AppEnv> {
      if (access instanceof Response) return access
      return deleteGuildScheduledEvent(db, guildId, eventId)
        ? c.body(null, 204)
@@ -786,6 +1362,26 @@ index ed8a2a5..8b00604 100644
    })
  
    app.get('/guilds/:guildId/soundboard-sounds', (c) => {
+@@ -1062,6 +1063,10 @@ export function createGuildAdvancedRoutes(db: Database): Hono<AppEnv> {
+       c.get('bot')?.user_id ?? '',
+       await parseJsonBody(c)
+     )
++    // SPIKE PATCH (boiler-snake e2e, #328 gap 6): a voice-state change is
++    // only real once clients hear about it — real Discord dispatches
++    // VOICE_STATE_UPDATE on every join/move/leave/flag change.
++    dispatchGuildVoiceState(db, guildId, c.get('bot')?.user_id ?? '')
+     return c.body(null, 204)
+   })
+   app.get('/guilds/:guildId/voice-states/:userId', (c) => {
+@@ -1080,6 +1085,8 @@ export function createGuildAdvancedRoutes(db: Database): Hono<AppEnv> {
+     if (!getGuildMember(db, guildId, userId))
+       return unknown(c, DiscordErrorCode.UNKNOWN_MEMBER, 'Unknown Member')
+     setGuildVoiceState(db, guildId, userId, await parseJsonBody(c))
++    // SPIKE PATCH (boiler-snake e2e, #328 gap 6): see the @me arm.
++    dispatchGuildVoiceState(db, guildId, userId)
+     return c.body(null, 204)
+   })
+ 
 diff --git a/src/routes/guilds.ts b/src/routes/guilds.ts
 index 310fa2a..986e6cb 100644
 --- a/src/routes/guilds.ts
@@ -874,18 +1470,26 @@ index 99f69e6..c45426f 100644
  
        if (!result.ok) {
 diff --git a/src/routes/test.ts b/src/routes/test.ts
-index 543d9ef..2fc5c7e 100644
+index 543d9ef..87c9aec 100644
 --- a/src/routes/test.ts
 +++ b/src/routes/test.ts
-@@ -16,6 +16,7 @@ import {
+@@ -14,8 +14,14 @@ import {
+   createTestUser,
+   injectTestMessage,
    createTestInteraction,
++  // SPIKE PATCH (boiler-snake e2e, #328 gap 6): voice-state simulation.
++  setTestVoiceState,
  } from '../services/test-control'
- import type { TestInteractionRequest } from '../services/test-control'
+-import type { TestInteractionRequest } from '../services/test-control'
++import type {
++  TestInteractionRequest,
++  TestVoiceStateRequest,
++} from '../services/test-control'
 +import { addReaction, removeReaction } from '../services/reactions'
  import { getChannelWebhooks } from '../services/webhooks'
  import { injectPollVote } from '../services/polls'
  
-@@ -127,16 +128,55 @@ export function createTestRoutes(db: Database, baseUrl: string): Hono {
+@@ -127,16 +133,55 @@ export function createTestRoutes(db: Database, baseUrl: string): Hono {
      const payload = await c.req.json<{
        content?: string
        author?: { id?: string }
@@ -943,7 +1547,7 @@ index 543d9ef..2fc5c7e 100644
        baseUrl
      )
  
-@@ -149,10 +189,92 @@ export function createTestRoutes(db: Database, baseUrl: string): Hono {
+@@ -149,10 +194,109 @@ export function createTestRoutes(db: Database, baseUrl: string): Hono {
    // command, without a real Discord client.
    app.post('/_test/interactions', async (c) => {
      const body = await c.req.json<TestInteractionRequest>()
@@ -975,6 +1579,23 @@ index 543d9ef..2fc5c7e 100644
 +      },
 +      400
 +    )
++  })
++
++  // POST /_test/voice-states — SPIKE PATCH (boiler-snake e2e, #328 gap 6):
++  // join/move/leave a guild member in a voice/stage channel and dispatch
++  // VOICE_STATE_UPDATE (GuildVoiceStates intent), hydrating the client's
++  // guild.voiceStates cache exactly like a real voice connection.
++  app.post('/_test/voice-states', async (c) => {
++    const body = await c.req.json<TestVoiceStateRequest>()
++    const result = setTestVoiceState(db, body)
++    if (result.ok) return c.json(result.state, 201)
++    const detail =
++      result.reason === 'unknown_guild'
++        ? '`guild_id` does not reference an existing guild.'
++        : result.reason === 'unknown_member'
++          ? '`user_id` is not a member of the guild — real voice states always belong to a member.'
++          : '`channel_id` must be null (leave) or an existing VOICE (2)/STAGE (7) channel.'
++    return c.json({ message: detail, code: 50035 }, 400)
 +  })
 +
 +  // GET /_test/interactions/:interactionId — SPIKE PATCH (boiler-snake
@@ -1799,6 +2420,254 @@ index fd0421d..57daacd 100644
 +    .map((row) => getChannel(db, row.id))
 +    .filter((channel): channel is ChannelObject => channel !== null)
 +}
+diff --git a/src/services/guild-advanced.test.ts b/src/services/guild-advanced.test.ts
+index b9e5910..a511acc 100644
+--- a/src/services/guild-advanced.test.ts
++++ b/src/services/guild-advanced.test.ts
+@@ -11,7 +11,12 @@ import {
+   getGuildSoundboardSound,
+   getGuildTemplate,
+   updateAutoModerationRule,
++  // SPIKE PATCH (boiler-snake e2e, #328 gap 6): voice-state coverage.
++  setGuildVoiceState,
++  getGuildVoiceState,
++  dispatchGuildVoiceState,
+ } from './guild-advanced'
++import { gatewayBus } from '../gateway/bus'
+ import {
+   seedBot,
+   seedGuild,
+@@ -98,3 +103,114 @@ describe('guild advanced service', () => {
+     })
+   })
+ })
++
++// SPIKE PATCH (boiler-snake e2e, #328 gap 6): voice-state store semantics +
++// dispatch. The tier-4 voice tests (voice XP rules) hinge on these: every
++// flag persisted, real PATCH-merge semantics, explicit leave, and a
++// VOICE_STATE_UPDATE emission with the member embedded.
++describe('guild voice states (patch: all flags + dispatch)', () => {
++  let db: Database
++  let guildId: string
++  let userId: string
++  let voiceChannelId: string
++  let voiceChannelB: string
++
++  beforeEach(() => {
++    db = initializeDatabase(':memory:')
++    const token = seedBot(db)
++    userId = (
++      db.prepare('SELECT user_id FROM bots WHERE token = ?').get(token) as {
++        user_id: string
++      }
++    ).user_id
++    guildId = seedGuild(db, token, '420000000000000001')
++    seedMember(db, guildId, userId)
++    voiceChannelId = seedVoiceChannel(db, guildId, '555555555555555555')
++    voiceChannelB = seedVoiceChannel(db, guildId, '555555555555555556')
++  })
++
++  afterEach(() => {
++    closeDatabase(db)
++  })
++
++  it('persists every voice flag and reads it back in the Discord shape', () => {
++    setGuildVoiceState(db, guildId, userId, {
++      channel_id: voiceChannelId,
++      mute: true,
++      deaf: false,
++      self_mute: true,
++      self_deaf: true,
++      suppress: true,
++    })
++    const state = getGuildVoiceState(db, guildId, userId)
++    expect(state).toMatchObject({
++      channel_id: voiceChannelId,
++      guild_id: guildId,
++      user_id: userId,
++      mute: true,
++      deaf: false,
++      self_mute: true,
++      self_deaf: true,
++      suppress: true,
++    })
++    expect(state?.session_id).toBeTruthy()
++  })
++
++  it('merges unspecified flags on update (real PATCH semantics)', () => {
++    setGuildVoiceState(db, guildId, userId, {
++      channel_id: voiceChannelId,
++      self_mute: true,
++    })
++    // Server-mute later without repeating self_mute: it must survive, and
++    // the move to another channel keeps it too.
++    setGuildVoiceState(db, guildId, userId, {
++      channel_id: voiceChannelB,
++      mute: true,
++    })
++    expect(getGuildVoiceState(db, guildId, userId)).toMatchObject({
++      channel_id: voiceChannelB,
++      mute: true,
++      self_mute: true,
++    })
++  })
++
++  it('treats channel_id null as an explicit LEAVE (row kept, flags kept)', () => {
++    setGuildVoiceState(db, guildId, userId, {
++      channel_id: voiceChannelId,
++      self_deaf: true,
++    })
++    setGuildVoiceState(db, guildId, userId, { channel_id: null })
++    const state = getGuildVoiceState(db, guildId, userId)
++    expect(state).not.toBeNull()
++    expect(state?.channel_id).toBeNull()
++    expect(state?.self_deaf).toBe(true)
++  })
++
++  it('dispatchGuildVoiceState emits voice.state.update with member embedded', () => {
++    const events: { guildId: string; state: Record<string, unknown> }[] = []
++    const handler = (p: {
++      guildId: string
++      state: Record<string, unknown>
++    }) => events.push(p)
++    gatewayBus.on('voice.state.update', handler)
++    try {
++      // No row yet → nothing to announce.
++      dispatchGuildVoiceState(db, guildId, userId)
++      expect(events).toHaveLength(0)
++
++      setGuildVoiceState(db, guildId, userId, { channel_id: voiceChannelId })
++      dispatchGuildVoiceState(db, guildId, userId)
++      expect(events).toHaveLength(1)
++      expect(events[0]?.guildId).toBe(guildId)
++      expect(events[0]?.state).toMatchObject({
++        channel_id: voiceChannelId,
++        guild_id: guildId,
++        user_id: userId,
++      })
++      // discord.js hydrates voiceState.member straight off the payload.
++      expect(events[0]?.state.member).toBeTruthy()
++    } finally {
++      gatewayBus.off('voice.state.update', handler)
++    }
++  })
++})
+diff --git a/src/services/guild-advanced.ts b/src/services/guild-advanced.ts
+index 2e33c62..cb581dc 100644
+--- a/src/services/guild-advanced.ts
++++ b/src/services/guild-advanced.ts
+@@ -2,6 +2,10 @@
+ import type { Database } from '../db'
+ import { runInTransaction } from '../db'
+ import { generateSnowflake } from '../snowflake'
++// SPIKE PATCH (boiler-snake e2e, #328 gap 6): voice-state dispatch + member
++// embedding for VOICE_STATE_UPDATE payloads.
++import { gatewayBus } from '../gateway/bus'
++import { getGuildMember } from './guild-members'
+ 
+ type JsonObject = Record<string, unknown>
+ 
+@@ -1031,7 +1035,17 @@ export function getGuildOnboarding(db: Database, guildId: string): JsonObject {
+   }
+ }
+ 
+-/** Updates a guild voice state. */
++/**
++ * Upserts a guild voice state.
++ *
++ * SPIKE PATCH (boiler-snake e2e, #328 gap 6): persists EVERY voice flag
++ * (deaf/mute/self_deaf/self_mute/self_video/self_stream) when present in
++ * the payload — the upstream version wrote only channel/session/suppress,
++ * so real Discord's PATCH voice-state semantics (admin mute/deaf, self
++ * mute/deaf) were invisible to the store. `channel_id: null` is an
++ * explicit LEAVE (row kept, channel cleared — like real Discord's
++ * disconnected VOICE_STATE_UPDATE).
++ */
+ export function setGuildVoiceState(
+   db: Database,
+   guildId: string,
+@@ -1039,13 +1053,34 @@ export function setGuildVoiceState(
+   payload: JsonObject
+ ): void {
+   const existing = getGuildVoiceState(db, guildId, userId)
++  const flag = (key: string, fallback: boolean): number =>
++    payload[key] === undefined
++      ? (fallback ? 1 : 0)
++      : payload[key]
++        ? 1
++        : 0
++  // self_stream is tri-state on the wire (true | null).
++  const selfStream =
++    payload.self_stream === undefined
++      ? (existing?.self_stream ? 1 : null)
++      : payload.self_stream
++        ? 1
++        : null
+   db.prepare(
+     `INSERT INTO guild_voice_states
+-       (guild_id, user_id, channel_id, session_id, suppress,
++       (guild_id, user_id, channel_id, session_id, deaf, mute, self_deaf,
++        self_mute, self_stream, self_video, suppress,
+         request_to_speak_timestamp)
+-     VALUES (?, ?, ?, ?, ?, ?)
++     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(guild_id, user_id) DO UPDATE SET
+-       channel_id = excluded.channel_id, suppress = excluded.suppress,
++       channel_id = excluded.channel_id,
++       deaf = excluded.deaf,
++       mute = excluded.mute,
++       self_deaf = excluded.self_deaf,
++       self_mute = excluded.self_mute,
++       self_stream = excluded.self_stream,
++       self_video = excluded.self_video,
++       suppress = excluded.suppress,
+        request_to_speak_timestamp = excluded.request_to_speak_timestamp`
+   ).run(
+     guildId,
+@@ -1054,6 +1089,12 @@ export function setGuildVoiceState(
+       ? (existing?.channel_id ?? null)
+       : payload.channel_id,
+     existing?.session_id ?? `session-${userId}`,
++    flag('deaf', Boolean(existing?.deaf)),
++    flag('mute', Boolean(existing?.mute)),
++    flag('self_deaf', Boolean(existing?.self_deaf)),
++    flag('self_mute', Boolean(existing?.self_mute)),
++    selfStream,
++    flag('self_video', Boolean(existing?.self_video)),
+     payload.suppress === undefined
+       ? existing?.suppress
+         ? 1
+@@ -1067,6 +1108,30 @@ export function setGuildVoiceState(
+   )
+ }
+ 
++/**
++ * SPIKE PATCH (boiler-snake e2e, #328 gap 6): dispatches the stored voice
++ * state as a VOICE_STATE_UPDATE gateway event (via the bus). `member` is
++ * embedded when the user is a guild member — the shape real Discord sends,
++ * which discord.js uses to hydrate `voiceState.member` without a cache
++ * round-trip. Silent no-op when no row exists (nothing to announce).
++ * @param db - Database
++ * @param guildId - Guild ID
++ * @param userId - User whose voice state changed
++ */
++export function dispatchGuildVoiceState(
++  db: Database,
++  guildId: string,
++  userId: string
++): void {
++  const state = getGuildVoiceState(db, guildId, userId)
++  if (!state) return
++  const member = getGuildMember(db, guildId, userId)
++  gatewayBus.emit('voice.state.update', {
++    guildId,
++    state: { ...state, ...(member ? { member } : {}) },
++  })
++}
++
+ /** Gets a guild voice state. */
+ export function getGuildVoiceState(
+   db: Database,
 diff --git a/src/services/guild-members.ts b/src/services/guild-members.ts
 index b16fa10..15553c0 100644
 --- a/src/services/guild-members.ts
@@ -1861,6 +2730,74 @@ index b16fa10..15553c0 100644
          user: {
            id: userRow.id,
            username: userRow.username,
+diff --git a/src/services/guilds.ts b/src/services/guilds.ts
+index bbbccfd..912ebba 100644
+--- a/src/services/guilds.ts
++++ b/src/services/guilds.ts
+@@ -9,6 +9,9 @@ import type { Database } from '../db'
+ import { getGuildRoles, type RoleObject } from './guild-roles'
+ import { getGuildChannels } from './channels'
+ import { getGuildMembers } from './guild-members'
++// SPIKE PATCH (boiler-snake e2e, #328 gap 6): voice-state seeding for
++// GUILD_CREATE.
++import { getGuildVoiceState } from './guild-advanced'
+ import { toDiscordTimestamp } from '../timestamp'
+ // Used for compile-time type drift detection.
+ import type { GatewayGuildCreateDispatchData } from 'discord-api-types/v10'
+@@ -25,6 +28,9 @@ interface GuildRow {
+   explicit_content_filter: number
+   premium_tier: number
+   preferred_locale: string
++  // SPIKE PATCH (#328 gap 6): provisionable AFK channel pointer (nullable
++  // E2E-fidelity column, see db.ts GUILDS_E2E_COLUMNS).
++  afk_channel_id?: string | null
+ }
+ 
+ /** Guild object for API responses */
+@@ -92,7 +98,9 @@ function toGuildObject(row: GuildRow, roles: RoleObject[]): GuildObject {
+     owner_id: row.owner_id,
+     application_id: null,
+     region: 'deprecated',
+-    afk_channel_id: null,
++    // SPIKE PATCH (#328 gap 6): real guild objects carry the AFK channel
++    // pointer; serve the stored value (NULL column → null, unchanged).
++    afk_channel_id: row.afk_channel_id ?? null,
+     afk_timeout: 300,
+     system_channel_id: null,
+     system_channel_flags: 0,
+@@ -277,7 +285,11 @@ interface GuildCreateExtraFields {
+   large: boolean
+   unavailable: boolean
+   member_count: number
+-  voice_states: never[]
++  // SPIKE PATCH (boiler-snake e2e, #328 gap 6): seeded from
++  // guild_voice_states — real Discord includes the guild's current voice
++  // states in GUILD_CREATE, which is how a (re)connecting client's
++  // voiceStates cache starts correct.
++  voice_states: unknown[]
+   members: unknown[]
+   channels: unknown[]
+   threads: never[]
+@@ -330,7 +342,18 @@ export function buildGuildCreatePayload(
+     large: memberCount > 50,
+     unavailable: false,
+     member_count: memberCount,
+-    voice_states: [],
++    // SPIKE PATCH (boiler-snake e2e, #328 gap 6): seed the client's
++    // voiceStates cache from the store (VoiceState objects without
++    // `member`, matching real GUILD_CREATE).
++    voice_states: (
++      db
++        .prepare(
++          'SELECT user_id FROM guild_voice_states WHERE guild_id = ? ORDER BY user_id'
++        )
++        .all(guildId) as { user_id: string }[]
++    )
++      .map((row) => getGuildVoiceState(db, guildId, row.user_id))
++      .filter((state): state is NonNullable<typeof state> => state !== null),
+     members: getGuildMembers(db, guildId, 1000),
+     channels: getGuildChannels(db, guildId),
+     threads: [],
 diff --git a/src/services/interactions.test.ts b/src/services/interactions.test.ts
 index 489c642..99675cf 100644
 --- a/src/services/interactions.test.ts
@@ -2481,10 +3418,10 @@ index ba966e1..8300e46 100644
    if (payload.embeds !== undefined) {
      db.prepare('DELETE FROM embeds WHERE message_id = ?').run(messageId)
 diff --git a/src/services/test-control.test.ts b/src/services/test-control.test.ts
-index 43ed722..8b281e7 100644
+index 43ed722..cab72b6 100644
 --- a/src/services/test-control.test.ts
 +++ b/src/services/test-control.test.ts
-@@ -1,12 +1,15 @@
+@@ -1,12 +1,24 @@
  import { describe, it, expect, beforeEach } from 'vitest'
  import { initializeDatabase } from '../db'
  import type { Database } from '../db'
@@ -2493,14 +3430,23 @@ index 43ed722..8b281e7 100644
    createTestInteraction,
    deleteTestSetup,
    resetTestData,
++  // SPIKE PATCH (boiler-snake e2e, #328 gap 6): voice-state simulation.
++  setTestVoiceState,
  } from './test-control'
++import { getGuildVoiceState } from './guild-advanced'
++import {
++  seedBot,
++  seedGuild,
++  seedMember,
++  seedVoiceChannel,
++} from '../test-helpers'
  import { createCommand } from './application-commands'
 +import { createMessage } from './messages'
 +import { getOrCreateDmChannel } from './channels'
  
  describe('createTestInteraction', () => {
    let db: Database
-@@ -72,6 +75,158 @@ describe('createTestInteraction', () => {
+@@ -72,6 +84,158 @@ describe('createTestInteraction', () => {
    })
  })
  
@@ -2659,7 +3605,7 @@ index 43ed722..8b281e7 100644
  describe('deleteTestSetup / resetTestData — application command & interaction cleanup', () => {
    let db: Database
    const token = 'Bot cleanuptoken'
-@@ -104,6 +259,42 @@ describe('deleteTestSetup / resetTestData — application command & interaction
+@@ -104,6 +268,42 @@ describe('deleteTestSetup / resetTestData — application command & interaction
      expect(interactions).toHaveLength(0)
    })
  
@@ -2702,11 +3648,125 @@ index 43ed722..8b281e7 100644
    it('resetTestData removes interactions but keeps application_commands', () => {
      resetTestData(db, token)
      const commands = db
+@@ -116,3 +316,113 @@ describe('deleteTestSetup / resetTestData — application command & interaction
+     expect(interactions).toHaveLength(0)
+   })
+ })
++
++// SPIKE PATCH (boiler-snake e2e, #328 gap 6): setTestVoiceState — the
++// tier-4 lever that places humans in voice (they have no gateway
++// connection), mirroring real Discord's refusals.
++describe('setTestVoiceState', () => {
++  let db: Database
++  let guildId: string
++  let memberId: string
++  let vcA: string
++  let vcB: string
++
++  beforeEach(() => {
++    db = initializeDatabase(':memory:')
++    const token = seedBot(db)
++    guildId = seedGuild(db, token, '430000000000000001')
++    memberId = seedMember(db, guildId)
++    vcA = seedVoiceChannel(db, guildId, '555555555555555555')
++    vcB = seedVoiceChannel(db, guildId, '555555555555555556')
++  })
++
++  it('places a member in a voice channel and returns the state', () => {
++    const result = setTestVoiceState(db, {
++      guild_id: guildId,
++      user_id: memberId,
++      channel_id: vcA,
++    })
++    expect(result.ok).toBe(true)
++    if (result.ok) {
++      expect(result.state).toMatchObject({ channel_id: vcA, guild_id: guildId })
++      expect(result.state.member).toBeTruthy()
++    }
++    expect(getGuildVoiceState(db, guildId, memberId)?.channel_id).toBe(vcA)
++  })
++
++  it('passes voice flags through and merges on later calls', () => {
++    setTestVoiceState(db, {
++      guild_id: guildId,
++      user_id: memberId,
++      channel_id: vcA,
++      self_mute: true,
++    })
++    setTestVoiceState(db, {
++      guild_id: guildId,
++      user_id: memberId,
++      channel_id: vcB,
++      self_deaf: true,
++    })
++    // Move to vcB: new flag set, previous self_mute survives (PATCH merge).
++    expect(getGuildVoiceState(db, guildId, memberId)).toMatchObject({
++      channel_id: vcB,
++      self_mute: true,
++      self_deaf: true,
++    })
++  })
++
++  it('treats channel_id null as LEAVE', () => {
++    setTestVoiceState(db, {
++      guild_id: guildId,
++      user_id: memberId,
++      channel_id: vcA,
++    })
++    const left = setTestVoiceState(db, {
++      guild_id: guildId,
++      user_id: memberId,
++      channel_id: null,
++    })
++    expect(left.ok).toBe(true)
++    expect(getGuildVoiceState(db, guildId, memberId)?.channel_id).toBeNull()
++  })
++
++  it('refuses a non-guild', () => {
++    expect(
++      setTestVoiceState(db, {
++        guild_id: '430000000000999999',
++        user_id: memberId,
++        channel_id: vcA,
++      })
++    ).toEqual({ ok: false, reason: 'unknown_guild' })
++  })
++
++  it('refuses a non-member (real voice states belong to members)', () => {
++    expect(
++      setTestVoiceState(db, {
++        guild_id: guildId,
++        user_id: '430000000000888888',
++        channel_id: vcA,
++      })
++    ).toEqual({ ok: false, reason: 'unknown_member' })
++  })
++
++  it('refuses text channels and unknown channels like real Discord', () => {
++    db.prepare(
++      'INSERT INTO channels (id, guild_id, type, name) VALUES (?, ?, 0, ?)'
++    ).run('430000000000777777', guildId, 'text')
++    expect(
++      setTestVoiceState(db, {
++        guild_id: guildId,
++        user_id: memberId,
++        channel_id: '430000000000777777',
++      })
++    ).toEqual({ ok: false, reason: 'invalid_channel' })
++    expect(
++      setTestVoiceState(db, {
++        guild_id: guildId,
++        user_id: memberId,
++        channel_id: '430000000000666666',
++      })
++    ).toEqual({ ok: false, reason: 'invalid_channel' })
++  })
++})
 diff --git a/src/services/test-control.ts b/src/services/test-control.ts
-index 000b187..811443a 100644
+index 000b187..8f7edaf 100644
 --- a/src/services/test-control.ts
 +++ b/src/services/test-control.ts
-@@ -10,9 +10,12 @@ import { generateSnowflake } from '../snowflake'
+@@ -10,14 +10,24 @@ import { generateSnowflake } from '../snowflake'
  import { gatewayBus } from '../gateway/bus'
  import { buildGuildCreatePayload } from './guilds'
  import { getGuildMember } from './guild-members'
@@ -2719,7 +3779,56 @@ index 000b187..811443a 100644
    getGuildIdForChannel,
    type MessageObject,
  } from './messages'
-@@ -216,6 +219,19 @@ export function deleteTestSetup(db: Database, token: string): boolean {
+ import { createInteraction } from './interactions'
+ import type { InteractionObject } from './interactions'
++// SPIKE PATCH (boiler-snake e2e, #328 gap 6): voice-state simulation
++// primitives (store + VOICE_STATE_UPDATE dispatch).
++import {
++  setGuildVoiceState,
++  getGuildVoiceState,
++  dispatchGuildVoiceState,
++} from './guild-advanced'
+ 
+ /** Test setup request type */
+ export interface SetupRequest {
+@@ -34,6 +44,13 @@ export interface SetupRequest {
+ export interface SetupGuildRequest {
+   id?: string
+   name: string
++  /**
++   * SPIKE PATCH (boiler-snake e2e, #328 gap 6): provision the guild's AFK
++   * channel — the voice-XP ticker's AFK-exclusion target. Real Discord
++   * always answers `afk_channel_id` on guild objects (GUILD_CREATE too,
++   * via buildGuildCreatePayload's spread).
++   */
++  afk_channel_id?: string | null
+   channels?: SetupChannelRequest[]
+ }
+ 
+@@ -108,12 +125,19 @@ export function setupTestEnvironment(
+ 
+       // Create the guild (if the same ID still exists, overwrite its contents and reuse it = idempotent)
+       db.prepare(
+-        `INSERT INTO guilds (id, name, owner_id, bot_token) VALUES (?, ?, ?, ?)
++        `INSERT INTO guilds (id, name, owner_id, bot_token, afk_channel_id) VALUES (?, ?, ?, ?, ?)
+          ON CONFLICT(id) DO UPDATE SET
+            name = excluded.name,
+            owner_id = excluded.owner_id,
+-           bot_token = excluded.bot_token`
+-      ).run(guildId, guildReq.name, userId, request.token)
++           bot_token = excluded.bot_token,
++           afk_channel_id = excluded.afk_channel_id`
++      ).run(
++        guildId,
++        guildReq.name,
++        userId,
++        request.token,
++        guildReq.afk_channel_id ?? null,
++      )
+ 
+       pendingEvents.push(() => {
+         // The guild row was just inserted/updated above within this same
+@@ -216,6 +240,19 @@ export function deleteTestSetup(db: Database, token: string): boolean {
    // application_commands and every interactions row have no FK to bots
    // (there is no applications table), so they are cleaned up explicitly.
    db.prepare('DELETE FROM bots WHERE token = ?').run(token)
@@ -2739,7 +3848,7 @@ index 000b187..811443a 100644
    db.prepare(
      'DELETE FROM application_commands WHERE application_id = ? AND guild_id IS NULL'
    ).run(bot.user_id)
-@@ -348,8 +364,55 @@ export function createTestUser(
+@@ -348,8 +385,55 @@ export function createTestUser(
  
  /** Request payload for injecting a message authored by a pre-registered user */
  export interface InjectTestMessageRequest {
@@ -2796,7 +3905,7 @@ index 000b187..811443a 100644
  }
  
  /**
-@@ -397,8 +460,18 @@ export function injectTestMessage(
+@@ -397,8 +481,18 @@ export function injectTestMessage(
        // Neither a real bot token nor the webhook sentinel value, so this
        // message resolves to a plain, non-bot, non-webhook author.
        authorToken: '',
@@ -2817,7 +3926,7 @@ index 000b187..811443a 100644
      },
      baseUrl
    )
-@@ -408,21 +481,221 @@ export function injectTestMessage(
+@@ -408,21 +502,221 @@ export function injectTestMessage(
  export interface TestInteractionRequest {
    application_id: string
    type?: number
@@ -3041,7 +4150,7 @@ index 000b187..811443a 100644
  }
  
  /**
-@@ -430,18 +703,111 @@ interface CommandIdRow {
+@@ -430,18 +724,111 @@ interface CommandIdRow {
   * Discord client. Prefers a guild-scoped command match (when `guild_id` is
   * given) and falls back to a global command of the same name; a request
   * with no `guild_id` only ever matches a global command.
@@ -3155,7 +4264,7 @@ index 000b187..811443a 100644
          )
          .get(request.application_id, request.guild_id, request.command_name) as
          CommandIdRow | undefined)
-@@ -451,7 +817,7 @@ export function createTestInteraction(
+@@ -451,7 +838,7 @@ export function createTestInteraction(
      ? undefined
      : (db
          .prepare(
@@ -3164,7 +4273,7 @@ index 000b187..811443a 100644
          )
          .get(request.application_id, request.command_name) as
          CommandIdRow | undefined)
-@@ -459,12 +825,49 @@ export function createTestInteraction(
+@@ -459,12 +846,49 @@ export function createTestInteraction(
    const command = guildCommand ?? globalCommand
    if (!command) return { ok: false, reason: 'unknown_command' }
  
@@ -3220,7 +4329,7 @@ index 000b187..811443a 100644
  
    const interaction = createInteraction(db, {
      interactionId,
-@@ -474,8 +877,9 @@ export function createTestInteraction(
+@@ -474,9 +898,91 @@ export function createTestInteraction(
      guildId: request.guild_id,
      channelId: request.channel_id,
      commandId: command.id,
@@ -3231,6 +4340,88 @@ index 000b187..811443a 100644
    })
  
    return { ok: true, interaction }
+ }
++
++/**
++ * SPIKE PATCH (boiler-snake e2e, #328 gap 6): request body accepted by
++ * POST /_test/voice-states. Places, moves or leaves a GUILD MEMBER in a
++ * voice/stage channel and dispatches VOICE_STATE_UPDATE — the tier-4 lever
++ * for voice-state consumers (voice XP ticker, music voice gates), which
++ * key off the discord.js cache that ONLY gateway payloads hydrate. Humans
++ * have no gateway connection, so this control route is their voice "join"
++ * (same rationale as POST /_test/reactions for gap 3).
++ */
++export interface TestVoiceStateRequest {
++  guild_id: string
++  user_id: string
++  /** Voice/stage channel id; `null` is an explicit LEAVE. */
++  channel_id: string | null
++  mute?: boolean
++  deaf?: boolean
++  self_mute?: boolean
++  self_deaf?: boolean
++  suppress?: boolean
++}
++
++/** Result of a test voice-state write */
++export type SetTestVoiceStateResult =
++  | { ok: true; state: Record<string, unknown> }
++  | {
++      ok: false
++      reason: 'unknown_guild' | 'unknown_member' | 'invalid_channel'
++    }
++
++/**
++ * Writes a voice state through the production store/service path and
++ * dispatches the gateway event. Validation mirrors what real Discord
++ * refuses: no guild row, a non-member (a VOICE_STATE_UPDATE for someone
++ * with no member row cannot hydrate `voiceState.member`, and every real
++ * consumer reads it), and a target that is not a voice/stage channel.
++ * @param db - Database
++ * @param request - Test voice-state request body
++ * @returns The dispatched VoiceState object, or the refusal reason
++ */
++export function setTestVoiceState(
++  db: Database,
++  request: TestVoiceStateRequest
++): SetTestVoiceStateResult {
++  const guild = db
++    .prepare('SELECT id FROM guilds WHERE id = ?')
++    .get(request.guild_id)
++  if (!guild) return { ok: false, reason: 'unknown_guild' }
++  if (!getGuildMember(db, request.guild_id, request.user_id)) {
++    return { ok: false, reason: 'unknown_member' }
++  }
++  if (request.channel_id != null) {
++    const channel = getChannel(db, request.channel_id)
++    // 2 = GUILD_VOICE, 7 = GUILD_STAGE_VOICE — real Discord refuses joins
++    // into text channels too.
++    if (!channel || (channel.type !== 2 && channel.type !== 7)) {
++      return { ok: false, reason: 'invalid_channel' }
++    }
++  }
++
++  setGuildVoiceState(db, request.guild_id, request.user_id, {
++    channel_id: request.channel_id,
++    ...(request.mute !== undefined && { mute: request.mute }),
++    ...(request.deaf !== undefined && { deaf: request.deaf }),
++    ...(request.self_mute !== undefined && {
++      self_mute: request.self_mute,
++    }),
++    ...(request.self_deaf !== undefined && {
++      self_deaf: request.self_deaf,
++    }),
++    ...(request.suppress !== undefined && { suppress: request.suppress }),
++  })
++  dispatchGuildVoiceState(db, request.guild_id, request.user_id)
++
++  const state = getGuildVoiceState(db, request.guild_id, request.user_id)
++  const member = getGuildMember(db, request.guild_id, request.user_id)
++  return {
++    ok: true,
++    state: { ...(state as object), ...(member ? { member } : {}) },
++  }
++}
 diff --git a/src/services/webhooks.ts b/src/services/webhooks.ts
 index 974e618..010a2f9 100644
 --- a/src/services/webhooks.ts

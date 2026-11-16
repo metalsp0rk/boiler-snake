@@ -3,9 +3,21 @@ const assert = require("node:assert/strict");
 const { PermissionFlagsBits } = require("discord.js");
 
 const { createE2eEnv } = require("./helpers/e2eEnv");
-const { poll, j } = require("./helpers/mockenv");
+const { poll, j, namespaceIds } = require("./helpers/mockenv");
 
 const MSG_DENIED = "You don't have permission to use this.";
+
+// Guild voice channels provisioned for the voice-XP matrix (#328 gap 6):
+// VC_MAIN is the stage, VC_AFK is provisioned as the GUILD's afk_channel_id
+// (so `guild.afkChannelId` hydrates from GUILD_CREATE like real Discord).
+const VC_MAIN = "1560500000000000001";
+const VC_AFK = "1560500000000000002";
+
+// Dedicated voice partners for the #328 gap 6 matrix: human and target are
+// asserted ABSOLUTELY (xp==500 audit, cooldown 25) by the pre-existing
+// tests, so the matrix only ever voices the outsider + these two.
+const VOICER = "1560500000000000009";
+const VOICER2 = "1560500000000000010";
 
 /**
  * Tier-4 XP & leaderboard coverage (issue #314). Namespace 5.
@@ -18,12 +30,16 @@ const MSG_DENIED = "You don't have permission to use this.";
  *  - ns23 e2e-mockgaps: reaction XP award + user cooldown via injected
  *    REACTION_ADD
  * This file: the /setxp settings surface, slash-origin audit rows,
- * non-member /xp rendering, and the cooldown-EXPIRY re-award (window
- * shortened through /setxp itself, so the slow test stays fast).
+ * non-member /xp rendering, the cooldown-EXPIRY re-award (window
+ * shortened through /setxp itself, so the slow test stays fast), and the
+ * voice-XP eligibility matrix (#328 gap 6: the mock's voice-state
+ * transport hydrates the real `guild.voiceStates` cache and the exported
+ * `runVoiceTick` seam runs the production ticker deterministically).
  */
 describe("e2e: XP settings, audit & leaderboard", { concurrency: 1 }, () => {
   /** @type {Awaited<ReturnType<typeof createE2eEnv>>} */
   let env;
+  let runVoiceTick;
 
   const xpOf = (userId) =>
     env.dbmod.db
@@ -31,7 +47,16 @@ describe("e2e: XP settings, audit & leaderboard", { concurrency: 1 }, () => {
       .get(env.communityId, userId)?.xp ?? 0;
 
   before(async () => {
-    env = await createE2eEnv({ ns: 5 });
+    const ids = namespaceIds(5);
+    env = await createE2eEnv({
+      ns: 5,
+      channels: [
+        { id: ids.general, name: "general" },
+        { id: VC_MAIN, name: "voice-main", type: 2 },
+        { id: VC_AFK, name: "voice-afk", type: 2 },
+      ],
+      afkChannelId: VC_AFK,
+    });
     // human carries both tiers: staff_roles row (/setxp) and a role with
     // the ManageGuild bit (/grantxp) — aggregation per #311.
     const staffRole = await env.mock.createRole("E2E XP Staff");
@@ -41,6 +66,20 @@ describe("e2e: XP settings, audit & leaderboard", { concurrency: 1 }, () => {
       permissions: String(PermissionFlagsBits.ManageGuild),
     });
     await env.mock.grantRole(env.ids.human, adminRole.id);
+
+    // Voice-XP matrix: run the PRODUCTION ticker body through its exported
+    // seam, and stop this namespace's scheduled job so no 60s race with the
+    // assertions. Lazy require — DB_PATH binds at require time.
+    runVoiceTick = require("../../src/features/voice").runVoiceTick;
+    require("../../src/core/scheduler").stop("voice");
+
+    // Voice matrix partners: users rows + guild membership via the
+    // injected-message author upsert (same bootstrap the provision uses).
+    await env.mock.createUser("E2EVoicePartner", VOICER);
+    await env.mock.createUser("E2EVoicePartner2", VOICER2);
+    for (const u of [VOICER, VOICER2]) {
+      await env.mock.inject(`member-bootstrap ${u}`, u, ids.general);
+    }
   });
 
   after(async () => {
@@ -59,35 +98,62 @@ describe("e2e: XP settings, audit & leaderboard", { concurrency: 1 }, () => {
     assert.match(String(reply.content), /no leaderboard data/i);
   });
 
-  it.todo("Voice XP rules (AFK ignore, ≥2 eligible humans, muted/deafened) — blocked on #328 gap 6 (mock voice-state support)");
+  // ── #328 GAP 6 DELIVERED — the old "blocked on #328 gap 6 (mock
+  // voice-state support)" todo became this matrix. POST /_test/voice-states
+  // (mock patch) persists + dispatches VOICE_STATE_UPDATE, so the bot's
+  // REAL guild.voiceStates cache — hydrated over the real gateway — drives
+  // the production eligibility rules: AFK-channel skip, ≥2 eligible humans
+  // per channel, bot members excluded, muted/deafened excluded, and the
+  // voice_xp_per_min kill switch. Ticks are forced via runVoiceTick with
+  // the scheduled job stopped (see before()).
+  const guildVoice = () =>
+    env.supervisor.discord.guilds.cache.get(env.ids.guild)?.voiceStates?.cache;
 
-  // ── #312 DELIVERED — the old "blocked on #312 (mock multipart interaction
-  // callbacks)" todo became these three arms. fauxcord now parses
-  // payload_json + files[N] on interaction callbacks and webhook PATCHes,
-  // persists uploads under UPLOAD_PATH, and hydrates /_mock/attachments URLs
-  // (leaderboard PNG pagination is the marquee product flow; the route-level
-  // multipart arms live in e2e-multipart.test.js, ns 24).
-  const lb = {};
-  const PNG_MAGIC = Buffer.from([0x89, 0x50, 0x4e, 0x47]);
-
-  const originalOf = (token) =>
-    j(`${env.mock.base}/webhooks/${env.ids.app}/${token}/messages/@original`).catch(
-      () => null,
-    );
-
-  const pollOriginal = (token, needle, label) =>
+  // The mock dispatches VOICE_STATE_UPDATE on its bus; the 201 can answer
+  // before the bot's ws frame lands. Every tick therefore waits for the
+  // cache to reflect the last voice write.
+  const waitVoice = (userId, channelId) =>
     poll(
-      async () => {
-        const m = await originalOf(token);
-        return m && String(m.content ?? "").includes(needle) ? m : null;
+      () => {
+        const vs = guildVoice()?.get(userId);
+        const settled =
+          channelId === null
+            ? !vs || !vs.channelId
+            : vs?.channelId === channelId && vs?.member;
+        return settled ? true : null;
       },
-      { timeoutMs: 10_000, label },
+      { timeoutMs: 5000, label: `voice cache ${userId} → ${channelId}` },
     );
 
-  const attachmentBytes = async (url) => {
-    const res = await fetch(url);
-    assert.ok(res.ok, `attachment GET ${url} → HTTP ${res.status}`);
-    return Buffer.from(await res.arrayBuffer());
+  const xpVoiceTicks = (userId) =>
+    env.dbmod.db
+      .prepare(
+        "SELECT COALESCE(SUM(amount), 0) AS n FROM activity_log WHERE community_id = ? AND user_id = ? AND kind = 'voice_minute'",
+      )
+      .get(env.communityId, userId).n;
+
+  const leaveVoiceAll = async () => {
+    // human/target intentionally absent — the matrix never voices them so
+    // their XP totals stay pristine for the absolute-value assertions in
+    // the pre-existing tests.
+    for (const u of [env.ids.outsider, VOICER, VOICER2, env.ids.app]) {
+      await env.mock.voiceLeave({ userId: u }).catch(() => {});
+      await waitVoice(u, null);
+    }
+  };
+
+  /** voiceJoin that returns only once the BOT's cache reflects it. */
+  const join = async (over) => {
+    const r = await env.mock.voiceJoin(over);
+    await waitVoice(over.userId ?? env.ids.human, over.channelId ?? null);
+    return r;
+  };
+
+  /** voiceLeave that returns only once the BOT's cache reflects it. */
+  const leave = async (over = {}) => {
+    const r = await env.mock.voiceLeave(over);
+    await waitVoice(over.userId ?? env.ids.human, null);
+    return r;
   };
 
   it("/leaderboard limit:5 replies with the PNG page + lb: Prev/Next buttons (#312 multipart reply)", async () => {
@@ -333,4 +399,200 @@ describe("e2e: XP settings, audit & leaderboard", { concurrency: 1 }, () => {
     });
     assert.equal(xpOf(env.ids.human), 50, "one award per window, none lost");
   });
+
+  it("voice XP: solo earns nothing, a pair earns voice_xp_per_min per tick, leave stops it", async () => {
+    const set = await env.mock.slash({
+      command: "setxp",
+      options: [{ name: "voice", type: 4, value: 7 }],
+    });
+    await env.mock.awaitReply(set);
+    assert.equal(
+      env.dbmod.getGuildSettings(env.communityId).voice_xp_per_min,
+      7,
+    );
+    await leaveVoiceAll();
+    const base = {
+      outsider: xpOf(env.ids.outsider),
+      partner: xpOf(VOICER),
+      human: xpOf(env.ids.human),
+    };
+
+    await join({ userId: env.ids.outsider, channelId: VC_MAIN });
+    // The gateway payload hydrated the real cache (channel + member link).
+    const vs = guildVoice().get(env.ids.outsider);
+    assert.equal(vs?.channelId, VC_MAIN, "VOICE_STATE_UPDATE hydrated cache");
+    assert.equal(vs?.member?.user?.bot, false);
+
+    await runVoiceTick(env.supervisor);
+    assert.equal(xpOf(env.ids.outsider), base.outsider, "solo in channel: no XP");
+
+    await join({ userId: VOICER, channelId: VC_MAIN });
+    await runVoiceTick(env.supervisor);
+    assert.equal(xpOf(env.ids.outsider) - base.outsider, 7, "pair: first earns");
+    assert.equal(xpOf(VOICER) - base.partner, 7, "pair: second earns");
+    assert.equal(xpVoiceTicks(env.ids.outsider), 1, "one voice_minute audit row");
+
+    await leave({ userId: env.ids.outsider });
+    await runVoiceTick(env.supervisor);
+    assert.equal(xpOf(env.ids.outsider) - base.outsider, 7, "left: stops");
+    assert.equal(xpOf(VOICER) - base.partner, 7, "now solo: stops");
+    assert.equal(xpOf(env.ids.human), base.human, "never voiced: never XP");
+    await leaveVoiceAll();
+  });
+
+  it("voice XP: muted/deafened members are excluded from eligibility", async () => {
+    const set = await env.mock.slash({
+      command: "setxp",
+      options: [{ name: "voice", type: 4, value: 7 }],
+    });
+    await env.mock.awaitReply(set);
+    await leaveVoiceAll();
+
+    // Stage A — three in one VC, outsider self_muted: eligibility is TWO,
+    // the clean pair earns, the muted one never does.
+    await join({ userId: env.ids.outsider, channelId: VC_MAIN, selfMute: true });
+    await join({ userId: VOICER, channelId: VC_MAIN });
+    await join({ userId: VOICER2, channelId: VC_MAIN });
+    const base = {
+      outsider: xpOf(env.ids.outsider),
+      partner: xpOf(VOICER),
+      partner2: xpOf(VOICER2),
+    };
+    await runVoiceTick(env.supervisor);
+    assert.equal(xpOf(env.ids.outsider), base.outsider, "self_mute: no XP");
+    assert.equal(xpOf(VOICER) - base.partner, 7, "clean member earns");
+    assert.equal(xpOf(VOICER2) - base.partner2, 7, "clean member earns");
+
+    // Stage B — outsider recovers, VOICER2 gets server-deafened: the deaf
+    // member drops out of eligibility while both clean members keep earning.
+    const mid = {
+      outsider: xpOf(env.ids.outsider),
+      partner: xpOf(VOICER),
+      partner2: xpOf(VOICER2),
+    };
+    await join({
+      userId: env.ids.outsider,
+      channelId: VC_MAIN,
+      selfMute: false,
+    });
+    await join({ userId: VOICER2, channelId: VC_MAIN, deaf: true });
+    await runVoiceTick(env.supervisor);
+    assert.equal(xpOf(env.ids.outsider) - mid.outsider, 7, "recovered: earns");
+    assert.equal(xpOf(VOICER) - mid.partner, 7, "stays clean: earns");
+    assert.equal(xpOf(VOICER2), mid.partner2, "server-deaf: no XP");
+
+    // Stage C — VOICER self_deafs too: exactly one eligible human left, so
+    // the ≥2 rule starves even the eligible one (and flags never earn).
+    const late = {
+      outsider: xpOf(env.ids.outsider),
+      partner: xpOf(VOICER),
+    };
+    await join({ userId: VOICER, channelId: VC_MAIN, selfDeaf: true });
+    await runVoiceTick(env.supervisor);
+    assert.equal(xpOf(VOICER), late.partner, "self_deaf: no XP");
+    assert.equal(
+      xpOf(env.ids.outsider),
+      late.outsider,
+      "sole eligible: ≥2 rule withholds",
+    );
+    await leaveVoiceAll();
+  });
+
+  it("voice XP: the AFK channel never earns (guild.afkChannelId honored)", async () => {
+    const guild = env.supervisor.discord.guilds.cache.get(env.ids.guild);
+    assert.equal(
+      guild.afkChannelId,
+      VC_AFK,
+      "GUILD_CREATE carried the provisioned afk_channel_id",
+    );
+    await leaveVoiceAll();
+    const base = { outsider: xpOf(env.ids.outsider), partner: xpOf(VOICER) };
+
+    await join({ userId: env.ids.outsider, channelId: VC_AFK });
+    await join({ userId: VOICER, channelId: VC_AFK });
+    assert.equal(guildVoice().get(env.ids.outsider)?.channelId, VC_AFK);
+    await runVoiceTick(env.supervisor);
+    assert.equal(xpOf(env.ids.outsider), base.outsider, "AFK pair earns nothing");
+    assert.equal(xpOf(VOICER), base.partner, "AFK pair earns nothing");
+    await leaveVoiceAll();
+  });
+
+  it("voice XP: bot voice states never count toward the ≥2 humans rule", async () => {
+    await leaveVoiceAll();
+    // Give the bot user a member row so it can be "in voice" like any
+    // member (injected-message author upsert; the bot never leaves).
+    await env.mock.inject("bot presence bootstrap", env.ids.app, env.ids.general);
+    const base = { outsider: xpOf(env.ids.outsider), partner: xpOf(VOICER) };
+
+    await join({ userId: env.ids.outsider, channelId: VC_MAIN });
+    await join({
+      userId: env.ids.app,
+      channelId: VC_MAIN,
+    });
+    await runVoiceTick(env.supervisor);
+    assert.equal(xpOf(env.ids.outsider), base.outsider, "outsider + bot: no XP");
+    assert.equal(
+      guildVoice().get(env.ids.app)?.member?.user?.bot,
+      true,
+      "bot voice state really in cache",
+    );
+
+    await join({ userId: VOICER, channelId: VC_MAIN });
+    await runVoiceTick(env.supervisor);
+    await leaveVoiceAll();
+  });
+
+  it("voice XP: voice_xp_per_min=0 skips the tick entirely (kill switch)", async () => {
+    const off = await env.mock.slash({
+      command: "setxp",
+      options: [{ name: "voice", type: 4, value: 0 }],
+    });
+    await env.mock.awaitReply(off);
+    await leaveVoiceAll();
+    const base = { outsider: xpOf(env.ids.outsider), partner: xpOf(VOICER) };
+
+    await join({ userId: env.ids.outsider, channelId: VC_MAIN });
+    await join({ userId: VOICER, channelId: VC_MAIN });
+    await runVoiceTick(env.supervisor);
+    assert.equal(xpOf(env.ids.outsider), base.outsider, "xp=0: outsider earns nothing");
+    assert.equal(xpOf(VOICER), base.partner, "xp=0: partner earns nothing");
+
+    // Restore for the remaining suite (settings are namespace-scoped anyway).
+    const back = await env.mock.slash({
+      command: "setxp",
+      options: [{ name: "voice", type: 4, value: 1 }],
+    });
+    await env.mock.awaitReply(back);
+    await leaveVoiceAll();
+  });
+
+  // ── #312 DELIVERED — the old "blocked on #312 (mock multipart interaction
+  // callbacks)" todo became these three arms. fauxcord now parses
+  // payload_json + files[N] on interaction callbacks and webhook PATCHes,
+  // persists uploads under UPLOAD_PATH, and hydrates /_mock/attachments URLs
+  // (leaderboard PNG pagination is the marquee product flow; the route-level
+  // multipart arms live in e2e-multipart.test.js, ns 24).
+  const lb = {};
+  const PNG_MAGIC = Buffer.from([0x89, 0x50, 0x4e, 0x47]);
+
+  const originalOf = (token) =>
+    j(`${env.mock.base}/webhooks/${env.ids.app}/${token}/messages/@original`).catch(
+      () => null,
+    );
+
+  const pollOriginal = (token, needle, label) =>
+    poll(
+      async () => {
+        const m = await originalOf(token);
+        return m && String(m.content ?? "").includes(needle) ? m : null;
+      },
+      { timeoutMs: 10_000, label },
+    );
+
+  const attachmentBytes = async (url) => {
+    const res = await fetch(url);
+    assert.ok(res.ok, `attachment GET ${url} → HTTP ${res.status}`);
+    return Buffer.from(await res.arrayBuffer());
+  };
+
 });

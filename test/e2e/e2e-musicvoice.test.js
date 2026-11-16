@@ -23,11 +23,13 @@ const { poll, namespaceIds } = require("./helpers/mockenv");
  * pause/resume/volume-clamp/shuffle/remove/seek copy matrix, the three
  * `music:` buttons (update-type responses included), and player destroy —
  * none of which the issue text thought testable ("out of scope without a
- * Lavalink test-sidecar; document"). The voice state comes from the bot's
- * in-process gateway cache (the mock has no VOICE_STATE_UPDATE support).
+ * Lavalink test-sidecar; document"). The voice state for the gate matrix
+ * rides the bot's in-process gateway cache; the AFK leg uses the real
+ * VOICE_STATE_UPDATE transport (#328 gap 6 patch).
  *
- * Voice XP rules stay todo (mock lacks voice-state transport entirely —
- * same gap family as #328 gaps 6/7; see the stubs at the bottom).
+ * Voice XP rules moved out of the todo list with #328 gap 6: the mock now
+ * transports voice states (and provisions afk_channel_id), the rules are
+ * pinned in e2e-xp.test.js, and the music AFK gate runs live below.
  */
 describe(
   "e2e: music degradation + fake-manager player engine — /play, /music matrix, music: buttons, voice gates",
@@ -42,6 +44,7 @@ describe(
       "Music isn't configured. Set `LAVALINK_HOST` (and run a Lavalink 4.2+ node).";
     const VC_A = "1561800000000000001";
     const VC_B = "1561800000000000002";
+    const VC_AFK = "1561800000000000003";
 
     /** @type {any} shared seam fake (test/helpers/lavalink.js) */
     let fake = null;
@@ -51,7 +54,16 @@ describe(
       const ids = namespaceIds(18);
       env = await createE2eEnv({
         ns: 18,
-        channels: [{ id: ids.general, name: "general" }],
+        channels: [
+          { id: ids.general, name: "general" },
+          // Real VOICE channels (#328 gap 6): the AFK-channel flip places
+          // the human via POST /_test/voice-states, which validates the
+          // target channel type in the mock store.
+          { id: VC_A, name: "vc-a", type: 2 },
+          { id: VC_B, name: "vc-b", type: 2 },
+          { id: VC_AFK, name: "vc-afk", type: 2 },
+        ],
+        afkChannelId: VC_AFK,
       });
       // src is lazy — DB_PATH binds at require time (and keep the seam
       // handle local to the booted env).
@@ -98,6 +110,25 @@ describe(
         member: { user: { bot: false } },
       });
     const clearVoice = () => guild.voiceStates.cache.delete(env.ids.human);
+
+    // voiceJoin variant whose promise resolves only once the BOT's cache
+    // reflects the write (mock dispatch rides the ws; the 201 can lead it).
+    const waitVoice = (userId, channelId) =>
+      poll(
+        () => {
+          const vs = guild.voiceStates?.cache?.get(userId);
+          const settled =
+            channelId === null
+              ? !vs || !vs.channelId
+              : vs?.channelId === channelId && vs?.member;
+          return settled ? true : null;
+        },
+        { timeoutMs: 5000, label: `voice cache ${userId} → ${channelId}` },
+      );
+    const join = async (over) => {
+      await env.mock.voiceJoin(over);
+      await waitVoice(over.userId ?? env.ids.human, over.channelId ?? null);
+    };
 
     /** Duck-typed lavalink player — THE shared seam fake (#470 G2-6: the
      * inline copy here re-implemented the player/queue shape twice and
@@ -316,6 +347,44 @@ describe(
       assert.ok(fake._player, "player untouched by the gate failures");
     });
 
+    // #328 GAP 6 DELIVERED — the old "music: AFK-channel gate blocked (mock
+    // guild cannot set afk_channel_id)" todo became this test. The setup
+    // route now provisions afk_channel_id (hydrating guild.afkChannelId via
+    // GUILD_CREATE), and POST /_test/voice-states places the human in that
+    // channel through the real gateway path — the `afk` refusal copy gates
+    // slash AND /play on the live player.
+    it("music: AFK-channel gate (`afk` copy) via real voice-state transport", async () => {
+      assert.equal(
+        guild.afkChannelId,
+        VC_AFK,
+        "GUILD_CREATE carried the provisioned afk_channel_id",
+      );
+      try {
+        // Evict the raw duck-typed stub the gate matrix injects: on an
+        // update discord.js CLONES the previous VoiceState, and a stub has
+        // no ._clone — the payload handler would die before hydrating.
+        guild.voiceStates.cache.delete(env.ids.human);
+        await join({ userId: env.ids.human, channelId: VC_AFK });
+        assert.equal(
+          await contentOf(await slash("music", [sub("queue")])),
+          "I can't play in the AFK channel.",
+        );
+        assert.equal(
+          await contentOf(await slash("play", [strOpt("query", "Test Song")])),
+          "I can't play in the AFK channel.",
+          "/play honors the AFK gate too",
+        );
+      } finally {
+        // Back to the state the rest of the file assumes: human in VC_A.
+        await join({ userId: env.ids.human, channelId: VC_A });
+      }
+      assert.notEqual(
+        await contentOf(await slash("music", [sub("queue")])),
+        "I can't play in the AFK channel.",
+        "leaving AFK restores the normal gate path",
+      );
+    });
+
     it("music: buttons live — pause update (Paused footer + Resume label), skip copy, stop destroys", async () => {
       // Mock fidelity: immediate (type-4) callbacks materialize a webhook
       // message; UPDATE (type-7) callbacks persist ONLY as the interaction's
@@ -379,10 +448,10 @@ describe(
       );
     });
 
-    // ── Voice XP: mock has no VOICE_STATE_UPDATE transport at all (same
-    // ── gap family as the #328 deferred list). The rules (AFK ignore,
-    // ── ≥2 eligible humans, no XP muted/deafened) stay unit-only.
-    it.todo("voice XP rules (AFK ignore, ≥2 humans, muted/deafened) — mock lacks voice-state transport");
-    it.todo("music: AFK-channel gate (`afk` copy) — mock guild cannot set afk_channel_id");
+    // Voice XP rules (AFK ignore, ≥2 eligible humans, muted/deafened) are
+    // pinned in e2e-xp.test.js (ns 5) — the XP math is that suite's
+    // subject, and both files ride the same #328 gap 6 transport
+    // (POST /_test/voice-states + the runVoiceTick seam). This file keeps
+    // the MUSIC-side leg: the AFK-channel gate, now a live test above.
   },
 );
