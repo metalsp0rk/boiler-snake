@@ -74,9 +74,13 @@ if [ ! -d "$FAUXCORD_DIR/.git" ]; then
   git clone --quiet "$FAUXCORD_REPO" "$FAUXCORD_DIR"
 fi
 cd "$FAUXCORD_DIR"
-# Discard any previous patch application so the tree is pristine.
-if [ -n "$(git status --porcelain -- src)" ]; then
+# Discard any previous patch application so the tree is pristine. The
+# checkout reset only covers TRACKED files — files the patch ADDS (e.g.
+# src/gateway/voice-dispatch.test.ts) survive as untracked leftovers and
+# would fail the next `git apply` ("already exists"), so purge them too.
+if [ -n "$(git status --porcelain -- src spec)" ]; then
   git checkout -q -- .
+  git clean -qfd src spec 2>/dev/null || true
 fi
 # Drop a previously vendored (untracked) lockfile so a pin bump never runs
 # against the previous pin's resolution.

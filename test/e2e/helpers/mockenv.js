@@ -117,11 +117,14 @@ class MockEnv {
   /**
    * Idempotent namespace provisioning: remove any previous setup for this
    * token (cascades guild/channels/messages/guild commands/interactions),
-   * create guild + text channels, ensure test users, then bootstrap guild
+   * create guild + channels, ensure test users, then bootstrap guild
    * membership by injecting one message per human (fauxcord upserts the
    * guild_members row of an injected message author — interactions embed
    * `member` only when that row exists).
-   * @param {{users?: Array<{id: string, username: string}>, channels?: Array<{id: string, name: string}>}} [spec]
+   * @param {{users?: Array<{id: string, username: string}>, channels?: Array<{id: string, name: string, type?: number}>, afkChannelId?: string}} [spec]
+   *   `channels[].type` passes through to the mock (0 text, 2 voice —
+   *   #328 gap 6); `afkChannelId` provisions the guild's AFK channel
+   *   (voice-XP / music AFK gates key off `guild.afkChannelId`).
    */
   async provision(spec = {}) {
     const { ids } = this;
@@ -141,7 +144,14 @@ class MockEnv {
       body: JSON.stringify({
         token: `Bot ${ids.token}`,
         user: { id: ids.app, username: "E2ESnake" },
-        guilds: [{ id: ids.guild, name: "E2E Guild", channels }],
+        guilds: [
+          {
+            id: ids.guild,
+            name: "E2E Guild",
+            ...(spec.afkChannelId && { afk_channel_id: spec.afkChannelId }),
+            channels,
+          },
+        ],
       }),
     });
 
@@ -440,6 +450,62 @@ class MockEnv {
         emoji,
       }),
     });
+  }
+
+  /**
+   * Place a guild MEMBER in a voice/stage channel (patch #328 gap 6: POST
+   * /_test/voice-states persists the state through the production store and
+   * dispatches VOICE_STATE_UPDATE, so `guild.voiceStates` hydrates exactly
+   * like a real voice connection — humans have no ws of their own, this is
+   * their "join"). Flags mirror Discord's payload (`mute`/`deaf` = server-
+   * side, `selfMute`/`selfDeaf` = self-imposed). Refusals (non-member,
+   * text channel, unknown guild) surface as thrown 400s.
+   * @param {{userId?: string, channelId: string, mute?: boolean, deaf?: boolean, selfMute?: boolean, selfDeaf?: boolean}} req
+   */
+  async voiceJoin({
+    userId = this.ids.human,
+    channelId,
+    mute,
+    deaf,
+    selfMute,
+    selfDeaf,
+  }) {
+    return j(`${this.base}/_test/voice-states`, {
+      method: "POST",
+      body: JSON.stringify({
+        guild_id: this.ids.guild,
+        user_id: userId,
+        channel_id: channelId,
+        ...(mute !== undefined && { mute }),
+        ...(deaf !== undefined && { deaf }),
+        ...(selfMute !== undefined && { self_mute: selfMute }),
+        ...(selfDeaf !== undefined && { self_deaf: selfDeaf }),
+      }),
+    });
+  }
+
+  /** Leave voice (channel_id null → disconnected VOICE_STATE_UPDATE). */
+  async voiceLeave({ userId = this.ids.human } = {}) {
+    return j(`${this.base}/_test/voice-states`, {
+      method: "POST",
+      body: JSON.stringify({
+        guild_id: this.ids.guild,
+        user_id: userId,
+        channel_id: null,
+      }),
+    });
+  }
+
+  /**
+   * The mock's stored voice state for `userId` (GET
+   * /guilds/:g/voice-states/:u — bot-authenticated REST read; 404 when the
+   * user never had a state).
+   */
+  async voiceState(userId) {
+    return j(
+      `${this.base}/api/guilds/${this.ids.guild}/voice-states/${userId}`,
+      { headers: this.auth },
+    );
   }
 
   /**
