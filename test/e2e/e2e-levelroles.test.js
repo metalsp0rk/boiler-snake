@@ -155,7 +155,9 @@ describe(
       );
       assert.equal(
         setCopy,
-        `Mapped <@&${lvl2Role.id}> to **Lvl 2** (remove after **1** day(s) below).`,
+        // #828: the set reply promises the config-change reconcile.
+        `Mapped <@&${lvl2Role.id}> to **Lvl 2** (remove after **1** day(s) below). ` +
+          `Rechecking level roles for every member in the background.`,
       );
       const row = mapping(lvl2Role.id);
       assert.ok(row, "mapping persisted");
