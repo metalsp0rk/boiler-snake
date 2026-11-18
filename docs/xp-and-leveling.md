@@ -58,7 +58,7 @@ Where:
 
 ### Customizing the Level Curve
 
-The curve uses `guild_settings.level_xp_factor` (default **100**). Change it with `/setxp factor:<int>` (range 1–10,000).
+The curve uses `guild_settings.level_xp_factor` (default **100**). Change it with `/setxp factor:<int>` (range 1–10,000). Changing it moves **every** level-role threshold at once, so the bot schedules a background level-role reconcile over all tracked members (#828) — see [Roles → When the Drop Is Evaluated](roles.md).
 
 - **Lower factor (e.g., 50)**: Easier leveling (less XP needed)
 - **Higher factor (e.g., 200)**: Harder leveling (more XP needed)

@@ -458,6 +458,45 @@ describe("web staff-role + level-role writes (Phase 2, subtask 25)", () => {
       assert.equal(anon.res.headers.get("location"), `/auth/login?guild=${CID_A}`);
     });
 
+    it("#828: accepted levelrole set schedules the reconcile; remove does not", async () => {
+      // Slash /leveltorole set schedules the frozen-class reconcile (the
+      // mapping just moved under existing holders); the web twin must not
+      // be the surface that leaves stale authority. remove deletes the
+      // mapping + drop-state pair outright — nothing to reconcile.
+      const reconcile = require("../src/features/levelRoles/reconcile");
+      let calls = 0;
+      reconcile.bindSupervisor({
+        discord: null,
+        clientForCommunity: () => {
+          calls += 1;
+          return null; // pass skips with zero side effects (spy counts it)
+        },
+      });
+      try {
+        const set = await post(`/g/${CID_A}/staff/levelrole/set`, {
+          cookie: cookieOf.staff,
+          fields: { role_id: ROLE_MAPPED, level: "4", drop_days: "1", _csrf: csrfOf.staff },
+        });
+        assert.equal(set.res.status, 302);
+        for (let i = 0; i < 100 && calls === 0; i++) {
+          await new Promise((r) => setImmediate(r));
+        }
+        assert.ok(calls >= 1, "an accepted levelrole set must schedule the reconcile pass");
+
+        const removed = await post(`/g/${CID_A}/staff/levelrole/remove`, {
+          cookie: cookieOf.staff,
+          fields: { role_id: ROLE_MAPPED, _csrf: csrfOf.staff },
+        });
+        assert.equal(removed.res.status, 302);
+        await new Promise((r) => setImmediate(r));
+        await new Promise((r) => setImmediate(r));
+        assert.equal(calls, 1, "remove schedules nothing (pair deleted)");
+      } finally {
+        reconcile.bindSupervisor(null);
+        api.deleteLevelRole(CID_A, ROLE_MAPPED);
+      }
+    });
+
     it("cross-guild ⇒ 404 for the staff cookie too", async () => {
       const { res } = await post(`/g/${CID_CROSS}/staff/levelrole/remove`, {
         cookie: cookieOf.staff,

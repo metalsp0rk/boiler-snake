@@ -13,6 +13,11 @@ const {
   topUsers,
 } = require("../../db");
 const { levelFromXp, validateXpValue, MAX_XP_AWARD } = require("../../core/xpMath");
+// #828: a level_xp_factor change moves every level-role threshold (the
+// curve is L² × factor); schedule the frozen-class reconcile. Lazy in
+// behavior — scheduling only touches the reconcile module's bound
+// supervisor, never the levelRoles command surface.
+const { scheduleLevelRoleReconcile } = require("../levelRoles/reconcile");
 const {
   key,
   isOnCooldown,
@@ -536,6 +541,20 @@ async function handleSetXp(commandCtx, featureCtx) {
       value: `**${settings.level_xp_factor}** → **${updated.level_xp_factor}** (Level L starts at L² × factor)`,
       inline: false,
     });
+    // #828: the curve is L² × factor, so a factor edit moves EVERY
+    // level-role threshold at once. Members of the frozen class (XP never
+    // changes again) would otherwise sit above/below the WRONG threshold
+    // until staff notice — reconcile re-runs the sync for every tracked
+    // member now. Only on an ACTUAL change; a no-op save must not fire an
+    // O(users) REST pass.
+    if (Number(settings.level_xp_factor) !== Number(updated.level_xp_factor)) {
+      fields.push({
+        name: "Level roles",
+        value: "Thresholds moved — rechecking every member in the background.",
+        inline: false,
+      });
+      scheduleLevelRoleReconcile(communityId, "setxp-factor");
+    }
   }
 
   await commandCtx.reply({

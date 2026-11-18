@@ -68,7 +68,7 @@ Example with `dropdays=7`:
 
 ### When the Drop Is Evaluated
 
-The grace timer is checked from three places:
+The grace timer is checked from four places:
 
 1. **On any XP award** — the unified award path re-syncs the member's roles.
 2. **On the daily decay tick** — for every user whose XP it rewrote that tick.
@@ -82,6 +82,21 @@ The grace timer is checked from three places:
    fire and the role would be kept forever (#428). Actual revocation
    therefore lands on the first sweep after the deadline — at most ~24h
    after the exact moment.
+4. **Config-change reconcile** (`levelRoles/reconcile.js`, #828) — one
+   background pass per community re-checking every tracked member whenever
+   a threshold *moves*: on `/leveltorole set` (that mapping), and on an
+   actual `level_xp_factor` change via `/setxp factor:` or the web XP
+   settings (the curve is L² × factor, so one factor edit shifts EVERY
+   threshold at once). This closes the frozen-class hole the sweeper
+   cannot cover — #428 drains timers that are already armed, but a member
+   whose XP never changes again never *arms* one after staff raise a
+   threshold: no XP event is ever coming. The pass reuses the existing
+   sync law per member: holders below the threshold arm the grace timer,
+   newly-qualifying members are granted (the mirror gap), lapsed state
+   clears — and members who do not hold a role never get a timer.
+   `/leveltorole remove` deliberately reconciles nothing (mapping and
+   drop-state are deleted outright). Passes are one-at-a-time per
+   community; a same-value settings save fires nothing.
 
 ### When role ops fail
 

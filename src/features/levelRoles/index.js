@@ -9,6 +9,7 @@ const { logConfigChange } = require("../logs/auditLog");
 const { recordSlashAudit } = require("../../core/auditTrail");
 const { syncMemberRoles } = require("./sync");
 const { startLevelRoleDropSweeper } = require("./dropSweeper");
+const { bindSupervisor, scheduleLevelRoleReconcile } = require("./reconcile");
 
 const staffPerms = PermissionFlagsBits.ManageGuild;
 
@@ -113,9 +114,16 @@ async function handleLevelToRole(commandCtx, featureCtx) {
     );
 
     await commandCtx.reply({
-      content: `Mapped <@&${role.id}> to **Lvl ${level}** (remove after **${dropdays}** day(s) below).`,
+      content:
+        `Mapped <@&${role.id}> to **Lvl ${level}** (remove after **${dropdays}** day(s) below). ` +
+        // #828: the mapping may have just moved under existing holders —
+        // reconcile re-runs the sync for every tracked member so frozen-
+        // class holders arm (and qualifiers get granted) right now, not
+        // "on their next XP event", which may never come.
+        `Rechecking level roles for every member in the background.`,
       sensitive: true,
     });
+    scheduleLevelRoleReconcile(communityId, "leveltorole-set");
     return;
   }
 
@@ -181,6 +189,9 @@ module.exports = {
   // XP-change sync paths, so their elapsed drop-grace timers would never
   // fire without this time-driven job.
   start(supervisor) {
+    // #828: config-change reconcile reaches the supervisor through this
+    // binding (slash + web schedule it parameterless); sweeper unchanged.
+    bindSupervisor(supervisor);
     startLevelRoleDropSweeper(supervisor);
   },
   // re-export for services that still import roles.js

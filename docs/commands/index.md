@@ -374,6 +374,13 @@ Easier leveling (lower factor):
 /setxp factor:50
 ```
 
+**Note:** changing `factor` to a different value moves every level-role
+threshold at once (the curve is L² × factor), so the bot schedules a
+background reconcile that re-checks every member's level roles — members
+who now fall below a held role's threshold start their grace timer
+immediately, and members who newly qualify get granted (#828). A save
+with the unchanged factor schedules nothing.
+
 ### `/grantxp` - Grant XP to a User
 
 Manually grant XP to a member (Manage Server only). Runs the full award pipeline (level roles + audit).
@@ -460,6 +467,12 @@ Grant a role when users reach a certain level, with optional drop grace period.
 # Veteran status at level 20 with longer grace period
 /leveltorole set role:@Veteran level:20 dropdays:14
 ```
+
+**Note:** a successful `set` schedules a background reconcile that
+re-checks every tracked member against the new mapping (#828) — frozen
+XP members who now sit below the threshold arm their grace timer right
+away instead of waiting for an XP event that may never come. See
+[Roles → When the Drop Is Evaluated](../roles.md).
 
 #### Subcommand: `remove` - Delete Mapping
 
