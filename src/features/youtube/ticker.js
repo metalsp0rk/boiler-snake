@@ -12,7 +12,26 @@ const {
   markYoutubeLiveNotified,
   markYoutubeChannelCheckedAt,
   updateGuildSettings,
+  bumpYoutubeNotifyFailures,
+  resetYoutubeNotifyFailures,
 } = require("../../db");
+
+const { recordSystemAudit } = require("../../core/auditTrail");
+
+const {
+  isGoneDeliveryError,
+  describeGoneDeliveryError,
+} = require("../../core/goneDelivery");
+
+/**
+ * #827 — consecutive-failure ceiling for ONE subscription row. Permanent
+ * failures that are not GONE (revoked perms, content rejected) would
+ * otherwise hold the watermark hostage forever; after this many
+ * consecutive failed ticks on the same head item the item is SKIPPED
+ * (watermark advanced past it) with a named warning + audit row, so the
+ * line moves. 10 hourly ticks ≈ half a day of noise before a skip.
+ */
+const MAX_NOTIFY_DELIVERY_FAILURES = 10;
 
 const {
   resolveOutbound: coreResolveOutbound,
@@ -436,9 +455,10 @@ async function processChannel(
     channelUrl = `https://www.youtube.com/channel/${channelId}`;
   }
 
-  // Get last-checked time
+  // Get last-checked time (MUTABLE in the delivery loop: #827 poison-skip
+  // advances it mid-pass, and deliveries already did via Math.max writes)
   const channelWithLastChecked = getYoutubeChannelById(communityId, channelId);
-  const lastChecked =
+  let lastChecked =
     channelData.last_checked ||
     (channelWithLastChecked ? channelWithLastChecked.last_checked : null);
 
@@ -570,9 +590,87 @@ async function processChannel(
       useSimpleEmbed,
     );
     if (!res || res.ok !== true) {
+      const cause = res?.error || "no ready client";
       sendFailed = true;
+
+      // VALVE B — GONE destination (10003/10004): retry is impossible.
+      // Clear the community's notify-channel setting (loud, audited) and
+      // keep the watermark: pending alerts stay queued and resume the
+      // moment staff reconfigure. Without this the row silently hammering
+      // a deleted channel forever was the whole failure mode (#827).
+      if (isGoneDeliveryError(cause)) {
+        const named = describeGoneDeliveryError(cause);
+        updateGuildSettings(communityId, {
+          youtube_notification_channel_id: null,
+        });
+        console.error(
+          `[youtube] ${channelName}: notification channel is GONE (${named}) — youtube_notification_channel_id cleared; pending alerts stay queued until staff reconfigure`,
+        );
+        try {
+          recordSystemAudit({
+            communityId,
+            action: "youtube.notify_channel_cleared",
+            targetType: "guild",
+            details: {
+              reason: named,
+              failed_video_id: item.info.videoId,
+              failed_video_title: item.info.title,
+              notification_type: item.notificationType,
+            },
+          });
+        } catch (err) {
+          console.error(
+            `[youtube] gone-clear audit failed (community ${communityId}): ${err?.message || err}`,
+          );
+        }
+        break;
+      }
+
+      // VALVE A — attempt cap: count CONSECUTIVE real failures on the
+      // row; at the ceiling skip the poison head item (watermark advances
+      // past it, named warning + audit) so one permanently rejected item
+      // cannot block every newer upload forever.
+      const fails = bumpYoutubeNotifyFailures(communityId, channelId);
+      if (fails >= MAX_NOTIFY_DELIVERY_FAILURES) {
+        console.error(
+          `[youtube] POISON SKIP ${channelName}: ${item.notificationType} ${item.info.videoId} ("${item.info.title}") failed ${fails} consecutive attempts (${cause}) — advancing watermark past it`,
+        );
+        try {
+          recordSystemAudit({
+            communityId,
+            action: "youtube.notify_poison_skip",
+            targetType: "channel",
+            targetId: channelId,
+            details: {
+              video_id: item.info.videoId,
+              video_title: item.info.title,
+              notification_type: item.notificationType,
+              attempts: fails,
+              last_error: cause,
+            },
+          });
+        } catch (err) {
+          console.error(
+            `[youtube] poison-skip audit failed (community ${communityId}): ${err?.message || err}`,
+          );
+        }
+        if (item.notificationType === "live") {
+          markYoutubeLiveNotified(communityId, channelId, item.info.videoId);
+        } else {
+          lastChecked = Math.max(lastChecked || 0, item.info.published);
+          updateYoutubeChannelLastChecked(
+            communityId,
+            channelId,
+            lastChecked,
+            item.info.videoId,
+          );
+        }
+        resetYoutubeNotifyFailures(communityId, channelId);
+        continue; // the line must MOVE — try the next item this same tick
+      }
+
       console.error(
-        `[youtube] Notification failed for ${channelName} (${item.notificationType} ${item.info.videoId}): ${res?.error || "unknown"} — watermark kept, pending videos retry next tick`,
+        `[youtube] Notification failed for ${channelName} (${item.notificationType} ${item.info.videoId}, attempt ${fails}/${MAX_NOTIFY_DELIVERY_FAILURES}): ${cause} — watermark kept, pending videos retry next tick`,
       );
       break; // keep the watermark where it is; retry the rest next tick
     }
@@ -587,13 +685,19 @@ async function processChannel(
       // Ordinal watermark: advance to the delivered video's publish time
       // (never wall-clock past an undelivered neighbour) and pin the
       // pointer to the delivered video.
+      lastChecked = Math.max(lastChecked || 0, item.info.published);
       updateYoutubeChannelLastChecked(
         communityId,
         channelId,
-        Math.max(lastChecked || 0, item.info.published),
+        lastChecked,
         item.info.videoId,
       );
     }
+  }
+
+  // A delivered alert ends the consecutive-failure streak (#827 valve A).
+  if (delivered > 0) {
+    resetYoutubeNotifyFailures(communityId, channelId);
   }
 
   if (delivered > 0 && !sendFailed) {
@@ -926,6 +1030,7 @@ module.exports = {
   fetchYouTubeFeed,
   processChannel,
   runYoutubeTick,
+  MAX_NOTIFY_DELIVERY_FAILURES,
   defaultDeps,
   // tests (#441): transport seam + pure response interpretation
   interpretGoogleResponse,

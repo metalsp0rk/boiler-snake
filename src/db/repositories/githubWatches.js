@@ -69,7 +69,7 @@ function getGithubWatches(communityId) {
   assertCommunityId(communityId);
   return db.prepare(`
   SELECT community_id, repo, repo_display, channel_id, role_id,
-         last_release_id, last_release_published_at, last_checked,
+         last_release_id, last_release_published_at, last_checked, notify_failures,
          (token IS NOT NULL) AS has_token
   FROM github_watches
   WHERE community_id=?
@@ -91,7 +91,7 @@ function getGithubWatches(communityId) {
 function getAllGithubWatches() {
   const rows = db.prepare(`
   SELECT community_id, repo, repo_display, channel_id, role_id, token,
-         last_release_id, last_release_published_at, last_checked
+         last_release_id, last_release_published_at, last_checked, notify_failures
   FROM github_watches
   ORDER BY created_at ASC
   `).all();
@@ -144,7 +144,7 @@ function getGithubWatch(communityId, repo) {
   const row = db
     .prepare(`
   SELECT community_id, repo, repo_display, channel_id, role_id,
-         last_release_id, last_release_published_at, last_checked,
+         last_release_id, last_release_published_at, last_checked, notify_failures,
          (token IS NOT NULL) AS has_token
   FROM github_watches
   WHERE community_id=? AND repo=?
@@ -263,6 +263,41 @@ function updateGithubWatchReleaseState(
   );
 }
 
+/**
+ * #827 — bump and return ONE watch's CONSECUTIVE delivery-failure count
+ * (release ticker retry valve). Mirror of the youtube valve: bump per
+ * failed send on the head release; at the ceiling the ticker skips the
+ * poison release (pointer advanced + named warning) and resets.
+ *
+ * @returns {number} the count AFTER this bump (0 when the row is gone)
+ */
+function bumpGithubNotifyFailures(communityId, repo) {
+  assertCommunityId(communityId);
+  const normalized = normalizeGithubRepo(repo);
+  if (!normalized) return 0;
+  db.prepare(`
+  UPDATE github_watches
+  SET notify_failures = notify_failures + 1, updated_at=?
+  WHERE community_id=? AND repo=?
+  `).run(now(), communityId, normalized);
+  // Read back through the sanctioned getter (token-storage architecture
+  // gate: no raw token-less SELECTs from this table outside the ticker
+  // query) — the count rides the same row read.
+  return getGithubWatch(communityId, normalized)?.notify_failures ?? 0;
+}
+
+/** #827 — clear the consecutive-failure streak (delivered / poison skipped). */
+function resetGithubNotifyFailures(communityId, repo) {
+  assertCommunityId(communityId);
+  const normalized = normalizeGithubRepo(repo);
+  if (!normalized) return;
+  db.prepare(`
+  UPDATE github_watches
+  SET notify_failures=0, updated_at=?
+  WHERE community_id=? AND repo=?
+  `).run(now(), communityId, normalized);
+}
+
 module.exports = {
   normalizeGithubRepo,
   getGithubWatches,
@@ -272,4 +307,6 @@ module.exports = {
   removeGithubWatch,
   updateGithubWatch,
   updateGithubWatchReleaseState,
+  bumpGithubNotifyFailures,
+  resetGithubNotifyFailures,
 };

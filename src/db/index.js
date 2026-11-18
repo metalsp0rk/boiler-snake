@@ -134,6 +134,8 @@ module.exports = {
   removeYoutubeChannel: youtube.removeYoutubeChannel,
   updateYoutubeChannelLastChecked: youtube.updateYoutubeChannelLastChecked,
   markYoutubeLiveNotified: youtube.markYoutubeLiveNotified,
+  bumpYoutubeNotifyFailures: youtube.bumpYoutubeNotifyFailures,
+  resetYoutubeNotifyFailures: youtube.resetYoutubeNotifyFailures,
   markYoutubeChannelCheckedAt: youtube.markYoutubeChannelCheckedAt,
   // cleanupOldNotifications retired (audit-2026-10 #204): an un-wired
   // data-deleter over youtube_channels; nothing ever called it.
@@ -197,6 +199,8 @@ module.exports = {
   removeGithubWatch: githubWatches.removeGithubWatch,
   updateGithubWatch: githubWatches.updateGithubWatch,
   updateGithubWatchReleaseState: githubWatches.updateGithubWatchReleaseState,
+  bumpGithubNotifyFailures: githubWatches.bumpGithubNotifyFailures,
+  resetGithubNotifyFailures: githubWatches.resetGithubNotifyFailures,
 
   // staff roles (generalized from honeypot_exempt_roles; junior | senior)
   STAFF_LEVELS: staffRoles.STAFF_LEVELS,

@@ -48,11 +48,13 @@ describe("integration: github releases", () => {
     };
   }
 
-  function fakeSupervisor({ failSend = false } = {}) {
+  function fakeSupervisor({ failSend = false, failMessage = null } = {}) {
     const sent = [];
     const channel = {
       send: async (payload) => {
-        if (failSend) throw new Error("missing permissions: Send Messages");
+        if (failSend) {
+          throw new Error(failMessage || "missing permissions: Send Messages");
+        }
         sent.push(payload);
         return { id: `m${sent.length}` };
       },
@@ -198,6 +200,158 @@ describe("integration: github releases", () => {
     const after = env.db.getGithubWatch(env.communityId, "acme/widgets");
     assert.equal(after.last_release_id, 3, "pointer must not advance");
     env.db.removeGithubWatch(env.communityId, "acme/widgets");
+  });
+
+  // ── #827 — retry valves: attempt cap + gone-retirement ───────────────────
+
+  function valveAuditBaseline() {
+    return env.db.db
+      .prepare("SELECT COALESCE(MAX(id), 0) AS m FROM admin_audit")
+      .get().m;
+  }
+
+  function valveAudits(action, sinceId) {
+    return env.db.db
+      .prepare(
+        `SELECT action, details_json FROM admin_audit
+          WHERE community_id=? AND action=? AND id>? ORDER BY id ASC`,
+      )
+      .all(env.communityId, action, sinceId);
+  }
+
+  it("#827 valve A: 10 consecutive failures SKIP the poison release (pointer moves) with audit", async () => {
+    env.db.addGithubWatch(env.communityId, "acme/cap", "Acme/Cap", {
+      channelId: env.channels.notify.id,
+    });
+    env.db.updateGithubWatchReleaseState(env.communityId, "acme/cap", {
+      lastReleaseId: 3,
+      lastReleasePublishedAt: rel(3).publishedAtMs,
+      lastChecked: Date.now(),
+    });
+    const base = valveAuditBaseline();
+    const { MAX_NOTIFY_DELIVERY_FAILURES } = require("../../src/features/githubReleases/ticker");
+    const { supervisor } = fakeSupervisor({ failSend: true });
+    const deps = {
+      fetchReleases: async () => ({ ok: true, releases: [rel(4), rel(3)] }),
+    };
+
+    for (let i = 1; i < MAX_NOTIFY_DELIVERY_FAILURES; i++) {
+      const watch = env.db.getGithubWatch(env.communityId, "acme/cap");
+      const r = await processWatch(supervisor, watch, deps);
+      assert.equal(r.ok, false);
+      const row = env.db.getGithubWatch(env.communityId, "acme/cap");
+      assert.equal(row.notify_failures, i, `failure streak counts tick ${i}`);
+      assert.equal(row.last_release_id, 3, `pointer holds below the ceiling (tick ${i})`);
+    }
+
+    // Ceiling tick: poison-skip — pointer PAST the failing release, streak
+    // reset, named audit row.
+    await processWatch(
+      supervisor,
+      env.db.getGithubWatch(env.communityId, "acme/cap"),
+      deps,
+    );
+    const after = env.db.getGithubWatch(env.communityId, "acme/cap");
+    assert.equal(after.last_release_id, 4, "poison release skipped: pointer advanced");
+    assert.equal(after.notify_failures, 0, "the streak counter resets with the skip");
+    const skips = valveAudits("github.notify_poison_skip", base);
+    assert.equal(skips.length, 1, "exactly one poison-skip audit row");
+    assert.match(skips[0].details_json, /v1\.0\.4/);
+
+    // The line moved: the NEXT release flows on a healthy channel.
+    const { supervisor: healthy } = fakeSupervisor();
+    const r2 = await processWatch(
+      healthy,
+      after,
+      { fetchReleases: async () => ({ ok: true, releases: [rel(5), rel(4), rel(3)] }) },
+    );
+    assert.equal(r2.announced, 1, "post-skip release delivered");
+    assert.equal(env.db.getGithubWatch(env.communityId, "acme/cap").last_release_id, 5);
+
+    env.db.removeGithubWatch(env.communityId, "acme/cap");
+  });
+
+  it("#827 valve B: a GONE announcement channel (10004) clears the ROW's channel; pointer kept", async () => {
+    env.db.addGithubWatch(env.communityId, "acme/gone", "Acme/Gone", {
+      channelId: env.channels.notify.id,
+    });
+    env.db.updateGithubWatchReleaseState(env.communityId, "acme/gone", {
+      lastReleaseId: 7,
+      lastReleasePublishedAt: rel(7).publishedAtMs,
+      lastChecked: Date.now(),
+    });
+    const base = valveAuditBaseline();
+
+    const gone = fakeSupervisor({
+      failSend: true,
+      failMessage: "DiscordAPIError[10004]: Unknown Guild",
+    });
+    const r = await processWatch(
+      gone.supervisor,
+      env.db.getGithubWatch(env.communityId, "acme/gone"),
+      { fetchReleases: async () => ({ ok: true, releases: [rel(8), rel(7)] }) },
+    );
+    assert.equal(r.ok, false);
+
+    const after = env.db.getGithubWatch(env.communityId, "acme/gone");
+    assert.equal(after.channel_id, null, "gone channel must be UNCONFIGURED on the row, not retried forever");
+    assert.equal(after.last_release_id, 7, "pending releases stay queued (pointer kept)");
+    assert.equal(after.notify_failures, 0, "a gone destination does not burn the retry budget");
+    const clears = valveAudits("github.notify_channel_cleared", base);
+    assert.equal(clears.length, 1, "one loud audit row for the clear");
+    assert.match(clears[0].details_json, /10004/);
+
+    // Next tick: the no-channel guard skips BEFORE any API call.
+    let fetched = false;
+    const r2 = await processWatch(
+      fakeSupervisor().supervisor,
+      after,
+      {
+        fetchReleases: async () => {
+          fetched = true;
+          return { ok: true, releases: [] };
+        },
+      },
+    );
+    assert.equal(fetched, false, "no GitHub quota spent while unconfigured");
+    assert.match(r2.skipped, /no channel/i);
+    assert.equal(valveAudits("github.notify_channel_cleared", base).length, 1);
+
+    env.db.removeGithubWatch(env.communityId, "acme/gone");
+  });
+
+  it("#827: a delivered announcement ends the failure streak (no skip on flaps)", async () => {
+    env.db.addGithubWatch(env.communityId, "acme/flap", "Acme/Flap", {
+      channelId: env.channels.notify.id,
+    });
+    env.db.updateGithubWatchReleaseState(env.communityId, "acme/flap", {
+      lastReleaseId: 9,
+      lastReleasePublishedAt: rel(9).publishedAtMs,
+      lastChecked: Date.now(),
+    });
+    const base = valveAuditBaseline();
+
+    const failing = fakeSupervisor({ failSend: true });
+    await processWatch(
+      failing.supervisor,
+      env.db.getGithubWatch(env.communityId, "acme/flap"),
+      { fetchReleases: async () => ({ ok: true, releases: [rel(10), rel(9)] }) },
+    );
+    assert.equal(env.db.getGithubWatch(env.communityId, "acme/flap").notify_failures, 1);
+
+    const healthy = fakeSupervisor();
+    const r = await processWatch(
+      healthy.supervisor,
+      env.db.getGithubWatch(env.communityId, "acme/flap"),
+      { fetchReleases: async () => ({ ok: true, releases: [rel(10), rel(9)] }) },
+    );
+    assert.equal(r.announced, 1);
+    const after = env.db.getGithubWatch(env.communityId, "acme/flap");
+    assert.equal(after.notify_failures, 0, "CONSECUTIVE failures count — a delivery resets it");
+    assert.equal(after.last_release_id, 10);
+    assert.equal(valveAudits("github.notify_poison_skip", base).length, 0, "a flap must never skip");
+
+    env.db.removeGithubWatch(env.communityId, "acme/flap");
   });
 
   it("failed GitHub lookup keeps the pointer and reports the cause", async () => {

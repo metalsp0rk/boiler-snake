@@ -13,7 +13,7 @@ function normalizeYoutubeName(name) {
 function getYoutubeChannels(communityId) {
   assertCommunityId(communityId);
   return db.prepare(`
-  SELECT id, community_id, channel_name, channel_url, thumbnail_url, last_video_id, last_live_id, last_checked, last_checked_at
+  SELECT id, community_id, channel_name, channel_url, thumbnail_url, last_video_id, last_live_id, last_checked, last_checked_at, notify_failures
   FROM youtube_channels
   WHERE community_id=?
   ORDER BY created_at ASC
@@ -22,7 +22,7 @@ function getYoutubeChannels(communityId) {
 
 function getAllYoutubeChannels() {
   return db.prepare(`
-  SELECT id, community_id, channel_name, channel_url, thumbnail_url, last_video_id, last_live_id, last_checked, last_checked_at
+  SELECT id, community_id, channel_name, channel_url, thumbnail_url, last_video_id, last_live_id, last_checked, last_checked_at, notify_failures
   FROM youtube_channels
   ORDER BY created_at ASC
   `).all();
@@ -32,7 +32,7 @@ function getYoutubeChannelById(communityId, channelId) {
   assertCommunityId(communityId);
   const normalized = normalizeYoutubeName(channelId);
   return db.prepare(`
-  SELECT id, community_id, channel_name, channel_url, thumbnail_url, last_video_id, last_live_id, last_checked, last_checked_at
+  SELECT id, community_id, channel_name, channel_url, thumbnail_url, last_video_id, last_live_id, last_checked, last_checked_at, notify_failures
   FROM youtube_channels
   WHERE community_id=? AND (id=? OR channel_url LIKE '%/' || ? || '/')
   `).get(communityId, normalized, normalized);
@@ -112,6 +112,40 @@ function updateYoutubeChannelLastChecked(communityId, channelId, lastCheckedMs, 
 }
 
 /**
+ * #827 — bump and return ONE subscription's CONSECUTIVE delivery-failure
+ * count (youtube ticker retry valve). The ticker bumps once per failed
+ * send attempt on the row's head item; at the ceiling it skips the poison
+ * item and resets. A delivered send resets the count (resetYoutubeNotifyFailures).
+ *
+ * @returns {number} the count AFTER this bump (0 when the row is gone)
+ */
+function bumpYoutubeNotifyFailures(communityId, channelId) {
+  assertCommunityId(communityId);
+  db.prepare(`
+  UPDATE youtube_channels
+  SET notify_failures = notify_failures + 1, updated_at=?
+  WHERE community_id=? AND id=?
+  `).run(now(), communityId, channelId);
+  return (
+    db
+      .prepare(
+        `SELECT notify_failures FROM youtube_channels WHERE community_id=? AND id=?`,
+      )
+      .get(communityId, channelId)?.notify_failures ?? 0
+  );
+}
+
+/** #827 — clear the consecutive-failure streak (delivery succeeded / poison skipped). */
+function resetYoutubeNotifyFailures(communityId, channelId) {
+  assertCommunityId(communityId);
+  db.prepare(`
+  UPDATE youtube_channels
+  SET notify_failures=0, updated_at=?
+  WHERE community_id=? AND id=?
+  `).run(now(), communityId, channelId);
+}
+
+/**
  * Record the live stream whose alert was dispatched for ONE community's row
  * (#378). Live alerts get dedicated state because the shared
  * `last_video_id` pointer is also upload bookkeeping: one upload published
@@ -170,6 +204,8 @@ module.exports = {
   addYoutubeChannel,
   removeYoutubeChannel,
   updateYoutubeChannelLastChecked,
+  bumpYoutubeNotifyFailures,
+  resetYoutubeNotifyFailures,
   markYoutubeLiveNotified,
   markYoutubeChannelCheckedAt,
   cleanupMalformedYoutubeChannels,
