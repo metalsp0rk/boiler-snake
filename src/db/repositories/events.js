@@ -73,6 +73,20 @@ function fromJsonArray(text) {
 
 const bool = (v) => (v ? 1 : 0);
 
+/**
+ * #826 — the `waitlist_on` default-ON column must read RAW DB integers.
+ * duplicateEvent (service) and the series expander map `listEventOptions`
+ * rows STRAIGHT back into createEvent/createEventOption, so this column
+ * arrives as the stored 0/1. The old `v !== false` test made a stored 0
+ * truthy (`0 !== false === true`): an organizer's explicitly DISABLED
+ * waitlist flipped ON in every copy/occurrence — capacity semantics
+ * silently inverted (full options parked members in a waitlist instead of
+ * refusing). Only an explicit OFF (false / 0 / "0") disables; anything
+ * else, including unset, keeps the documented default (ON) — identical to
+ * the old behavior EXCEPT for the raw-integer bug this fixes.
+ */
+const defaultOnBool = (v) => (v === false || v === 0 || v === "0" ? 0 : 1);
+
 // ── guild settings ──────────────────────────────────────────────────────────
 
 const selectSettings = db.prepare(
@@ -364,7 +378,7 @@ function createEvent({
             opt.emoji ?? null,
             Number.isFinite(opt.position) ? opt.position : i,
             Math.max(0, Math.trunc(Number(opt.capacity) || 0)),
-            bool(opt.waitlist_on !== false),
+            defaultOnBool(opt.waitlist_on),
             bool(Boolean(opt.reminders_on)),
             toJsonArray(opt.role_whitelist),
           );
@@ -688,7 +702,7 @@ function createEventOption(eventId, opt = {}) {
           ? opt.position
           : countEventOptions(eventId),
         Math.max(0, Math.trunc(Number(opt.capacity) || 0)),
-        bool(opt.waitlist_on !== false),
+        defaultOnBool(opt.waitlist_on),
         bool(Boolean(opt.reminders_on)),
         toJsonArray(opt.role_whitelist),
       );
@@ -767,7 +781,7 @@ function replaceEventOptions(eventId, specs = []) {
           spec?.emoji ?? null,
           pos++,
           Math.max(0, Math.trunc(Number(spec?.capacity) || 0)),
-          bool(spec?.waitlist_on !== false),
+          defaultOnBool(spec?.waitlist_on),
           bool(Boolean(spec?.reminders_on)),
           toJsonArray(spec?.role_whitelist),
         );
@@ -1581,7 +1595,7 @@ function createEventPreset(communityId, name, options = [], createdBy = null) {
           o.emoji ?? null,
           i,
           Math.max(0, Math.trunc(Number(o.capacity) || 0)),
-          bool(o.waitlist_on !== false),
+          defaultOnBool(o.waitlist_on),
           bool(Boolean(o.reminders_on)),
           toJsonArray(o.role_whitelist),
         );
