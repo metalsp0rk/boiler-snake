@@ -845,4 +845,180 @@ describe("integration: youtube", () => {
     env.db.removeYoutubeChannel(env.communityId, shared);
     env.db.removeYoutubeChannel(cidOther, shared);
   });
+
+  // ── #827 — retry valves: attempt cap + gone-retirement ───────────────────
+
+  function failingSupervisor(errorText) {
+    return {
+      discord: env.client,
+      fluxer: new Map(),
+      clientForCommunity: () => ({
+        sendChannel: async () => ({ ok: false, error: errorText }),
+      }),
+    };
+  }
+
+  function auditBaseline() {
+    return env.db.db
+      .prepare("SELECT COALESCE(MAX(id), 0) AS m FROM admin_audit")
+      .get().m;
+  }
+
+  function youtubeAudits(action, sinceId = 0) {
+    return env.db.db
+      .prepare(
+        `SELECT id, details_json FROM admin_audit
+          WHERE community_id=? AND action=? AND id>? ORDER BY id ASC`,
+      )
+      .all(env.communityId, action, sinceId);
+  }
+
+  const oneUploadFeed = (videoId, title) => () => ({
+    title: "feed",
+    items: [
+      {
+        id: videoId,
+        title,
+        pubDate: new Date(Date.now() - 60_000).toISOString(),
+        liveBroadcastContent: "none",
+      },
+    ],
+  });
+
+  it("#827 valve A: 10 consecutive failures SKIP the poison item (the line moves) with audit", async () => {
+    const channelId = "UCcap00000000001";
+    env.db.updateGuildSettings(env.communityId, {
+      youtube_notification_channel_id: IDS.channelNotify,
+      youtube_upload_role_id: null,
+    });
+    env.db.addYoutubeChannel(env.communityId, channelId, "CapChannel", `https://www.youtube.com/channel/${channelId}`, "");
+    const floor = Date.now() - 10 * 60_000;
+    env.db.updateYoutubeChannelLastChecked(env.communityId, channelId, floor, null);
+    const base = auditBaseline();
+
+    const { MAX_NOTIFY_DELIVERY_FAILURES } = require("../../src/features/youtube/ticker");
+    const broken = failingSupervisor("Missing Permissions");
+    const feed = oneUploadFeed("vid-cap", "Reject-o-pocalypse");
+
+    for (let i = 1; i < MAX_NOTIFY_DELIVERY_FAILURES; i++) {
+      await processChannel(broken, env.communityId, env.db.getYoutubeChannelById(env.communityId, channelId), {
+        fetchYouTubeFeed: async () => feed(),
+      });
+      const row = env.db.getYoutubeChannelById(env.communityId, channelId);
+      assert.equal(row.notify_failures, i, `failure streak counts tick ${i}`);
+      assert.equal(row.last_video_id, null, `watermark stays put below the ceiling (tick ${i})`);
+    }
+
+    // The ceiling tick: poison-skip — watermark PAST the failing item,
+    // streak reset, named audit row.
+    await processChannel(broken, env.communityId, env.db.getYoutubeChannelById(env.communityId, channelId), {
+      fetchYouTubeFeed: async () => feed(),
+    });
+    const row = env.db.getYoutubeChannelById(env.communityId, channelId);
+    assert.equal(row.last_video_id, "vid-cap", "poison item skipped: watermark advanced past it");
+    assert.equal(row.notify_failures, 0, "the streak counter resets with the skip");
+    const skips = youtubeAudits("youtube.notify_poison_skip", base);
+    assert.equal(skips.length, 1, "exactly one poison-skip audit row");
+    assert.match(skips[0].details_json, /vid-cap/);
+
+    // The skipped item never re-fires; the NEXT upload delivers on a
+    // healthy channel (the whole point: the line moved).
+    env.channels.notify.sent.length = 0;
+    await processChannel(fakeSupervisor(env.client), env.communityId, env.db.getYoutubeChannelById(env.communityId, channelId), {
+      fetchYouTubeFeed: async () => ({
+        title: "feed",
+        items: [
+          ...feed().items,
+          {
+            id: "vid-next",
+            title: "Fresh",
+            pubDate: new Date().toISOString(),
+            liveBroadcastContent: "none",
+          },
+        ],
+      }),
+    });
+    const payload = exactlyOneSend(env.channels.notify.sent, "post-skip upload");
+    assert.match(payload.content, /youtu\.be\/vid-next/);
+    assert.equal(
+      env.db.getYoutubeChannelById(env.communityId, channelId).notify_failures,
+      0,
+      "delivery keeps the streak at zero",
+    );
+
+    env.db.removeYoutubeChannel(env.communityId, channelId);
+  });
+
+  it("#827 valve B: a GONE notify channel (10003) clears the setting loudly; watermark kept", async () => {
+    const channelId = "UCgone00000000001";
+    env.db.updateGuildSettings(env.communityId, {
+      youtube_notification_channel_id: IDS.channelNotify,
+      youtube_upload_role_id: null,
+    });
+    env.db.addYoutubeChannel(env.communityId, channelId, "GoneChannel", `https://www.youtube.com/channel/${channelId}`, "");
+    const floor = Date.now() - 10 * 60_000;
+    env.db.updateYoutubeChannelLastChecked(env.communityId, channelId, floor, null);
+    const base = auditBaseline();
+
+    const gone = failingSupervisor(
+      "sendChannel: send to channel x failed: DiscordAPIError[10003]: Unknown Channel",
+    );
+    await processChannel(gone, env.communityId, env.db.getYoutubeChannelById(env.communityId, channelId), {
+      fetchYouTubeFeed: oneUploadFeed("vid-gone", "Undeliverable"),
+    });
+
+    assert.equal(
+      env.db.getGuildSettings(env.communityId).youtube_notification_channel_id,
+      null,
+      "gone channel must be UNCONFIGURED, not retried forever",
+    );
+    const row = env.db.getYoutubeChannelById(env.communityId, channelId);
+    assert.equal(row.last_video_id, null, "pending alert stays queued (watermark kept)");
+    assert.equal(row.last_checked, floor);
+    assert.equal(row.notify_failures, 0, "a gone destination does not burn the retry budget");
+    const clears = youtubeAudits("youtube.notify_channel_cleared", base);
+    assert.equal(clears.length, 1, "one loud audit row for the clear");
+    assert.match(clears[0].details_json, /10003/);
+
+    // Subsequent ticks take the early return (no channel): zero sends, no
+    // further audits — silent hammering was the failure mode.
+    env.channels.notify.sent.length = 0;
+    await processChannel(fakeSupervisor(env.client), env.communityId, row, {
+      fetchYouTubeFeed: oneUploadFeed("vid-gone", "Undeliverable"),
+    });
+    assert.equal(env.channels.notify.sent.length, 0);
+    assert.equal(youtubeAudits("youtube.notify_channel_cleared", base).length, 1);
+
+    env.db.removeYoutubeChannel(env.communityId, channelId);
+  });
+
+  it("#827: a delivered alert ends the failure streak (no skip on flaps)", async () => {
+    const channelId = "UCflap00000000001";
+    env.db.updateGuildSettings(env.communityId, {
+      youtube_notification_channel_id: IDS.channelNotify,
+      youtube_upload_role_id: null,
+    });
+    env.db.addYoutubeChannel(env.communityId, channelId, "FlapChannel", `https://www.youtube.com/channel/${channelId}`, "");
+    env.db.updateYoutubeChannelLastChecked(env.communityId, channelId, Date.now() - 10 * 60_000, null);
+    const base = auditBaseline();
+
+    // One failed tick (transient)...
+    await processChannel(failingSupervisor("429: rate limited"), env.communityId, env.db.getYoutubeChannelById(env.communityId, channelId), {
+      fetchYouTubeFeed: oneUploadFeed("vid-flap", "Flappy"),
+    });
+    assert.equal(env.db.getYoutubeChannelById(env.communityId, channelId).notify_failures, 1);
+
+    // ...then the SAME item delivers → streak zero, no poison-skip audit.
+    env.channels.notify.sent.length = 0;
+    await processChannel(fakeSupervisor(env.client), env.communityId, env.db.getYoutubeChannelById(env.communityId, channelId), {
+      fetchYouTubeFeed: oneUploadFeed("vid-flap", "Flappy"),
+    });
+    const payload = exactlyOneSend(env.channels.notify.sent, "flap retry");
+    assert.match(payload.content, /youtu\.be\/vid-flap/);
+    const row = env.db.getYoutubeChannelById(env.communityId, channelId);
+    assert.equal(row.notify_failures, 0, "CONSECUTIVE failures count — a delivery resets it");
+    assert.equal(youtubeAudits("youtube.notify_poison_skip", base).length, 0, "a flap must never skip");
+
+    env.db.removeYoutubeChannel(env.communityId, channelId);
+  });
 });

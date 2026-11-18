@@ -5,8 +5,25 @@ const { registerJob } = require("../../core/scheduler");
 const {
   getAllGithubWatches,
   updateGithubWatchReleaseState,
+  updateGithubWatch,
+  bumpGithubNotifyFailures,
+  resetGithubNotifyFailures,
 } = require("../../db");
+const { recordSystemAudit } = require("../../core/auditTrail");
+const {
+  isGoneDeliveryError,
+  describeGoneDeliveryError,
+} = require("../../core/goneDelivery");
 const { fetchReleases } = require("./github");
+
+/**
+ * #827 — mirror of the youtube valve: consecutive-failure ceiling per
+ * WATCH ROW. After this many consecutive failed deliveries of the same
+ * head release, the poison release is skipped (pointer advanced past it,
+ * named warning + audit row) so one rejected release cannot freeze the
+ * watch forever.
+ */
+const MAX_NOTIFY_DELIVERY_FAILURES = 10;
 
 const {
   resolveOutbound: coreResolveOutbound,
@@ -133,23 +150,23 @@ async function sendReleaseNotification(outbound, watch, release) {
       allowedMentions: roleId ? { roles: [roleId] } : { parse: [] },
     });
     if (!result || result.ok !== true) {
+      const error = result?.error || "no ready client";
       console.error(
-        `[github] Failed to send release notification for ${watch.repo} ${release.tag} (community ${watch.community_id}): ${
-          result?.error || "no ready client"
-        }`,
+        `[github] Failed to send release notification for ${watch.repo} ${release.tag} (community ${watch.community_id}): ${error}`,
       );
-      return false;
+      return { ok: false, error };
     }
     console.log(
       `[github] Sent release notification for ${watch.repo} ${release.tag} in community ${watch.community_id}`,
     );
-    return true;
+    return { ok: true };
   } catch (err) {
+    const error = err?.message || String(err);
     console.error(
       `[github] Failed to send release notification for ${watch.repo} ${release.tag} (community ${watch.community_id}):`,
-      err?.message || err,
+      error,
     );
-    return false;
+    return { ok: false, error };
   }
 }
 
@@ -194,10 +211,79 @@ async function processWatch(supervisor, watch, deps = defaultDeps) {
   let newest = null;
   let announced = 0;
   let sendFailed = false;
+  let lastError = null;
   for (const release of pending) {
     const sent = await sendReleaseNotification(outbound, watch, release);
-    if (!sent) {
+    if (!sent || sent.ok !== true) {
+      const cause = sent?.error || "no ready client";
       sendFailed = true;
+      lastError = cause;
+
+      // VALVE B — GONE destination (10003/10004): the announcement channel
+      // is gone (or the bot lost the guild). Clear THIS ROW's channel_id
+      // (loud, audited), keep the release pointer: pending releases stay
+      // queued and resume when staff reconfigure via /github (#827).
+      if (isGoneDeliveryError(cause)) {
+        const named = describeGoneDeliveryError(cause);
+        updateGithubWatch(watch.community_id, watch.repo, { channelId: null });
+        console.error(
+          `[github] ${watch.repo} (community ${watch.community_id}): announcement channel is GONE (${named}) — row channel cleared; releases stay queued until /github sets a channel again`,
+        );
+        try {
+          recordSystemAudit({
+            communityId: watch.community_id,
+            action: "github.notify_channel_cleared",
+            targetType: "repo",
+            targetId: watch.repo,
+            details: {
+              reason: named,
+              failed_release_tag: release.tag,
+            },
+          });
+        } catch (err) {
+          console.error(
+            `[github] gone-clear audit failed (${watch.repo}, community ${watch.community_id}): ${err?.message || err}`,
+          );
+        }
+        break;
+      }
+
+      // VALVE A — attempt cap (mirror of the youtube ticker): at the
+      // ceiling skip the poison release (pointer advances past it) with a
+      // named warning + audit, and KEEP GOING so the line moves.
+      const fails = bumpGithubNotifyFailures(
+        watch.community_id,
+        watch.repo,
+      );
+      if (fails >= MAX_NOTIFY_DELIVERY_FAILURES) {
+        console.error(
+          `[github] POISON SKIP ${watch.repo} (community ${watch.community_id}): release ${release.tag} failed ${fails} consecutive attempts (${cause}) — advancing pointer past it`,
+        );
+        try {
+          recordSystemAudit({
+            communityId: watch.community_id,
+            action: "github.notify_poison_skip",
+            targetType: "repo",
+            targetId: watch.repo,
+            details: {
+              release_tag: release.tag,
+              attempts: fails,
+              last_error: cause,
+            },
+          });
+        } catch (err) {
+          console.error(
+            `[github] poison-skip audit failed (${watch.repo}, community ${watch.community_id}): ${err?.message || err}`,
+          );
+        }
+        newest = release; // pointer moves past the skipped poison item
+        resetGithubNotifyFailures(watch.community_id, watch.repo);
+        continue;
+      }
+
+      console.error(
+        `[github] ${watch.repo}: release notification failed (attempt ${fails}/${MAX_NOTIFY_DELIVERY_FAILURES}) — pointer kept, pending releases retry next hour`,
+      );
       break; // keep the pointer; retry the rest next hour
     }
     newest = release;
@@ -212,11 +298,20 @@ async function processWatch(supervisor, watch, deps = defaultDeps) {
     lastChecked: Date.now(),
   });
 
+  // A delivered announcement ends the consecutive-failure streak (#827).
+  if (announced > 0) {
+    resetGithubNotifyFailures(watch.community_id, watch.repo);
+  }
+
   return {
     ok: !sendFailed,
     announced,
     ...(sendFailed
-      ? { error: "could not deliver one release post (see bot logs)" }
+      ? {
+          error: lastError
+            ? `could not deliver one release post: ${lastError}`
+            : "could not deliver one release post (see bot logs)",
+        }
       : {}),
   };
 }
@@ -265,4 +360,5 @@ module.exports = {
   createReleaseEmbed,
   truncateReleaseNotes,
   defaultDeps,
+  MAX_NOTIFY_DELIVERY_FAILURES,
 };
