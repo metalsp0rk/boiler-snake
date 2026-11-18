@@ -488,7 +488,7 @@ CREATE TABLE "youtube_channels" (
   last_video_id TEXT,
   last_checked INTEGER,
   created_at INTEGER NOT NULL,
-  updated_at INTEGER NOT NULL, last_live_id TEXT, last_checked_at INTEGER,
+  updated_at INTEGER NOT NULL, last_live_id TEXT, last_checked_at INTEGER, notify_failures INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY (community_id, id),
   UNIQUE(community_id, channel_name)
 );
@@ -580,7 +580,7 @@ CREATE TABLE "github_watches" (
     last_release_published_at INTEGER,
     last_checked              INTEGER,
     created_at                INTEGER NOT NULL,
-    updated_at                INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL, notify_failures INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (community_id, repo)
   );
 CREATE INDEX idx_github_watches_channel
@@ -2014,7 +2014,7 @@ There is no separate manual migration CLI for normal operation: starting the bot
 
 Since the 2026-10 audit (#202) the database records a schema version in SQLite's `PRAGMA user_version` header field:
 
-- **The version is the registry size.** The ordered list in `src/db/migrate.js` is append-only (same rule as the numbered files); with `001`–`070` registered the version is `70`.
+- **The version is the registry size.** The ordered list in `src/db/migrate.js` is append-only (same rule as the numbered files); with `001`–`078` registered the version is `78`.
 - **Full replay stays the correctness mechanism.** Every migration is idempotent, so `runMigrations()` replays the entire set whenever the recorded version does not match the registry, and stamps `user_version` only after the whole pass succeeds.
 - **`user_version` is a fast-skip record, not a per-migration cursor.** When the recorded version equals the registry size AND the `applied_migrations` ledger agrees (below), the replay is skipped entirely (one boot log line). Databases created before the guard have `user_version = 0`: they get one idempotent full replay and are stamped — every boot after that is a skip.
 - **The `applied_migrations` ledger records WHAT ran (audit #394).** A count can never record a set: a length-preserving registry change (reorder, or a swap that keeps the list the same size) leaves `user_version` identical and would fast-skip a replay the changed registry needs. The ledger (`seq`/`id`/`applied_at`) stores the ORDERED id list of the last complete pass and is rebuilt transactionally with the version stamp — a crashed pass leaves neither honest. The fast-skip requires both records to agree; on disagreement (including legacy DBs with no ledger yet) the idempotent replay runs once and re-stamps both.
@@ -2127,6 +2127,7 @@ Concretely this means:
 | `075_ban_appeals` | `ban_appeals` — one appeal per ban cycle (#773, §26): `status` `filed`→`open`→`granted`/`denied`/`closed` (single-winner `claimAppealOutcome`), NAMED UNIQUE `ban_record_id` (one appeal per cycle is schema law), ferry cursors as FOUR plain columns + `ferry_paused`, `ticket_channel_id` partial index; PLUS the 074-promised rebuild widening `ban_records.status` with `clemency_granted` — 040 pragma-safe discipline (one transaction, FK toggle outside, live-DDL-derived rebuild, stored-DDL belt, CHECK-presence replay guard, ids copied explicitly); `guild_settings.ban_appeals` intake toggle (default ON) |
 | `076_ban_identity` | Ban identity (#809): `ban_records.ban_identity_reason` TEXT — the live ban reason captured (via `fetchBan`) at ban-issue time, the record's fingerprint of the ban it owns (NULL = never captured → historical fallback; the v10 Ban payload carries NO id/date/moderator); the rebuild widens the status CHECK with the terminal `expired_held` — term lapsed but the live ban is NOT this record's: auto-unban HELD, no welcome DM, staff owns whatever is live. Pure EXTENSION, same 075 rebuild law |
 | `077_expiry_quarantine` | Expiry quarantine + reconcile rotation (#810): `ban_records.expiry_attempts` INTEGER (counts REAL winner-side attempts; a lease loser never counts) and the terminal `expiry_failed` CHECK widening (rebuild, same 075/076 law) — a permanently-failing expiry (dead community, MissingAccess, 50013) LEAVES the `active` domain after the ceiling instead of owning the oldest-first `LIMIT` slice forever (loud embed + audit row at quarantine time); `ban_reconcile_state` (PK `community_id`, `last_reconciled_at`) — the reconcile rotation cursor so boot reconcile stops storming the same communities |
+| `078_notify_retry_valves` | Notifier retry valves (#827, pure-additive `addColumnIfMissing` pair): `youtube_channels.notify_failures` + `github_watches.notify_failures` INTEGER `NOT NULL DEFAULT 0` — per-row CONSECUTIVE delivery-failure counts (any success resets). At the ceiling (10) the ticker SKIPS the poison head item (watermark/pointer advance past it, named warning + `*.notify_poison_skip` audit row) so one permanently rejected item can't block every newer one; gone destinations (10003/10004) skip the budget entirely and clear the notify-channel config (`*.notify_channel_cleared`) with the watermark KEPT for reconfigure |
 
 Public API remains available via `require("./db")` (facade over repositories).
 
