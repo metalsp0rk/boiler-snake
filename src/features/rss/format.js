@@ -492,6 +492,27 @@ function buildFooterText(feed, feedName) {
   }
   return clamp(feedName, RSS_FOOTER_MAX_LENGTH);
 }
+/**
+ * Markdown-deception neutralization for every payload string (#825): the
+ * feed's own text rides a NON-ephemeral channel post built with the bot's
+ * credibility, so a title like `[Discord Security — verify now](https://…)`
+ * must never render as a clickable disguised link. Backslash-escapes the
+ * Discord markup drivers: backslash first, then emphasis/code/spoiler/quote/
+ * heading/bracket characters. `(` and `)` are NOT escaped — with the
+ * brackets inert a link can never form, and over-escaping risks clients
+ * showing literal backslashes. Display-safe by design: Discord renders the
+ * escaped set back as the literal characters (unlike mentions, which are
+ * dropped outright).
+ *
+ * Apply EXACTLY ONCE at the payload boundary (buildNotification) — after
+ * neutralizeRichText/clamp, never to already-escaped values.
+ *
+ * @param {string} text neutralized, clamped feed text
+ * @returns {string} markup-inert text
+ */
+function escapeFeedMarkdown(text) {
+  return String(text ?? "").replace(/[\\*_~|>\[\]`#]/g, "\\$&");
+}
 
 /**
  * Build the one-message payload announcing one new feed entry.
@@ -521,7 +542,11 @@ function buildNotification(entry, feed, settings) {
   const feedName = resolveFeedDisplayName(feed);
   const roleId = resolveNotifyRoleId(settings);
   const prefix = roleId ? `<@&${roleId}> ` : "";
-  const content = `${prefix}**${feedName}** — new post`;
+  // #825: the content line and every embed string the FEED authored are
+  // markdown-escaped at the payload boundary — the neutralizer already made
+  // them mention-safe; this makes them markup-inert (disguised-link phishing
+  // rode the bold label via the attacker-controlled feed title).
+  const content = `${prefix}**${escapeFeedMarkdown(feedName)}** — new post`;
 
   const entryLink = safeHttpUrl(entry.link);
   const feedRow = feed && typeof feed === "object" ? feed : {};
@@ -533,16 +558,16 @@ function buildNotification(entry, feed, settings) {
     titleText = clamp(neutralizeRichText(entryLink), RSS_TITLE_MAX_LENGTH);
   }
 
-  const embed = { title: titleText };
+  const embed = { title: escapeFeedMarkdown(titleText) };
   if (embedUrl) embed.url = embedUrl;
 
   const snippet = buildSnippet(entry);
-  if (snippet && snippet !== titleText) embed.description = snippet;
+  if (snippet && snippet !== titleText) embed.description = escapeFeedMarkdown(snippet);
 
   const thumbnail = resolveThumbnailUrl(entry);
   if (thumbnail) embed.thumbnail = { url: thumbnail };
 
-  embed.footer = { text: buildFooterText(feedRow, feedName) };
+  embed.footer = { text: escapeFeedMarkdown(buildFooterText(feedRow, feedName)) };
 
   const timestamp = resolveEntryTimestampIso(entry);
   if (timestamp) embed.timestamp = timestamp;
@@ -562,6 +587,7 @@ module.exports = {
   FALLBACK_FEED_NAME,
   SNIPPET_SOURCE_FIELDS,
   neutralizeRichText,
+  escapeFeedMarkdown,
   buildSnippet,
   resolveThumbnailUrl,
   resolveFeedDisplayName,

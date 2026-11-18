@@ -1292,3 +1292,93 @@ describe("rss format — allowedMentions strictness table (#272)", () => {
     assert.deepEqual(unset.allowedMentions, { parse: [] }, "the unset path can NEVER mention anything");
   });
 });
+
+/**
+ * #825 — markdown-deception neutralization at the payload boundary.
+ * A malicious/compromised feed controls feed_title (which becomes the bold
+ * content label when staff set no `name:`), entry titles, and snippets.
+ * Discord renders markdown links in message CONTENT and embed descriptions,
+ * so a title like `[Discord Security — verify now](https://phish…)` used to
+ * post a clickable disguised link with the bot's credibility into the notify
+ * channel on every new entry.
+ */
+describe("rss format — markdown-deception neutralization (#825)", () => {
+  const LIVE_LINK_SHAPE = /\[[^\]]*\]\(https?:\/\//;
+  /**
+   * True when NO live `[label](url)` link shape survives: the escaped
+   * brackets (`\[` / `\]`) are REMOVED first (they are inert text), and only
+   * the residue is pattern-checked — an escaped pair can never reassemble
+   * into a link.
+   */
+  const noLiveLink = (s, label) =>
+    assert.ok(
+      !LIVE_LINK_SHAPE.test(String(s).replaceAll("\\[", "").replaceAll("\\]", "")),
+      `no live [label](url) link shape may survive ${label}: ${s}`,
+    );
+
+  it("escapeFeedMarkdown escapes every markup driver, backslash first", () => {
+    assert.equal(
+      rssFormat.escapeFeedMarkdown(String.raw`a\b*c[d]e`),
+      String.raw`a\\b\*c\[d\]e`,
+    );
+    assert.equal(
+      rssFormat.escapeFeedMarkdown("**bold** _it_ ||spoil|| `code` #head > quote ~s~ |t|"),
+      String.raw`\*\*bold\*\* \_it\_ \|\|spoil\|\| \`code\` \#head \> quote \~s\~ \|t\|`,
+    );
+    assert.equal(rssFormat.escapeFeedMarkdown("plain words 100% & ok"), "plain words 100% & ok");
+    // Parens are NOT escaped — inert brackets already make a link impossible.
+    assert.equal(rssFormat.escapeFeedMarkdown("(fine)"), "(fine)");
+  });
+
+  it("a disguised-link FEED TITLE cannot render as a link in the content line", () => {
+    const payload = rssFormat.buildNotification(
+      rssEntry(),
+      { ...rssFeed(), display_name: null, feed_title: "[Discord Security — verify now](https://phish.example)" },
+      {},
+    );
+    assert.ok(
+      payload.content.includes(String.raw`\[Discord Security — verify now\]`),
+      `the label must arrive bracket-escaped: ${payload.content}`,
+    );
+    noLiveLink(payload.content, "in the content line");
+  });
+
+  it("embed title + description + footer are markup-inert too", () => {
+    const payload = rssFormat.buildNotification(
+      rssEntry({
+        title: "**URGENT** ||claim your nitro||",
+        content: "<p>go to [verify](https://phish.example) *now*</p>",
+      }),
+      { ...rssFeed(), display_name: null, feed_title: "OK Feed" },
+      {},
+    );
+    const embed = payload.embeds[0];
+    assert.equal(embed.title, String.raw`\*\*URGENT\*\* \|\|claim your nitro\|\|`);
+    assert.ok(
+      embed.description.includes(String.raw`\[verify\]`),
+      `snippet brackets escaped: ${embed.description}`,
+    );
+    assert.ok(
+      embed.description.includes("\\*now\\*"),
+      "emphasis markers in the description are inert",
+    );
+    noLiveLink(embed.description, "in the description");
+    assert.ok(embed.footer.text.startsWith("OK Feed"), "footer still names the feed");
+  });
+
+  it("benign payloads are untouched — escaping only ever precedes markup drivers", () => {
+    const payload = rssFormat.buildNotification(rssEntry(), rssFeed(), {});
+    assert.equal(payload.content, "**Example News** — new post");
+    assert.equal(payload.embeds[0].title, "Ship the thing");
+    assert.equal(payload.embeds[0].description, "We shipped it.");
+  });
+
+  it("display-name precedence still resolves name > title > host (unchanged)", () => {
+    assert.equal(
+      rssFormat.resolveFeedDisplayName(rssFeed()),
+      "Example News",
+      "resolveFeedDisplayName itself stays RAW (command echoes share it) — " +
+        "escaping belongs at the payload boundary, buildNotification",
+    );
+  });
+});
