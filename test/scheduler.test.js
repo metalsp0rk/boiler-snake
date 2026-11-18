@@ -196,4 +196,113 @@ describe("scheduler", () => {
     assert.equal(which, "b");
     assert.equal(s.listNames().length, 1);
   });
+
+  // #858 — one non-settling tick must never wedge a job forever.
+  describe("tick watchdog (timeoutMs)", () => {
+    it("releases the overlap slot on watchdog timeout and the next fire runs", async () => {
+      const { s, timers } = make();
+      const resolvers = [];
+      let started = 0;
+      s.registerJob({
+        name: "hang",
+        timeoutMs: 5000,
+        run: () => {
+          started += 1;
+          return new Promise((resolve) => resolvers.push(resolve));
+        },
+      });
+
+      s.runNow("hang");
+      await settle();
+      assert.equal(started, 1);
+      assert.equal(s.getJob("hang").inFlight, true);
+      // the only timer is the watchdog (no interval registered)
+      assert.equal(timers.timeouts.length, 1);
+      assert.equal(timers.timeouts[0].ms, 5000);
+
+      timers.timeouts[0].fn(); // watchdog fires
+      await settle();
+      const job = s.getJob("hang");
+      assert.equal(job.inFlight, false, "slot released — the wedge is over");
+      assert.match(job.lastError, /tick exceeded 5000ms/);
+
+      s.runNow("hang"); // self-healed: the next fire runs again
+      await settle();
+      assert.equal(started, 2);
+      assert.equal(job.inFlight, true);
+
+      // The abandoned zombie finishing LATE must not touch the new attempt.
+      resolvers[0]();
+      await settle();
+      assert.equal(job.inFlight, true, "zombie must not release the NEW attempt's slot");
+
+      resolvers[1]();
+      await settle();
+      assert.equal(job.inFlight, false);
+      assert.equal(job.lastError, null, "clean second attempt clears the timeout error");
+    });
+
+    it("logs a specific timeout error once per abandoned attempt", async () => {
+      const { s, timers } = make();
+      const errors = [];
+      const orig = console.error;
+      console.error = (...args) => errors.push(args.join(" "));
+      try {
+        s.registerJob({
+          name: "hanglog",
+          timeoutMs: 1000,
+          run: () => new Promise(() => {}),
+        });
+        s.runNow("hanglog");
+        await settle();
+        timers.timeouts[0].fn();
+        await settle();
+        assert.equal(errors.length, 1);
+        assert.match(errors[0], /hanglog: tick exceeded 1000ms \(abandoned; slot released\)/);
+
+        // A zombie REJECTION after abandonment stays silent (attempt token).
+        const { s: s2, timers: t2 } = make();
+        let rejectZombie;
+        s2.registerJob({
+          name: "zombie",
+          timeoutMs: 1000,
+          run: () => new Promise((_r, rej) => { rejectZombie = rej; }),
+        });
+        s2.runNow("zombie");
+        await settle();
+        t2.timeouts[0].fn();
+        await settle();
+        const before = errors.length;
+        rejectZombie(new Error("late failure nobody asked about"));
+        await settle();
+        assert.equal(errors.length, before, "abandoned zombies never log");
+      } finally {
+        console.error = orig;
+      }
+    });
+
+    it("jobs without timeoutMs register no watchdog timer and behave as before", async () => {
+      const { s, timers } = make();
+      const errors = [];
+      const orig = console.error;
+      console.error = (...args) => errors.push(args.join(" "));
+      try {
+        s.registerJob({ name: "plain", run: () => Promise.resolve() });
+        s.runNow("plain");
+        await settle();
+        assert.equal(timers.timeouts.length, 0, "no watchdog timer when unset");
+        assert.equal(s.getJob("plain").inFlight, false);
+        assert.equal(s.getJob("plain").lastError, null);
+
+        s.registerJob({ name: "plainfail", run: () => Promise.reject(new Error("boom")) });
+        s.runNow("plainfail");
+        await settle();
+        assert.equal(s.getJob("plainfail").inFlight, false);
+        assert.equal(s.getJob("plainfail").lastError, "boom");
+        assert.match(errors.join(" "), /plainfail tick failed: boom/);
+      } finally {
+        console.error = orig;
+      }
+    });
+  });
 });

@@ -66,6 +66,11 @@ function createScheduler(deps = {}) {
    * @param {string} [spec.cron] node-cron expression (local timezone)
    * @param {"skip"|"allow"} [spec.overlap]
    * @param {boolean} [spec.unref] unref timers (default true)
+   * @param {number} [spec.timeoutMs] watchdog: if a tick has not settled
+   *   within this many ms, log/record a timeout and release the overlap
+   *   slot so the job self-heals (#858). The zombie tick is NOT cancelled —
+   *   when (if) it finally settles, its results are discarded, never
+   *   applied to a later attempt.
    */
   function registerJob(spec) {
     if (!spec?.name || typeof spec.name !== "string") {
@@ -86,6 +91,10 @@ function createScheduler(deps = {}) {
         Number.isFinite(spec.intervalMs) && spec.intervalMs > 0
           ? spec.intervalMs
           : null,
+      timeoutMs:
+        Number.isFinite(spec.timeoutMs) && spec.timeoutMs > 0
+          ? spec.timeoutMs
+          : null,
       cron: spec.cron || null,
       overlap,
       inFlight: false,
@@ -97,6 +106,7 @@ function createScheduler(deps = {}) {
       timers: [],
       cronTask: null,
       _fire: null,
+      _attempt: null,
     };
 
     const fire = () => {
@@ -110,22 +120,61 @@ function createScheduler(deps = {}) {
       job.inFlight = true;
       job.lastStartedAt = now();
       job.runCount += 1;
-      Promise.resolve()
-        .then(() => job.run())
-        .then(() => {
-          job.lastError = null;
-        })
-        .catch((err) => {
-          job.lastError = err?.message || String(err);
-          console.error(
-            `[scheduler] ${job.name} tick failed:`,
-            job.lastError,
-          );
-        })
-        .finally(() => {
-          job.inFlight = false;
-          job.lastFinishedAt = now();
+      // Attempt token (#858): a zombie tick abandoned by the watchdog must
+      // never touch state, logs, or the inFlight slot owned by a LATER run.
+      const attempt = {};
+      job._attempt = attempt;
+
+      const runGuarded = () => {
+        if (!job.timeoutMs) {
+          return Promise.resolve()
+            .then(() => job.run())
+            .then(
+              () => ({ outcome: "ok" }),
+              (error) => ({ outcome: "error", error }),
+            );
+        }
+        return new Promise((resolveRun) => {
+          let done = false;
+          const timer = setTimeoutFn(() => {
+            if (done) return;
+            done = true;
+            resolveRun({ outcome: "timeout" });
+          }, job.timeoutMs);
+          if (unref && typeof timer.unref === "function") timer.unref();
+          Promise.resolve()
+            .then(() => job.run())
+            .then(
+              () => {
+                if (done) return;
+                done = true;
+                clearTimeoutFn(timer);
+                resolveRun({ outcome: "ok" });
+              },
+              (error) => {
+                if (done) return;
+                done = true;
+                clearTimeoutFn(timer);
+                resolveRun({ outcome: "error", error });
+              },
+            );
         });
+      };
+
+      runGuarded().then((res) => {
+        if (job._attempt !== attempt) return; // abandoned zombie — stay silent
+        if (res.outcome === "ok") {
+          job.lastError = null;
+        } else if (res.outcome === "error") {
+          job.lastError = res.error?.message || String(res.error);
+          console.error(`[scheduler] ${job.name} tick failed:`, job.lastError);
+        } else {
+          job.lastError = `tick exceeded ${job.timeoutMs}ms (abandoned; slot released)`;
+          console.error(`[scheduler] ${job.name}: ${job.lastError}`);
+        }
+        job.inFlight = false;
+        job.lastFinishedAt = now();
+      });
     };
     job._fire = fire;
 
@@ -213,6 +262,7 @@ function createScheduler(deps = {}) {
       lastFinishedAt: job.lastFinishedAt,
       lastError: job.lastError,
       intervalMs: job.intervalMs,
+      timeoutMs: job.timeoutMs,
       cron: job.cron,
       running: job.inFlight,
       runCount: job.runCount,

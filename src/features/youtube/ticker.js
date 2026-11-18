@@ -87,32 +87,75 @@ function logApiIssue(where, message) {
  * GET against the YouTube Data API. `pathname` MUST NOT contain the key —
  * it is appended here and must not leak into any error string.
  * Swappable for tests (setGoogleGetForTests), like lavalink's manager seam.
+ *
+ * #858: every exit settles EXACTLY ONCE via settleOnce — response `end`,
+ * mid-stream `aborted`, socket `error`, or the idle/connect timeout. Before
+ * this, a connection that established and then went silent (no FIN, no RST)
+ * fired neither `end` nor `error`, so the promise never settled and the
+ * scheduler's overlap slot stayed occupied FOREVER (the youtube ticker
+ * wedge: thousands of "previous tick still running; skipping"). The
+ * watchdog in the scheduler is the backstop; this closes the hang itself.
+ * Timeouts surface through the existing { ok:false, error } contract —
+ * callers logApiIssue the cause; never a silent drop, never the key.
+ *
+ * `transport` is the http(s)-shaped module seam (tests inject http against
+ * a local listener); production always uses https.
  */
-let googleGet = (pathname) =>
-  new Promise((resolve) => {
-    const sep = pathname.includes("?") ? "&" : "?";
-    const req = https.request(
-      {
-        hostname: GOOGLE_API_HOST,
-        port: 443,
-        path: `${pathname}${sep}key=${encodeURIComponent(process.env.YOUTUBE_API_KEY || "")}`,
-        method: "GET",
-      },
-      (res) => {
-        let raw = "";
-        res.on("data", (chunk) => {
-          raw += chunk;
+const GOOGLE_GET_TIMEOUT_MS = 15_000;
+
+function googleGetOnce(options, timeoutMs = GOOGLE_GET_TIMEOUT_MS, transport = https) {
+  return new Promise((resolve) => {
+    let settled = false;
+    const settleOnce = (value) => {
+      if (settled) return;
+      settled = true;
+      resolve(value);
+    };
+    const req = transport.request({ ...options, method: "GET" }, (res) => {
+      let raw = "";
+      res.on("data", (chunk) => {
+        raw += chunk;
+      });
+      res.on("aborted", () => {
+        try {
+          req.destroy();
+        } catch {
+          /* already gone */
+        }
+        settleOnce({
+          ok: false,
+          status: 0,
+          error: `response aborted (status ${res.statusCode || 0})`,
         });
-        res.on("end", () => {
-          resolve(interpretGoogleResponse(res.statusCode || 0, raw));
-        });
-      },
-    );
+      });
+      res.on("end", () => {
+        settleOnce(interpretGoogleResponse(res.statusCode || 0, raw));
+      });
+    });
+    req.setTimeout(timeoutMs, () => {
+      try {
+        req.destroy(new Error(`request timeout after ${timeoutMs}ms`));
+      } catch {
+        /* destroy errors are themselves handled as 'error' */
+      }
+    });
     req.on("error", (err) => {
-      resolve({ ok: false, status: 0, error: String(err?.message || err) });
+      // err.message only (never options/path) — the API key rides in the
+      // query string and must not reach a log line.
+      settleOnce({ ok: false, status: 0, error: String(err?.message || err) });
     });
     req.end();
   });
+}
+
+let googleGet = (pathname) => {
+  const sep = pathname.includes("?") ? "&" : "?";
+  return googleGetOnce({
+    hostname: GOOGLE_API_HOST,
+    port: 443,
+    path: `${pathname}${sep}key=${encodeURIComponent(process.env.YOUTUBE_API_KEY || "")}`,
+  });
+};
 
 function setGoogleGetForTests(fn) {
   const previous = googleGet;
@@ -822,6 +865,9 @@ function startYoutubeTicker(supervisor) {
     // each community's youtube_polling_interval_minutes (#379, twitch's
     // model). The old hardcoded 5-minute sweep ignored the setting entirely.
     intervalMs: 60_000,
+    // #858 backstop: even a bug we have not found yet must never occupy the
+    // overlap slot forever — abandon a runaway tick after 2.5× cadence.
+    timeoutMs: 150_000,
     align: true,
     runImmediately: true,
     run: () => runYoutubeTick(supervisor),
@@ -884,4 +930,8 @@ module.exports = {
   // tests (#441): transport seam + pure response interpretation
   interpretGoogleResponse,
   setGoogleGetForTests,
+  // #858: raw-transport GET (transport/timeout injectable) — exercised
+  // against a local listener in test/youtube-ticker-net.test.js
+  googleGetOnce,
+  GOOGLE_GET_TIMEOUT_MS,
 };
