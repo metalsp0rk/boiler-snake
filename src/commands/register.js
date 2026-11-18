@@ -17,6 +17,7 @@ const {
 } = require("discord.js");
 
 const { buildDefaultRegistry } = require("./registry");
+const { restTransportAgent } = require("../core/restTransportAgent");
 
 async function main() {
   const token = process.env.DISCORD_TOKEN;
@@ -39,9 +40,16 @@ async function main() {
       : "";
   const restApi = apiBase ? `${apiBase.replace(/\/+$/, "")}/api` : undefined;
 
-  const rest = new REST(
-    restApi ? { version: "10", api: restApi } : { version: "10" },
-  ).setToken(token);
+  // #855 parity with src/client.js: pin the REST transport agent so the
+  // dispatcher never comes from the (hijackable) process-global undici slot.
+  const agent = restTransportAgent();
+  const restOptions = {
+    version: "10",
+    ...(restApi ? { api: restApi } : {}),
+    ...(agent ? { agent } : {}),
+  };
+
+  const rest = new REST(restOptions).setToken(token);
 
   if (devGuildId) {
     await rest.put(Routes.applicationGuildCommands(clientId, devGuildId), {
@@ -53,7 +61,15 @@ async function main() {
 
   const client = new Client({
     intents: [GatewayIntentBits.Guilds],
-    ...(restApi ? { rest: { api: restApi }, ws: { compress: false } } : {}),
+    ...(restApi || agent
+      ? {
+          rest: {
+            ...(restApi ? { api: restApi } : {}),
+            ...(agent ? { agent } : {}),
+          },
+          ...(restApi ? { ws: { compress: false } } : {}),
+        }
+      : {}),
   });
   await client.login(token);
 
