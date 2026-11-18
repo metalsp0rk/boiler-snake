@@ -93,6 +93,7 @@ Migrations under `src/db/migrations/` run automatically on boot.
 
 - Enable the **Message Content Intent** if you want `messageCreate` to fire reliably for all message events.
   - Without it, the bot may not receive message content and (depending on gateway/intents configuration) may not receive message events as expected.
+- The bot also subscribes to **Direct Messages** (ban-appeals ferry inbound lane, #851). It is NOT privileged — no portal toggle exists; nothing to enable beyond the Message Content Intent above.
 - Create Bot & Token from Discord Developer Portal. Bot must have the following permissions:
 ![Bot Permissions](https://github.com/metalsp0rk/boiler-snake/blob/main/bot_settings.png "Bot Permissions")
 

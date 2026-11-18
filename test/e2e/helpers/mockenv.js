@@ -576,6 +576,19 @@ class MockEnv {
   }
 
   /**
+   * Open (idempotently) the bot↔user DM channel — POST /users/@me/channels.
+   * #851: the INBOUND ferry lane needs the DM to exist before the human can
+   * speak into it; a real user opens it by typing, this mirrors that.
+   */
+  async openDmChannel(userId) {
+    return j(`${this.base}/api/users/@me/channels`, {
+      method: "POST",
+      headers: this.auth,
+      body: JSON.stringify({ recipient_id: String(userId) }),
+    });
+  }
+
+  /**
    * DM channel id between the bot and `userId`, or null. Null is the
    * STRONG zero-DM assertion: the mock's POST /users/@me/channels is
    * idempotent and the channel row IS the DM evidence — a feature that
