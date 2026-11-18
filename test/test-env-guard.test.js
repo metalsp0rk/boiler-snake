@@ -131,3 +131,82 @@ describe("test-env guard (#699): a test process never binds the repo-default DB"
     );
   });
 });
+
+/**
+ * #857/#832 pins — deployment-context knobs (public base URL, web surface,
+ * EventSub wiring) must be NEUTRAL in test processes even when the shell has
+ * them (developer .env auto-loaded into every session by a dotenv plugin made
+ * the tickets.test.js "no base URL" cases false-red locally while CI stayed
+ * green). Unlike DB_PATH, shell presence is NOT honored for this list; the
+ * escape hatch is TEST_ENV_GUARD_PINS_PASSTHROUGH.
+ */
+describe("test-env guard (#857/#832): deployment-context env is stripped", () => {
+  const PINNED = [
+    "PUBLIC_BASE_URL",
+    "TICKET_PUBLIC_BASE_URL",
+    "PUBLIC_HTTP_PORT",
+    "TICKET_HTTP_PORT",
+    "WEB_LOGIN_REDIRECT_URI",
+    "WEB_LOGIN_PROMPT",
+    "WEB_SESSION_TTL_HOURS",
+    "WEB_TIER_CACHE_TTL_MS",
+    "WEB_RATE_LIMIT_WINDOW_MS",
+    "WEB_RATE_LIMIT_AUTH_MAX",
+    "WEB_RATE_LIMIT_AUTH_USER_MAX",
+    "WEB_RATE_LIMIT_MUTATION_MAX",
+    "WEB_MAX_BODY_BYTES",
+    "WEB_TRUST_PROXY",
+    "TWITCH_CLIENT_ID",
+    "TWITCH_CLIENT_SECRET",
+    "TWITCH_EVENTSUB_SECRET",
+    "TWITCH_EVENTSUB_CALLBACK_URL",
+    "TWITCH_EVENTSUB_MAX_CHANNELS",
+  ];
+
+  const PROBE = `console.log(JSON.stringify(
+    ${JSON.stringify(PINNED)}.filter((k) => process.env[k] !== undefined)
+  ))`;
+
+  function probeGuard(extraEnv = {}) {
+    const env = cleanDbEnv({
+      ...Object.fromEntries(PINNED.map((k) => [k, "http://leaked.example"])),
+      ...extraEnv,
+    });
+    const r = runNode({ args: ["-r", GUARD_ARG, "-e", PROBE], env });
+    assert.equal(r.status, 0, `child failed: ${r.stderr}`);
+    return lastJson(r.stdout);
+  }
+
+  it("strips every pinned knob that the shell (or a .env plugin) leaked in", () => {
+    assert.deepEqual(probeGuard(), [], "all pinned knobs must be gone after the guard");
+  });
+
+  it("TEST_ENV_GUARD_PINS_PASSTHROUGH re-admits named knobs (or all with *)", () => {
+    assert.deepEqual(probeGuard({ TEST_ENV_GUARD_PINS_PASSTHROUGH: "PUBLIC_BASE_URL" }), [
+      "PUBLIC_BASE_URL",
+    ]);
+    assert.deepEqual(
+      probeGuard({ TEST_ENV_GUARD_PINS_PASSTHROUGH: "PUBLIC_BASE_URL,TWITCH_EVENTSUB_SECRET" }),
+      ["PUBLIC_BASE_URL", "TWITCH_EVENTSUB_SECRET"],
+    );
+    assert.deepEqual(probeGuard({ TEST_ENV_GUARD_PINS_PASSTHROUGH: "*" }), PINNED);
+  });
+
+  it("the pinned list covers the knobs the integration suites branch on", () => {
+    // tickets.test.js resolves the transcript URL from PUBLIC_BASE_URL ||
+    // TICKET_PUBLIC_BASE_URL — losing either name to drift re-opens #857.
+    assert.ok(PINNED.includes("PUBLIC_BASE_URL"));
+    assert.ok(PINNED.includes("TICKET_PUBLIC_BASE_URL"));
+    // The guard file and this pin must not drift apart.
+    const guardSrc = fs.readFileSync(
+      path.join(REPO_ROOT, "test", "helpers", "test-env-guard.js"),
+      "utf8",
+    );
+    const declared = [...guardSrc.matchAll(/^\s{2}"([A-Z0-9_]+)",$/gm)].map((m) => m[1]);
+    assert.deepEqual(
+      declared.sort(),
+      [...PINNED].sort(),
+      "test-env-guard.js PINNED_NEUTRAL_ENV and this pin drifted",
+    );
+  });
+});

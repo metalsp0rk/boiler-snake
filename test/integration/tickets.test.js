@@ -725,19 +725,27 @@ describe("integration: tickets", () => {
   // --- Fix 2 (spec §1.11): DM the requester the transcript link on archive ---
 
   /**
-   * Run `fn` with TICKET_PUBLIC_BASE_URL temporarily set (env save/restore).
+   * Run `fn` with BOTH public-base-URL knobs (PUBLIC_BASE_URL + the legacy
+   * TICKET_PUBLIC_BASE_URL alias — the resolver prefers the former, #857)
+   * temporarily set (env save/restore).
    * @param {string|null} base
    * @param {() => Promise<object>} fn
    */
   async function withBaseUrl(base, fn) {
-    const prev = process.env.TICKET_PUBLIC_BASE_URL;
-    if (base == null) delete process.env.TICKET_PUBLIC_BASE_URL;
-    else process.env.TICKET_PUBLIC_BASE_URL = base;
+    const keys = ["PUBLIC_BASE_URL", "TICKET_PUBLIC_BASE_URL"];
+    const prev = new Map(keys.map((key) => [key, process.env[key]]));
+    for (const key of keys) {
+      if (base == null) delete process.env[key];
+      else process.env[key] = base;
+    }
     try {
       return await fn();
     } finally {
-      if (prev === undefined) delete process.env.TICKET_PUBLIC_BASE_URL;
-      else process.env.TICKET_PUBLIC_BASE_URL = prev;
+      for (const key of keys) {
+        const value = prev.get(key);
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
     }
   }
 
