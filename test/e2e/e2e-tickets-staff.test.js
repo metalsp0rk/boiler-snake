@@ -480,9 +480,18 @@ describe(
       const row = await poll(
         async () => {
           const r = ticket(1);
-          return r && r.archived === 1 && r.channel_id === null ? r : null;
+          // #865: archive_message_id is stamped by a SEPARATE UPDATE after
+          // the embed posts (repositories/tickets.js updateArchiveMessageId),
+          // so it must be part of the poll predicate — asserting it off an
+          // "archived && channel released" snapshot races the stamp landing.
+          return r &&
+            r.archived === 1 &&
+            r.channel_id === null &&
+            r.archive_message_id
+            ? r
+            : null;
         },
-        { timeoutMs: 10_000, label: "archive completed (row flags)" },
+        { timeoutMs: 10_000, label: "archive completed (row flags + embed stamp)" },
       );
       assert.ok(row.transcript_token, "transcript token assigned");
       assert.ok(row.transcript_path, "transcript path persisted");
