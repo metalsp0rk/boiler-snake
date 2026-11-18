@@ -4,15 +4,17 @@ const {
   Partials,
 } = require("discord.js");
 const { installGatewayPayloadGuard } = require("./core/gatewayPayloadGuard");
+const { restTransportAgent } = require("./core/restTransportAgent");
 
 /**
  * Resolve discord.js client options. With DISCORD_API_BASE UNSET (production
- * default) the options are exactly what they have always been. When set to an
- * http(s) origin (E2E spike only — e.g. a local fauxcord mock server), REST
- * is pointed at `<base>/api` (→ `/api/v10/...`) and transport compression is
- * disabled because the mock speaks plain JSON frames only. The gateway URL
- * needs no separate override: discord.js discovers it through this same REST
- * via GET /gateway/bot, so the mock transparently owns both planes.
+ * default) the options are exactly what they have always been (plus the
+ * pinned REST transport agent, #855). When set to an http(s) origin (E2E
+ * spike only — e.g. a local fauxcord mock server), REST is pointed at
+ * `<base>/api` (→ `/api/v10/...`) and transport compression is disabled
+ * because the mock speaks plain JSON frames only. The gateway URL needs no
+ * separate override: discord.js discovers it through this same REST via
+ * GET /gateway/bot, so the mock transparently owns both planes.
  *
  * @returns {import("discord.js").ClientOptions}
  */
@@ -36,6 +38,13 @@ function clientOptions() {
       Partials.GuildMember,
     ],
   };
+  // #855: give REST an explicit transport agent so it never inherits the
+  // process-global undici dispatcher — jsdom's vendored undici@8 hijacks
+  // that global the first time gork `readPage` loads it, and multipart
+  // replies (/leaderboard's PNG) then die on its foreign-FormData gate.
+  const rest = {};
+  const agent = restTransportAgent();
+  if (agent) rest.agent = agent;
   const base =
     typeof process.env.DISCORD_API_BASE === "string"
       ? process.env.DISCORD_API_BASE.trim()
@@ -44,9 +53,10 @@ function clientOptions() {
     console.warn(
       `[client] DISCORD_API_BASE is set (${base}) — Discord REST/Gateway traffic targets a MOCK server (E2E only, never production)`,
     );
-    options.rest = { api: `${base.replace(/\/+$/, "")}/api` };
+    rest.api = `${base.replace(/\/+$/, "")}/api`;
     options.ws = { compress: false };
   }
+  if (Object.keys(rest).length > 0) options.rest = rest;
   return options;
 }
 
