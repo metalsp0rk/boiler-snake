@@ -264,7 +264,7 @@ Delivery is dual-platform by construction: like every notification feature, anno
 
 ## Privacy note
 
-Feeds are fetched **from your bot host**, over the open internet: each feed host sees your host's IP address and the configured User-Agent on every poll (every ~interval per feed, far less on `304` responses). What gets posted into the notify channel is the **feed's own content** — title, snippet, thumbnail URL, timestamp — neutralized for mentions but not rewritten. Subscribing to a feed also tells that feed host, via repeated polls, that your community reads it.
+Feeds are fetched **from your bot host**, over the open internet: each feed host sees your host's IP address and the configured User-Agent on every poll (every ~interval per feed, far less on `304` responses). What gets posted into the notify channel is the **feed's own content** — title, snippet, thumbnail URL, timestamp — neutralized for mentions and markdown-deception (#825: link labels, emphasis, spoilers, and code markup in feed-authored text are escaped to inert characters at the payload boundary; bare URLs stay visible but never disguised), but otherwise not rewritten. Subscribing to a feed also tells that feed host, via repeated polls, that your community reads it.
 
 ## Troubleshooting
 
