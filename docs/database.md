@@ -79,6 +79,7 @@ boiler-snake/
 | `fluxer_oauth_transactions` | Single-use Fluxer web sign-in state (PKCE verifier, ≤10-minute lifetime) |
 | `ticket_panels` | Posted ticket-panel messages managed via `/ticket panel` (§17) |
 | `ticket_create_reservations` | Atomic ticket self-create rate-limit slot (#420) |
+| `ticket_reports` | One structured side record per Report Post / Report User ticket — kind, subject, reported message + source channel (`066`, #745, §17) |
 | `reaction_role_claims` | Per-emoji role-claim ledger — reaction removal can't strip a role another path granted (#433) |
 | `twitch_eventsub_subs` | EventSub subscription ledger per (type, broadcaster), shared across guilds (§8d) |
 | `automod_cases` | Staff referrals into auto-moderation: one case row per referral with per-community `A-n` number, referrer, referred message/channel, target user, note (case input), pipeline `status` (#726, epic #723), plus the harness run-metadata columns `last_model` / `last_duration_ms` / `last_tool_names` / `decision_log` / `last_run_error` (#728, `070`) |
@@ -100,6 +101,9 @@ boiler-snake/
 | `event_crossposts` | Cross-community crosspost pairs (invite-code approval, per-destination settings) |
 | `event_crosspost_messages` | Destination message rows mapping crosspost copies to the source event |
 | `automod_case_actions` | Auto-moderation case-action ledger: one suggested→claimed→terminal row per action a case took, refused, or failed against a considered user (#729, §25) |
+| `ban_records` | One durable row per ban cycle (B-n): source/reason, expiry, terminal-status machine, DM claim flags, identity fingerprint, expiry quarantine counters (§26, #772/#773/#809/#810) |
+| `ban_appeals` | One appeal per banable cycle: `filed`→`open`→one of `granted`/`denied`/`closed`, ticket link, ferry cursors + pause (§26, #773) |
+| `ban_reconcile_state` | Per-community reconcile rotation clock (one row, PK = community) (§26, #810) |
 
 ---
 
@@ -315,6 +319,9 @@ CREATE TABLE "guild_settings" (
 | `automod_paused_at` | NULL | Persisted circuit-breaker pause timestamp (`067`) — a restart never silently re-arms auto kick/ban/timeout |
 | `automod_pause_reason` | NULL | Why auto-moderation's irreversible arms are paused (`067`); cleared by `/automodconfig safety resume` (confirm) |
 | `automod_rules_channel_id` | NULL | The guild's rules **source** channel for the one-time batch rules extraction (`073`); set via `/automodconfig rules source`, cleared by `rules clear`; NULL = unset — the judge never reads this column (cases judge the distilled `automod_rules` text) |
+| `ban_dm` | 1 | Send the "you were banned, expires …" DM **before** a tracked ban executes (`074`, #772); the shared-guild DM path is the only way to reach a member mid-ban, so the notice rides before the ban, never after |
+| `welcome_back_dm` | 1 | Send the welcome-back DM on any tracked unban (expiry, clemency, or manual-unban event path) (`074`, #772) |
+| `ban_appeals` | 1 | Accept ban appeals for this guild (`075`, #773) — the intake gate: appeal button + statement modal + ticket opener refuse when off |
 | `audit_log_channel_id` | NULL | Staff audit log channel |
 | `message_log_channel_id` | NULL | Deleted-message log channel |
 | `event_reminder_channel_id` | NULL | Default event-reminder notify channel |
@@ -1186,6 +1193,27 @@ CREATE TABLE ticket_create_reservations (
 );
 ```
 
+#### `ticket_reports`
+
+One structured side record per context-menu **Report Post / Report User** ticket (`066_ticket_reports`, #745). The report is NOT a ticket type — it is a ticket the Report flow opened, and this row holds what the flow learned: `kind` (`message` for Report Post, `user` for Report User), the reported subject, the reported message + its source channel, a `message_deleted` flag the moderation actions flip, and the modal context note. PK `ticket_id` with `ON DELETE CASCADE` to `tickets` — closing and deleting the ticket takes the report with it; the partial index on `reported_message_id` backs the duplicate-open-report nudge.
+
+```sql
+-- Live DDL (migrated schema, from sqlite_master)
+CREATE TABLE ticket_reports (
+  ticket_id INTEGER PRIMARY KEY REFERENCES tickets(id) ON DELETE CASCADE,
+  kind TEXT NOT NULL CHECK (kind IN ('message','user')),
+  subject_user_id TEXT NOT NULL,
+  reported_message_id TEXT,
+  source_channel_id TEXT,
+  message_deleted INTEGER NOT NULL DEFAULT 0,
+  snapshot_note TEXT,
+  created_at INTEGER NOT NULL
+);
+CREATE INDEX idx_ticket_reports_message
+  ON ticket_reports(reported_message_id)
+ WHERE reported_message_id IS NOT NULL;
+```
+
 See [Help Ticket System](tickets.md).
 
 ---
@@ -1881,6 +1909,101 @@ CREATE UNIQUE INDEX ux_automod_case_actions_slot
 
 ---
 
+### 26. Ban lifecycle tables
+
+One row per **ban cycle**, plus the appeal hanging off it (#772/#773, identity #809, expiry quarantine #810). Discord bans have no native duration — the expiry ticker, the auto-unban claim, the welcome-back path, and the appeal flow ALL key off these rows; the manual-unban event path flows through the same record ("events keep the record truthful"). Created by `074_ban_lifecycle` (ban_records), `075_ban_appeals` (ban_appeals + first CHECK rebuild), `076_ban_identity`, `077_expiry_quarantine`; all FKs are real `ON DELETE CASCADE` with the 034 ordering guard.
+
+#### `ban_records`
+
+Durable ban record per cycle with the per-community sequential **B-n** number. `source` splits staff bans (`/ban`, context menu) from automod bans (`074` CHECK). The `status` machine is **APPEND-ONLY**: SQLite cannot widen a CHECK in place, so each new terminal status arrived via its own DDL-derived rebuild (040 discipline: one transaction, FK toggle OUTSIDE it, stored-DDL belt, `foreign_key_check(ban_appeals)` child belt; a pure EXTENSION of the domain, so existing rows can never violate). Vocabulary: `active` (the only row the partial UNIQUE admits), `expired_unbanned`, `unbanned_manual`, `pending_rejoin`, `welcomed` (074), `clemency_granted` (075 — the appeal granted clemency), `expired_held` (076 — term lapsed but the LIVE ban is not the one this record issued; auto-unban HELD, staff owns whatever is live), `expiry_failed` (077 — quarantined after repeated real attempts; leaves the sweep/reconcile selection forever, loud embed + audit row). Ids are stable by contract (`appeal:<banRecordId>` customIds depend on them) — rebuilds copy ids explicitly and the AUTOINCREMENT sequence continues past `MAX(id)`.
+
+- `uq_ban_records_number` — the B-n allocation belt (repository assigns MAX+1 in a transaction; named so the repository error path can name it, 074 posture).
+- `uq_ban_records_active` — partial UNIQUE `(community_id, user_id) WHERE status='active'`: one active ban per user per community at the SCHEMA level; the service duplicate guard runs first only for the friendly refusal.
+- `ban_identity_reason` (`076`, #809) — the live ban reason captured (via `fetchBan`) at ban-issue time: the record's fingerprint of the ban it owns. NULL = never captured (pre-#809 rows, or identity read failed) → expiry falls back to historical behavior (the reason is the ONLY identity the v10 Ban payload carries).
+- `expiry_attempts` (`077`, #810) — counts REAL winner-side finalize attempts (a loser to the claim lease did nothing and never counts); after the configured ceiling the row terminalizes to `expiry_failed`.
+- DM claim flags `ban_dm_sent` / `welcome_dm_sent` plus the `claimUnban`/`claimWelcome` lease claims: "one ban DM per cycle, one welcome per cycle" is claim law, not event-ordering luck.
+
+```sql
+-- Live DDL (migrated schema, from sqlite_master; trailing appended columns
+-- are the 076/077 rebuild/append shape, kept verbatim)
+CREATE TABLE "ban_records" (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  community_id INTEGER NOT NULL REFERENCES communities(id) ON DELETE CASCADE,
+  ban_number INTEGER NOT NULL,
+  user_id TEXT NOT NULL,
+  moderator_id TEXT,
+  source TEXT NOT NULL DEFAULT 'staff'
+    CHECK (source IN ('staff','automod')),
+  reason TEXT NOT NULL,
+  banned_at INTEGER NOT NULL,
+  expires_at INTEGER,          -- NULL = permanent
+  status TEXT NOT NULL DEFAULT 'active'
+    CHECK (status IN ('active','expired_unbanned','unbanned_manual','pending_rejoin','welcomed','clemency_granted','expired_held','expiry_failed')),
+  ban_dm_sent INTEGER NOT NULL DEFAULT 0,
+  welcome_dm_sent INTEGER NOT NULL DEFAULT 0,
+  unban_claimed_at INTEGER,
+  unban_reason TEXT
+, ban_identity_reason TEXT, expiry_attempts INTEGER NOT NULL DEFAULT 0);
+CREATE UNIQUE INDEX uq_ban_records_number
+  ON ban_records(community_id, ban_number);
+CREATE UNIQUE INDEX uq_ban_records_active
+  ON ban_records(community_id, user_id) WHERE status='active';
+CREATE INDEX idx_ban_records_user
+  ON ban_records(community_id, user_id, banned_at DESC);
+CREATE INDEX idx_ban_records_due
+  ON ban_records(expires_at) WHERE status='active';
+```
+
+Primary writers: `src/db/repositories/banRecords.js` (services: `src/features/banLifecycle`, `src/features/banAppeals`). The status CHECK stored in `sqlite_master` and `BAN_RECORD_STATUSES` in the repository are pinned against each other by `test/ban-records-repo.test.js` (any drift fails the suite).
+
+#### `ban_appeals`
+
+One appeal per banable cycle (`075`, #773). `status`: `filed` (intake landed, ticket not yet created) → `open` (staff ticket exists, relay live) → exactly one of `granted|denied|closed` via the single-winner `claimAppealOutcome` claim — simultaneous buttons cannot double-decide. The named `uq_ban_appeals_ban_record` UNIQUE makes "one appeal per ban cycle" schema law, not intake luck. The ferry cursors are FOUR plain columns (`ferry_user_msg_id`/`ferry_user_ts`, `ferry_ticket_msg_id`/`ferry_ticket_ts`) — the hot path is a single-row PK lookup, no JSON parse rides the relay — plus `ferry_paused` (the in-ticket pause silences BOTH directions; cursors stay behind so boot catch-up can cover the quiet period). `decided_by`/`decided_at`/`denial_reason` stamp the outcome; `ticket_channel_id` has a partial index for the ticket→appeal lookup the ferry and `ap:*` button lanes run every event.
+
+```sql
+-- Live DDL (migrated schema, from sqlite_master)
+CREATE TABLE ban_appeals (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  community_id INTEGER NOT NULL REFERENCES communities(id) ON DELETE CASCADE,
+  ban_record_id INTEGER NOT NULL REFERENCES ban_records(id) ON DELETE CASCADE,
+  ticket_channel_id TEXT,
+  status TEXT NOT NULL DEFAULT 'filed'
+    CHECK (status IN ('filed','open','granted','denied','closed')),
+  appeal_statement TEXT NOT NULL,
+  ferry_user_msg_id TEXT,
+  ferry_user_ts INTEGER,
+  ferry_ticket_msg_id TEXT,
+  ferry_ticket_ts INTEGER,
+  ferry_paused INTEGER NOT NULL DEFAULT 0,
+  decided_by TEXT,
+  decided_at INTEGER,
+  denial_reason TEXT,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+CREATE UNIQUE INDEX uq_ban_appeals_ban_record
+  ON ban_appeals(ban_record_id);
+CREATE INDEX idx_ban_appeals_ticket
+  ON ban_appeals(community_id, ticket_channel_id)
+  WHERE ticket_channel_id IS NOT NULL;
+```
+
+Primary writer: `src/db/repositories/banAppeals.js` (feature: `src/features/banAppeals`; flow docs: [Ban lifecycle](ban-lifecycle.md)).
+
+#### `ban_reconcile_state`
+
+One row per community — the reconcile ROTATION clock (`077`, #810). Boot reconcile used to take the same deterministic oldest-first slice every restart, so communities with untrackable live bans starved everyone else's reconcile forever; the rotation orders passes by `last_reconciled_at` and every boot re-runs `markCommunityReconciled` for the community it just swept.
+
+```sql
+-- Live DDL (migrated schema, from sqlite_master)
+CREATE TABLE ban_reconcile_state (
+  community_id INTEGER PRIMARY KEY REFERENCES communities(id) ON DELETE CASCADE,
+  last_reconciled_at INTEGER NOT NULL
+);
+```
+
+---
+
 ## Database Migrations
 
 Migrations run **automatically** when the db module loads (`src/db/migrate.js` via `src/db/index.js` / the `src/db.js` facade). Steps live under `src/db/migrations/` and are written to be **idempotent** (`CREATE TABLE IF NOT EXISTS`, `addColumnIfMissing`, gated rebuilds, no-op cleanups).
@@ -2000,6 +2123,10 @@ Concretely this means:
 | `071_automod_case_queue` | `automod_cases` moderation-queue columns (#771, epic #723, `addColumnIfMissing` appends, 068-order guard): `required_context` (reviewer-need text, sibling of `note`), `read_before`/`read_after` (per-case read-window counts 0–500; NULL = legacy Gork-owned 40/10), `message_snippet` (anchor-message excerpt at intake; the card's "Reported message" line), `incident_summary` (harness "What happened" line, 070 write posture), `revealed_at`/`revealed_by_user_id` (reporter anonymity until a single-winner staff Reveal), `resolved_at`/`resolution`/`resolved_by_user_id` (first valid resolution wins; vocabulary `recommended`/`manual`/`none` enforced in the repository). Idempotent replay no-ops; pre-#771 rows read NULLs (unrevealed, unresolved, legacy-windowed) |
 | `072_heal_event_dates` | Heal degraded TEXT instants the web calendar rendered as literal "NaN": INTEGER affinity stores non-numeric text AS TEXT (affinity, not coercion — the 005 corruption family), so `events.start_at/end_at/post_at/cutoff_at`, `event_reminder_offsets.fire_at` and `event_series.next_occurrence_at` get REAL dust truncated to integer ms, parseable TEXT instants (ISO / `YYYY-MM-DD HH:MM[:SS]`) converted via `strftime('%s')`, and junk (`'NaN'`, gibberish) set to NULL — except `start_at` (NOT NULL) which falls back to its `created_at` and reminder `fire_at` which lands 0 with `sent_at` stamped (a TEXT `fire_at` never matched the numeric ticker clock, so the reminder never fired). Re-run safe: the second pass matches nothing |
 | `073_automod_rules_channel` | `guild_settings.automod_rules_channel_id` (nullable TEXT, idempotent `addColumnIfMissing` append) — the per-guild rules **source** channel for the one-time batch rules extraction (epic #723 rules-sourcing change): `/automodconfig rules source` stores the channel AND runs the extraction (bounded pins + recent-history read, one LLM distillation under a 20,000-token input cap, refuse-over-cap); the distilled judge text keeps living in `automod_rules` (067) and the case pipeline never reads this column. NULL = unset; existing `automod_rules` rows stay valid untouched |
+| `074_ban_lifecycle` | `ban_records` — the ban lifecycle record (#772, §26): per-community sequential `ban_number` (B-n, named `uq_ban_records_number` belt + repository MAX+1 allocation), partial `uq_ban_records_active` (ONE `active` ban per user per community at the SCHEMA level), `source` CHECK (`staff`/`automod`), `expires_at NULL` = permanent, the five-status machine (`active`/`expired_unbanned`/`unbanned_manual`/`pending_rejoin`/`welcomed`) declared APPEND-ONLY (later statuses arrive via NEW migrations, never edits), DM claim flags + unban claim lease, and the `guild_settings` notice toggles `ban_dm`/`welcome_back_dm` (both default ON, 009 warn_dm family). Real `ON DELETE CASCADE` + 034 ordering guard; ids stable by contract (`appeal:<banRecordId>`) |
+| `075_ban_appeals` | `ban_appeals` — one appeal per ban cycle (#773, §26): `status` `filed`→`open`→`granted`/`denied`/`closed` (single-winner `claimAppealOutcome`), NAMED UNIQUE `ban_record_id` (one appeal per cycle is schema law), ferry cursors as FOUR plain columns + `ferry_paused`, `ticket_channel_id` partial index; PLUS the 074-promised rebuild widening `ban_records.status` with `clemency_granted` — 040 pragma-safe discipline (one transaction, FK toggle outside, live-DDL-derived rebuild, stored-DDL belt, CHECK-presence replay guard, ids copied explicitly); `guild_settings.ban_appeals` intake toggle (default ON) |
+| `076_ban_identity` | Ban identity (#809): `ban_records.ban_identity_reason` TEXT — the live ban reason captured (via `fetchBan`) at ban-issue time, the record's fingerprint of the ban it owns (NULL = never captured → historical fallback; the v10 Ban payload carries NO id/date/moderator); the rebuild widens the status CHECK with the terminal `expired_held` — term lapsed but the live ban is NOT this record's: auto-unban HELD, no welcome DM, staff owns whatever is live. Pure EXTENSION, same 075 rebuild law |
+| `077_expiry_quarantine` | Expiry quarantine + reconcile rotation (#810): `ban_records.expiry_attempts` INTEGER (counts REAL winner-side attempts; a lease loser never counts) and the terminal `expiry_failed` CHECK widening (rebuild, same 075/076 law) — a permanently-failing expiry (dead community, MissingAccess, 50013) LEAVES the `active` domain after the ceiling instead of owning the oldest-first `LIMIT` slice forever (loud embed + audit row at quarantine time); `ban_reconcile_state` (PK `community_id`, `last_reconciled_at`) — the reconcile rotation cursor so boot reconcile stops storming the same communities |
 
 Public API remains available via `require("./db")` (facade over repositories).
 
