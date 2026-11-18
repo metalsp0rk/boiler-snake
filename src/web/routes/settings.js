@@ -53,6 +53,10 @@ const { banner } = require("../views/components");
 const { createSettingsData } = require("../data/settingsData");
 const settingsWrite = require("../data/settingsWrite");
 const { diffConfigLines } = require("../../features/logs/auditLog");
+// #828: a level_xp_factor save moves every level-role threshold (curve is
+// L² × factor) — schedule the same frozen-class reconcile the slash path
+// fires. Parameterless: the levelRoles feature boot binds the supervisor.
+const { scheduleLevelRoleReconcile } = require("../../features/levelRoles/reconcile");
 const { shellGuilds } = require("./shared/shell.js");
 const { makeCacheNameResolver } = require("./shared/discord-cache.js");
 
@@ -138,6 +142,9 @@ function redirectSettings(res, communityId, flag, key, fields) {
  * @param {string} spec.key flash key
  * @param {(outcome: object, guildId: string) => object} spec.auditOf entry for
  *   req.audit — the second arg is the EXTERNAL snowflake (audit display field)
+ * @param {(outcome: object, ids: {communityId: number, guildId: string}) => void} [spec.onAccepted]
+ *   post-audit side effect for accepted writes (fire-and-forget; NEVER
+ *   allowed to fail the request — the write already landed)
  * @param {object} deps { db, settingsData }
  */
 function makeMutationHandler(spec, deps) {
@@ -162,6 +169,20 @@ function makeMutationHandler(spec, deps) {
       deps.voiceData?.invalidate?.(guildId);
       // Fail-closed (§8.1-7): a throwing req.audit propagates → generic 500.
       req.audit(spec.auditOf(outcome, guildId));
+      // Accepted-write side effects (e.g. the #828 level-role reconcile on
+      // a level_xp_factor change). The write + audit already landed: a
+      // scheduler throw must NOT 500 a successful save (rule 5: partial
+      // failure reports partial results, it never rewrites them).
+      if (spec.onAccepted) {
+        try {
+          spec.onAccepted(outcome, { communityId, guildId });
+        } catch (err) {
+          console.error(
+            `[web/settings] onAccepted failed (${spec.key}, community ${communityId}):`,
+            err?.message || err,
+          );
+        }
+      }
       redirectSettings(res, communityId, "ok", spec.key, fields);
     } catch (err) {
       next(err); // → handleAppError: generic 500, nothing leaked
@@ -227,6 +248,17 @@ function buildMutationSpecs(deps) {
           return { kind: "audit", title: "XP settings updated", command: "/setxp", changes };
         })(),
       }),
+      // Slash parity (#828): /setxp fires the level-role reconcile ONLY on
+      // an ACTUAL level_xp_factor change — a no-op save must not trigger
+      // an O(users) REST pass.
+      onAccepted: (outcome, { communityId }) => {
+        if (
+          "level_xp_factor" in outcome.patch &&
+          Number(outcome.before.level_xp_factor) !== Number(outcome.after.level_xp_factor)
+        ) {
+          scheduleLevelRoleReconcile(communityId, "web-xp-factor");
+        }
+      },
     },
     {
       path: "/g/:guildId/settings/decay",

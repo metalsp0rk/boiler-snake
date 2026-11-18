@@ -94,6 +94,9 @@ const { rawFlashQuery } = require("./shared/req.js");
 const { shellGuilds } = require("./shared/shell.js");
 const { makeGuildRoleNameResolver: makeRoleNameResolver } = require("./shared/discord-cache.js");
 const { requireTier } = require("../middleware/requireTier");
+// #828: levelrole set schedules the frozen-class reconcile (see XP spec
+// note in settings.js for why this reaches the feature layer parameterless).
+const { scheduleLevelRoleReconcile } = require("../../features/levelRoles/reconcile");
 const { renderShellPage, writeShellHtml } = require("../views/layout");
 const {
   renderStaffBody,
@@ -599,6 +602,10 @@ function registerStaffRoutes(app, options = {}) {
         ],
       },
     });
+    // Slash parity (#828): the mapping may have just moved under existing
+    // holders — schedule the same reconcile the /leveltorole set handler
+    // fires (remove deletes the pair outright, nothing to reconcile).
+    scheduleLevelRoleReconcile(communityId, "web-levelrole-set");
     respondMutationRedirect(res, communityId);
   });
 

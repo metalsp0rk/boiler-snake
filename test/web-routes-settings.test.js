@@ -942,6 +942,60 @@ describe("web settings page (GET /g/:guildId/settings, staff tier, read-only)", 
         await mountApp();
       });
 
+      it("#828: a level_xp_factor change schedules the level-role reconcile (slash parity)", async () => {
+        // The frozen class (#828): XP-frozen members fall under/over moved
+        // thresholds with no XP event coming — ONLY the config-change
+        // reconcile arms them. Slash /setxp fires it; this pins the web
+        // twin on the shared settings op. Spy supervisor counts pass starts;
+        // a null client makes the pass skip with zero side effects.
+        const reconcile = require("../src/features/levelRoles/reconcile");
+        let calls = 0;
+        reconcile.bindSupervisor({
+          discord: null,
+          clientForCommunity: () => {
+            calls += 1;
+            return null;
+          },
+        });
+        const factor0 = api.getGuildSettings(CID_A).level_xp_factor;
+        try {
+          const { res } = await post(`/g/${CID_A}/settings/xp`, {
+            cookie: cookieOf.staff,
+            fields: { factor: String(factor0 + 40) },
+            token: tokenFor("staff"),
+          });
+          assert.equal(res.status, 302);
+          for (let i = 0; i < 100 && calls === 0; i++) {
+            await new Promise((r) => setImmediate(r));
+          }
+          assert.ok(calls >= 1, "factor change must schedule the reconcile pass");
+
+          // Same-value save: the curve did not move — no second pass.
+          const { res: res2 } = await post(`/g/${CID_A}/settings/xp`, {
+            cookie: cookieOf.staff,
+            fields: { factor: String(factor0 + 40) },
+            token: tokenFor("staff"),
+          });
+          assert.equal(res2.status, 302);
+          await new Promise((r) => setImmediate(r));
+          await new Promise((r) => setImmediate(r));
+          assert.equal(calls, 1, "a no-op factor save must NOT fire an O(users) pass");
+
+          // A non-level knob never schedules either.
+          const { res: res3 } = await post(`/g/${CID_A}/settings/xp`, {
+            cookie: cookieOf.staff,
+            fields: { message: "6" },
+            token: tokenFor("staff"),
+          });
+          assert.equal(res3.status, 302);
+          await new Promise((r) => setImmediate(r));
+          assert.equal(calls, 1);
+        } finally {
+          reconcile.bindSupervisor(null);
+          api.updateGuildSettings(CID_A, { level_xp_factor: factor0 });
+        }
+      });
+
       it("happy path: row + exactly one xp.settings_update audit row", async () => {
         const beforeCount = webAuditCount();
         const { res, location } = await post(`/g/${CID_A}/settings/xp`, {

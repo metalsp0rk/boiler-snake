@@ -673,6 +673,11 @@ Level = floor(sqrt(XP / level_xp_factor))
 | Shown in | `/settings` → **Level curve factor** |
 | Slash command | `/setxp factor:<int>` (range 1–10,000) |
 
+An actual factor change (slash or web) also schedules a background
+level-role reconcile — every threshold in the L² × factor curve moves
+with it, so held roles are re-checked for all tracked members, including
+XP-frozen ones (#828, see [Roles](roles.md)).
+
 Change the level curve via slash command:
 
 ```bash
