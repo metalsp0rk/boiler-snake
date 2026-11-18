@@ -999,10 +999,57 @@ index dd89b8b..0db0b5f 100644
            // Unknown opcodes are ignored (real Discord also ignores unknown
            // opcodes from clients).
 diff --git a/src/gateway/subscribe.ts b/src/gateway/subscribe.ts
-index fd84c19..072475b 100644
+index fd84c19..943f405 100644
 --- a/src/gateway/subscribe.ts
 +++ b/src/gateway/subscribe.ts
-@@ -204,6 +204,20 @@ export function registerGatewaySubscriptions(
+@@ -27,8 +27,21 @@ export function registerGatewaySubscriptions(
+         ...payload.message,
+         ...(payload.guildId && { guild_id: payload.guildId }),
+         ...(payload.member && { member: payload.member }),
++        // SPIKE PATCH (boiler-snake e2e, #851): real Discord sends
++        // `channel_type` on MESSAGE_CREATE for DMs (documented Discord
++        // behaviour). discord.js needs it to MATERIALIZE an uncached DM
++        // channel via Partials.Channel — without it an inbound-first DM is
++        // silently dropped library-side even when the intent is subscribed.
++        ...(!payload.guildId && { channel_type: 1 }),
+       },
+-      GatewayIntentBits.GuildMessages
++      // SPIKE PATCH (boiler-snake e2e, #851): real-Discord intent scoping —
++      // guild-channel MESSAGE_* rides GUILD_MESSAGES, DM-channel MESSAGE_*
++      // rides DIRECT_MESSAGES. The base gated DMs on GuildMessages, so a bot
++      // that never subscribed to DirectMessages still saw DMs here — which
++      // is exactly how the dead DM lane of #851 stayed invisible to e2e.
++      payload.guildId
++        ? GatewayIntentBits.GuildMessages
++        : GatewayIntentBits.DirectMessages
+     )
+   }
+   const onMessageUpdate: Parameters<
+@@ -42,7 +55,10 @@ export function registerGatewaySubscriptions(
+         ...(payload.guildId && { guild_id: payload.guildId }),
+         ...(payload.member && { member: payload.member }),
+       },
+-      GatewayIntentBits.GuildMessages
++      // SPIKE PATCH (boiler-snake e2e, #851): see onMessageCreate.
++      payload.guildId
++        ? GatewayIntentBits.GuildMessages
++        : GatewayIntentBits.DirectMessages
+     )
+   }
+   const onMessageDelete: Parameters<
+@@ -56,7 +72,10 @@ export function registerGatewaySubscriptions(
+         channel_id: payload.channelId,
+         guild_id: payload.guildId,
+       },
+-      GatewayIntentBits.GuildMessages
++      // SPIKE PATCH (boiler-snake e2e, #851): see onMessageCreate.
++      payload.guildId
++        ? GatewayIntentBits.GuildMessages
++        : GatewayIntentBits.DirectMessages
+     )
+   }
+   const onReactionAdd: Parameters<
+@@ -204,6 +223,20 @@ export function registerGatewaySubscriptions(
      )
    }
  
@@ -1023,7 +1070,7 @@ index fd84c19..072475b 100644
    gatewayBus.on('message.create', onMessageCreate)
    gatewayBus.on('message.update', onMessageUpdate)
    gatewayBus.on('message.delete', onMessageDelete)
-@@ -220,6 +234,7 @@ export function registerGatewaySubscriptions(
+@@ -220,6 +253,7 @@ export function registerGatewaySubscriptions(
    gatewayBus.on('guild.role.update', onGuildRoleUpdate)
    gatewayBus.on('guild.role.delete', onGuildRoleDelete)
    gatewayBus.on('interaction.create', onInteractionCreate)
@@ -1031,7 +1078,7 @@ index fd84c19..072475b 100644
  
    return () => {
      gatewayBus.off('message.create', onMessageCreate)
-@@ -238,5 +253,6 @@ export function registerGatewaySubscriptions(
+@@ -238,5 +272,6 @@ export function registerGatewaySubscriptions(
      gatewayBus.off('guild.role.update', onGuildRoleUpdate)
      gatewayBus.off('guild.role.delete', onGuildRoleDelete)
      gatewayBus.off('interaction.create', onInteractionCreate)

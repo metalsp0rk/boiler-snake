@@ -159,6 +159,11 @@ While `open` — the ferry, both directions (plain human messages only)
           the SENDER gets the per-kind "not shared" notice, the other side
           stays silent
 
+The inbound (prisoner DM → ticket) half rides gateway DM delivery, which
+requires the `DirectMessages` intent on the bot connection (#851 — not
+privileged, requested in `src/client.js`; without it the lane is silently
+dark on real Discord).
+
 Staff decision (claim-row UPDATE … WHERE status='open' — first wins)
         → Grant clemency: spend the cycle's welcome FIRST → unban → record
           `clemency_granted` → mint permanent invite → ONE DM (lift + invite)

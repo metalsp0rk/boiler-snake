@@ -29,6 +29,11 @@ function clientOptions() {
       GatewayIntentBits.GuildModeration, // bans
       GatewayIntentBits.GuildMembers, // kicks (privileged — enable Server Members Intent)
       GatewayIntentBits.GuildScheduledEvents, // event reminder interest sync
+      // #851: real Discord delivers DM MESSAGE_CREATE only to subscribers of
+      // DirectMessages (NOT privileged — no portal toggle). Without it the
+      // ban-appeals ferry inbound lane (guild-less MessageCreate → ticket
+      // relay) was silently dead in production while every mock/test passed.
+      GatewayIntentBits.DirectMessages,
     ],
     partials: [
       Partials.Message,
