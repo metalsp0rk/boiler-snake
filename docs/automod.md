@@ -550,7 +550,14 @@ catch, and every failure logs `[automod]` with community/guild/case ids and
 staff-facing copy names the specific cause. The **boot sweep** (feature
 `start` hook) fails any case stuck in `processing` from a previous boot
 (`last_run_error = run interrupted by restart`) with a best-effort channel
-notice.
+notice — and settles any **case-action row still `approved`** (#823): a row
+claimed by the dead run would otherwise sit "in flight" forever (re-clicks
+answer `inFlight`, dismiss refuses the state, finalize is reachable only by
+the dead claimer). The settle is deliberately **not a re-run**: a crash
+leaves the Discord side UNKNOWN (a ban may have landed), so the row lands
+`failed` with `Run interrupted by restart — result unknown; verify the
+outcome on Discord before retrying this action.` — the ledger tells the
+truth and staff decide next.
 
 **Fluxer: explicit no-parity** (epic decision 8). The harness is Discord-only.
 

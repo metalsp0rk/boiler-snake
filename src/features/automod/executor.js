@@ -409,6 +409,9 @@ function ticketReasonDuplicatesNote(reason, narrative) {
  * Re-project an existing (claimed/terminal) row into an outcome — the
  * single-winner loser's answer ("a second click returns the existing
  * result"). `inFlight:true` means another claimer owns a still-running row.
+ * Since #823 "still-running" is honest: a claim orphaned by a process
+ * death no longer answers `inFlight` forever — the boot sweep settles it
+ * to `failed` (result unknown) before the next click can arrive.
  */
 function outcomeFromRow(row, { deduped = true } = {}) {
   const parsed = parseAutomodActionParams(row);

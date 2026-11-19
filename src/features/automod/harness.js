@@ -123,6 +123,7 @@ const {
   consumeAutomodCase,
   createStaffNote,
   listAutomodActionsForCase,
+  settleInterruptedAutomodActions: facadeSettleInterruptedActions,
   MAX_NOTE_CONTENT,
 } = require("../../db");
 const { getAiConfig, chatWithTools } = require("../../core/ai");
@@ -1453,7 +1454,7 @@ async function runCaseInner({ communityId, guildId, caseId, deps, nowMs }) {
  * @returns {{ checked: number, flipped: number, posts: Promise[] }}
  */
 function sweepInterruptedRuns({ client = null, db: dbHandle = null, postToChannel = null } = {}) {
-  const out = { checked: 0, flipped: 0, posts: [] };
+  const out = { checked: 0, flipped: 0, actionsSettled: 0, posts: [] };
   const handle = dbHandle ?? facadeDb;
   try {
     const rows = handle
@@ -1503,6 +1504,45 @@ function sweepInterruptedRuns({ client = null, db: dbHandle = null, postToChanne
     }
     if (out.checked > 0) {
       console.log(`[automod] boot sweep: ${out.flipped}/${out.checked} case run(s) interrupted by restart marked failed.`);
+    }
+
+    // #823 (audit C2-2): the wedge one layer DOWN. A row still `approved`
+    // at boot was claimed by a run that no longer exists — finalize is
+    // gated to that dead claimer, dismiss refuses the state, and every
+    // re-click answered `inFlight` forever. Settle the orphans to
+    // `failed` with a result-unknown cause. NO re-claim/re-run here on
+    // purpose: the crash leaves the Discord side UNKNOWN (a ban may have
+    // landed), so the honest move is to surface the truth to staff, not
+    // to fire the mutation a second time. Runs even with zero interrupted
+    // CASES — a slot-INSERT orphan needs no processing case to exist.
+    try {
+      // The facade `db` is the raw handle — the settle fn rides the
+      // facade module (production/default); an injected handle may carry
+      // its own copy; neither present is a LOUD skip, never a silent one.
+      const settle =
+        handle === facadeDb
+          ? facadeSettleInterruptedActions
+          : typeof handle.settleInterruptedAutomodActions === "function"
+            ? () => handle.settleInterruptedAutomodActions()
+            : null;
+      if (settle) {
+        const settled = settle();
+        out.actionsSettled = Number(settled?.changed ?? 0);
+        if (out.actionsSettled > 0) {
+          console.log(
+            `[automod] boot sweep: ${out.actionsSettled} case-action row(s) left claimed by a dead run settled to failed (result unknown).`,
+          );
+        }
+      } else {
+        console.warn(
+          "[automod] boot sweep: the db handle has no settleInterruptedAutomodActions — #823 action-row settle SKIPPED (stale approved rows may linger)",
+        );
+      }
+    } catch (err) {
+      console.error(
+        "[automod] boot sweep: settling interrupted case-action claims failed:",
+        err?.message || err,
+      );
     }
   } catch (err) {
     console.error("[automod] boot sweep failed:", err?.message || err);

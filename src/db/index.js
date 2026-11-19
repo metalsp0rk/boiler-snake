@@ -458,6 +458,7 @@ module.exports = {
   claimAutomodSuggestion: automodCaseActions.claimAutomodSuggestion,
   dismissAutomodSuggestion: automodCaseActions.dismissAutomodSuggestion,
   recordAutomodActionResult: automodCaseActions.recordAutomodActionResult,
+  settleInterruptedAutomodActions: automodCaseActions.settleInterruptedAutomodActions,
   getAutomodAction: automodCaseActions.getAutomodAction,
   getAutomodActionBySlot: automodCaseActions.getAutomodActionBySlot,
   listAutomodActionsForCase: automodCaseActions.listAutomodActionsForCase,
