@@ -637,12 +637,28 @@ function createGuild(opts = {}) {
         kicks.push({ userId, ...kickOpts });
         return { userId };
       },
+      // One-shot armed throws (#821 law — the channel `__failSends` twin on
+      // the unban surface): queued entries throw the DiscordAPIError shape
+      // BEFORE the fidelity checks, so integration can produce a real
+      // transient failure (50013, 5xx) that the platform outbound maps to
+      // { ok:false, code }. The queue DRAINS: after the armed entries,
+      // unbans succeed again.
+      _failUnbans: [],
       // v14.27 GuildMemberManager#unban(user, reason) → GuildBanManager#remove:
       // always REST, no cache pre-check. DELETE on an already-unbanned user
       // is 404 Unknown Ban (10026) — NOT idempotent (mockFidelity #449 law:
       // the mock must reject where real discord.js rejects) — so an unknown
       // id throws the DiscordAPIError shape instead of silently succeeding.
       unban: async (userId, reason) => {
+        if (guild.members._failUnbans.length > 0) {
+          const armed = guild.members._failUnbans.shift();
+          throw armed instanceof Error
+            ? armed
+            : Object.assign(new Error(armed?.message || "Missing Access"), {
+                code: armed?.code ?? 50013,
+                status: 403,
+              });
+        }
         const unbanUserId = String(userId);
         const idx = bans.findIndex((b) => String(b.userId) === unbanUserId);
         if (idx === -1) {

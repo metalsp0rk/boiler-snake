@@ -476,6 +476,44 @@ function claimAppealOutcome(appealId, opts = {}) {
 }
 
 /**
+ * #821 — COMPENSATION: roll a granted-but-UNEXECUTED clemency back to
+ * 'open' so staff can retry. The decision claim is the appeal's mutex and
+ * ONLY its winner reaches the hard-unban-failure path, so the restore is
+ * raceless by construction; the `WHERE status='granted'` CAS is still the
+ * belt (a row that left 'granted' by some other path is read back, never
+ * forced). Decision columns clear to their pre-decision NULLs — the row
+ * re-enters the exact shape the claim admits. UNIQUE(ban_record_id) is
+ * untouched: the SAME cycle keeps its one appeal, no re-file needed. The
+ * status CHECK already admits 'open' (no migration).
+ *
+ * @param {number} appealId
+ * @param {object} [opts]
+ * @param {number} [opts.nowMs] ms epoch (injectable clock)
+ * @returns {{ ok: true, won: boolean, appeal: object|null } | { ok: false, error: string }}
+ */
+function reopenAppealAfterFailedExecution(appealId, { nowMs } = {}) {
+  const { id, error } = appealIdOrError(appealId);
+  if (!id) return { ok: false, error };
+  const ts = timestampOr(nowMs, now());
+  try {
+    const res = db
+      .prepare(
+        `UPDATE ban_appeals
+            SET status='open', decided_by=NULL, decided_at=NULL,
+                denial_reason=NULL, updated_at=?
+          WHERE id=? AND status='granted'`,
+      )
+      .run(ts, id);
+    return { ok: true, won: res.changes === 1, appeal: getAppealById(id) };
+  } catch (err) {
+    return {
+      ok: false,
+      error: `Could not reopen the ban appeal: ${err?.message || err}`,
+    };
+  }
+}
+
+/**
  * #811: who decides an auto-close. `decided_by` is a free-text attribution
  * column (staff ids ride it on the decided outcomes); the system marker
  * names the mechanism, never a fake user id.
@@ -657,6 +695,7 @@ module.exports = {
   attachAppealTicketChannel,
   openAppeal,
   claimAppealOutcome,
+  reopenAppealAfterFailedExecution,
   closeAppealOnBanEnd,
   APPEAL_BAN_END_DECIDER,
   saveAppealCursor,
