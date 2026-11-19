@@ -555,8 +555,19 @@ test("NOT_BANNED (10026) settles the row `unbanned_manual` with ok:true — not 
   const live = db.getBanRecord(row.id);
   assert.equal(live.status, "unbanned_manual");
   assert.match(live.unban_reason, /already lifted outside the bot/);
-  // The welcome path still runs — the ban ended, the member may return.
-  assert.equal(w.calls.filter((c) => c.op === "sendDm").length, 1);
+  // #817: an UNOBSERVED lift is log-only — no retroactive DM, and the
+  // welcome claim stays UNSPENT (a later witnessed cycle/event keeps it).
+  assert.equal(w.calls.filter((c) => c.op === "sendDm").length, 0,
+    "no days-late 'you're back' DM for an unban the bot never witnessed");
+  assert.equal(live.welcome_dm_sent, 0, "the welcome claim stays unspent");
+  assert.equal(res.welcome.attempted, false);
+  assert.match(res.welcome.skipped, /log-only settle, no retroactive DM/);
+  assert.equal(
+    JSON.parse(auditRows(cid, "banLifecycle.external_unban")[0].details_json)
+      .welcome_skipped_reason,
+    "downtime_reconcile",
+    "the audit row names the law that withheld the DM",
+  );
   assert.equal(auditRows(cid, "banLifecycle.external_unban").filter((r) => r.origin === "system").length, 1);
 });
 

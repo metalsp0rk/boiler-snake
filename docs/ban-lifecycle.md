@@ -14,13 +14,18 @@ Staff: /ban <member> [reason] [duration]   or   right-click → Apps → Ban mem
           never blocks the ban — logged with ids and surfaced staff-side)
         → Discord ban executes → record row B-n (expires_at NULL = permanent)
 
-Expiry ticker `ban-expiry` (minute-aligned, immediate pass on boot)
+Expiry ticker `ban-expiry` (minute-aligned; on boot the immediate first pass
+         runs reconciliation BEFORE its sweep slice — #817)
         → due rows: CAS claim → #809 RE-BAN GUARD: fetch the LIVE ban and
           compare its reason against the fingerprint captured at issue
           (`ban_identity_reason`):
             match (or pre-#809 row, marker NULL) → Discord unban
               ("Expired — auto-unban (banned <t:F> by <staff>)") → expired_unbanned
               → welcome-back DM (exactly one per ban cycle)
+            already gone (10026 at unban: lifted outside the bot, no event
+              ever seen) → settles unbanned_manual LOG-ONLY — NO retroactive
+              welcome DM (#817: an unobserved lift has no dateable moment;
+              the audit row stamps welcome_skipped_reason='downtime_reconcile')
             MISMATCH (staff lifted + re-banned meanwhile) → HELD: the auto-unban
               is never executed, no welcome DM, row terminal `expired_held`
               + `banLifecycle.expiry_held` audit + caution embed on the audit
@@ -36,15 +41,22 @@ Expiry ticker `ban-expiry` (minute-aligned, immediate pass on boot)
           loud `banLifecycle.expiry_quarantined` audit + danger embed — a human
           must handle the live ban by hand
 
-Any manual unban (other staff / another bot — GuildBanRemove)
+Any manual unban the bot WITNESSES (other staff / another bot — GuildBanRemove)
         → record settles unbanned_manual (manual beats ticker) → same welcome DM
+        (contrast the sweep's unobserved-lift arm above: seen → welcome;
+        never-seen → log-only, #817)
 
-Welcome DM undeliverable (DMs closed, missed event) → record parks as pending_rejoin
+Welcome DM undeliverable (DMs closed / send failed) → record parks as pending_rejoin
         → rejoin within 30 days (GuildMemberAdd) → ONE retry → welcomed regardless
 
-Bot downtime → boot: expired rows unban immediately on the first pass, then a
-        bounded `guild.bans` reconciliation settles records whose ban vanished
-        (log-only — no retroactive DMs). #810: the bounded community window
+Bot downtime → boot: the immediate first pass runs the bounded `guild.bans`
+        reconciliation BEFORE the expiry sweep (#817) — vanished bans settle
+        log-only, and rows still live-banned get the full immediate expiry
+        treatment (a real lift still welcomes). Order is the law: a
+        sweep-first boot fired stale rows' welcome chains days late, and
+        because rotation lets reconciliation skip some guilds on any one
+        boot, the sweep itself honors the same no-DM rule: an UNOBSERVED
+        lift settles silently. #810: the bounded community window
         ROTATES across boots — never-reconciled guilds first, then
         least-recently-reconciled (the `ban_reconcile_state` attempt stamp),
         so with more active-ban guilds than the cap, every guild is reached
@@ -350,7 +362,7 @@ Migration `074_ban_lifecycle` (also adds `guild_settings.ban_dm` / `welcome_back
 |--------|--------|
 | `banLifecycle.ban` | Staff command layer (per executed ban) + system row for automod-origin bans |
 | `banLifecycle.ban_dm_set` / `banLifecycle.welcome_dm_set` | `/bannotify` mutations (recordSlashAudit + audit embed) |
-| `banLifecycle.expiry_unban` / `banLifecycle.external_unban` / `banLifecycle.rejoin_welcome` | System (ticker / GuildBanRemove / rejoin); each auto-unban also posts a staff-log embed on the audit channel |
+| `banLifecycle.expiry_unban` / `banLifecycle.external_unban` / `banLifecycle.rejoin_welcome` | System (ticker / GuildBanRemove / rejoin); each auto-unban also posts a staff-log embed on the audit channel. The sweep's UNOBSERVED-lift settle (#817) additionally stamps `welcome_skipped_reason: 'downtime_reconcile'` in the `external_unban` details — the audit names the law that withheld the DM |
 | `banLifecycle.expiry_held` (#809) | System (re-ban guard held an expiry: issued vs. live reason both recorded); posts a caution embed — never the unban embed |
 | `banLifecycle.expiry_quarantined` (#810) | System (the auto-unban crossed the attempt ceiling and settled the row terminal `expiry_failed`: attempts + last error recorded); posts a **danger** embed — staff must handle the live ban by hand |
 
