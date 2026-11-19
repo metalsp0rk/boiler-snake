@@ -478,6 +478,37 @@ describe("readSummarizeRange — channel gates and decision-46 checks", () => {
     assert.match(resB.error, /The bot cannot read message history/, resB.error);
   });
 
+  it("#829 permissionsFor → null fails CLOSED on BOTH gates (the deleted fail-open copy is gone)", async () => {
+    // discord.js GuildChannel#permissionsFor legitimately returns null for
+    // members that are neither instances nor cached (DataManager.resolve →
+    // null). The pre-#829 LOCAL permsAllow here answered TRUE on that shape
+    // — the parity gate (decision 46) waved through summaries of channels
+    // the invoking staffer may not be able to see. One core probe, law: an
+    // unintrogable surface REFUSES, asker side AND bot side.
+    const invokerNull = makeChannel({ messages: range(1001, 1010) });
+    invokerNull.permissionsFor = (member) =>
+      member.id === ASKER ? null : { has: () => true };
+    const gA = makeGuild({ channels: [invokerNull] });
+    const resA = await readSummarizeRange({ last: 3 }, opts({ guild: gA }));
+    assert.equal(resA.ok, false);
+    assert.equal(resA.code, "security");
+    assert.match(
+      resA.error,
+      /The invoking user cannot view channel/,
+      "null perms read as REFUSAL, never consent",
+    );
+    assert.equal(invokerNull._fetchCalls.length, 0, "refused before any fetch");
+
+    const botNull = makeChannel({ messages: range(1001, 1010) });
+    botNull.permissionsFor = (member) =>
+      member.id === BOT ? null : { has: () => true };
+    const gB = makeGuild({ channels: [botNull] });
+    const resB = await readSummarizeRange({ last: 3 }, opts({ guild: gB }));
+    assert.equal(resB.ok, false);
+    assert.match(resB.error, /The bot cannot view channel/, "the bot gate shares the ONE probe");
+    assert.equal(botNull._fetchCalls.length, 0);
+  });
+
   it("open-ticket blackout (decision 46): unarchived row refuses BEFORE any fetch", async () => {
     const { channel, guild, repo } = setup(null, { channel_id: CHANNEL, archived: 0 });
     const res = await readSummarizeRange({ last: 3 }, opts({ guild, repo }));
