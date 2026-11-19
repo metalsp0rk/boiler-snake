@@ -473,10 +473,7 @@ async function handleAppealTicketButton(interaction, ctx) {
     });
     await replyEphemeral(
       interaction,
-      facts.ok
-        ? `**Clemency:** granted — appeal #${appealId}. The ban was lifted ` +
-            "and the member was notified by DM."
-        : facts.error,
+      facts.ok ? outcomes.clemencyReplyText(appealId, facts) : facts.error,
     ).catch((err) =>
       reportFailure("clemency ack", ids, err),
     );
@@ -603,10 +600,7 @@ async function handleDenyReasonModal(interaction, ctx) {
   });
   await replyEphemeral(
     interaction,
-    facts.ok
-      ? `**Denied:** appeal #${appealId} denied — the ban stands and the ` +
-          "member was notified by DM."
-      : facts.error,
+    facts.ok ? outcomes.denyReplyText(appealId, facts) : facts.error,
   ).catch((err) => reportFailure("deny ack", ids, err));
 }
 
