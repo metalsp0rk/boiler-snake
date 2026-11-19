@@ -594,29 +594,104 @@ describe("outcomes.unban leg — 10026 still grants; a hard failure is reported,
     assertCleanUserCopy(D.dms);
   });
 
-  it("hard unban failure: the decision STANDS but execution reports — no invite, no DM, ticket kept open", async () => {
+  it("#821 hard unban failure REOPENS the appeal: no invite, no DM, retry is real", async () => {
     const { record, appeal } = mkOpenAppeal(CID);
     const D = makeDeps({ unbanResult: { ok: false, error: "Missing Access (50013)" } });
     const res = await outcomes.grantClemency({ appealId: appeal.id, staffUserId: MOD_ID, deps: D.deps });
 
     assert.equal(res.ok, false);
     assert.equal(res.code, "UNBAN_FAILED");
-    assert.equal(res.error, "Missing Access (50013)");
-    assert.equal(db.getAppealById(appeal.id).status, "granted", "the decision was claimed before the lift failed");
+    assert.match(res.error, /Missing Access \(50013\)/, "the specific cause still rides the reply");
+    assert.match(res.error, /REOPENED for a retry/, "the reply says what the compensation did");
+    assert.equal(res.reopened, true);
+    assert.equal(res.liveStatus, "open");
+
+    const row = db.getAppealById(appeal.id);
+    assert.equal(row.status, "open", "the terminal granted was COMPENSATED — the cycle's appeal is retryable");
+    assert.equal(row.decided_by, null, "decision columns cleared to their pre-decision NULLs");
+    assert.equal(row.decided_at, null);
 
     assert.equal(D.invites.length, 0, "no invite after a failed lift");
     assert.equal(D.dms.length, 0, "no DM promising a ban that is still on");
-    assert.equal(D.softCloses.length, 0, "the ticket stays OPEN — staff can retry");
-    // The staff-side ledger posts the partial failure (rule 5) — to the ticket
-    // channel, with the specific cause.
-    assert.equal(D.channelNotes.length, 1);
-    assert.ok(D.channelNotes[0].payload.content.includes("unban failed"), D.channelNotes[0].payload.content);
-    assert.equal(D.channelNotes[0].channelId, appeal.ticket_channel_id);
+    assert.equal(D.softCloses.length, 0, "the ticket stays OPEN — the live buttons are now TRUTH");
+    assert.equal(D.channelNotes.length, 1, "one warnings ledger post (rule 5)");
+    const note = D.channelNotes[0].payload.content;
+    assert.ok(note.includes("unban failed"), note);
+    assert.match(note, /reopened/i, "staff read the retry affordance in the ticket too");
 
     const audited = details(auditFor(CID, "banAppeals.clemency_granted", appeal.id)[0]);
     assert.equal(audited.unban_failed, true);
     assert.equal(audited.unban_error, "Missing Access (50013)");
+    assert.equal(audited.reopened, true, "the audit separates healed (retry) from stranded (manual)");
+
+    // THE RETRY (#821's whole point): the next click claims FRESH and the
+    // locked order runs complete. Welcome is already spent → via "already"
+    // → no false "could not be recorded" warning on attempt two.
+    const D2 = makeDeps();
+    const retry = await outcomes.grantClemency({ appealId: appeal.id, staffUserId: MOD_ID, deps: D2.deps });
+    assert.equal(retry.ok, true, JSON.stringify(retry));
+    assert.equal(db.getAppealById(appeal.id).status, "granted", "the retry decided for real");
+    assert.equal(D2.dms.length, 1, "exactly ONE clemency DM — delivered by the retry");
+    assert.equal(D2.invites.length, 1, "the invite mints on the retry");
+    assert.ok(
+      !retry.warnings.some((w) => /could not be recorded/i.test(w)),
+      `welcome spend is idempotent on retry: ${JSON.stringify(retry.warnings)}`,
+    );
     void record;
+  });
+
+  it("#821 a reopen that FAILS keeps the honest legacy truth: granted, manual recovery named", async () => {
+    const { appeal } = mkOpenAppeal(CID);
+    const D = makeDeps({
+      unbanResult: { ok: false, error: "Invalid Form Body" },
+      reopenAppealAfterFailedExecution: () => ({ ok: false, error: "database is locked" }),
+    });
+    const res = await outcomes.grantClemency({ appealId: appeal.id, staffUserId: MOD_ID, deps: D.deps });
+    assert.equal(res.code, "UNBAN_FAILED");
+    assert.equal(res.reopened, false);
+    assert.match(res.error, /could NOT be reopened \(database is locked\)/);
+    assert.match(res.error, /Lift the ban manually/);
+    assert.equal(db.getAppealById(appeal.id).status, "granted", "nothing was forced — the row stays what it is");
+    const audited = details(auditFor(CID, "banAppeals.clemency_granted", appeal.id)[0]);
+    assert.equal(audited.reopened, false);
+    assert.equal(audited.reopen_error, "database is locked", "a stranded appeal is durable in the audit");
+  });
+
+  it("#821 a reopen that LOSES the CAS reports the live row — never forces", async () => {
+    const { appeal } = mkOpenAppeal(CID);
+    const D = makeDeps({
+      unbanResult: { ok: false, error: "5xx" },
+      reopenAppealAfterFailedExecution: () => ({ ok: true, won: false, appeal: { status: "closed" } }),
+    });
+    const res = await outcomes.grantClemency({ appealId: appeal.id, staffUserId: MOD_ID, deps: D.deps });
+    assert.equal(res.reopened, false);
+    assert.equal(res.liveStatus, "closed", "the LIVE row is the truth, reported as-is");
+    assert.match(res.error, /moved to `closed`/);
+    assert.match(res.error, /nothing was forced/i);
+  });
+
+  it("#821 belt: a record that settled DURING the granted window converges the reopened appeal via #811", async () => {
+    const { record, appeal } = mkOpenAppeal(CID);
+    let firstRead = true;
+    const D = makeDeps({
+      unbanResult: { ok: false, error: "Missing Access" },
+      getBanRecord: (id) => {
+        const row = db.getBanRecord(id);
+        if (!row) return null;
+        if (firstRead) {
+          firstRead = false;
+          return row;
+        }
+        // A human lifted the ban while the row sat `granted` — the #811
+        // auto-close CAS misses that terminal shape; the belt re-checks.
+        return { ...row, status: "unbanned_manual" };
+      },
+    });
+    const res = await outcomes.grantClemency({ appealId: appeal.id, staffUserId: MOD_ID, deps: D.deps });
+    assert.equal(res.reopened, true, "the reopen itself won (row was still granted)");
+    const row = db.getAppealById(appeal.id);
+    assert.equal(row.status, "closed", "the window-missed ban-end converges through closeOnBanEnd");
+    assert.equal(row.decided_by, db.APPEAL_BAN_END_DECIDER ?? "system:ban-ended");
   });
 });
 
@@ -1126,7 +1201,11 @@ describe("outcomes.post-decision guards — the ferry stops structurally, belts 
     assert.equal(bareRes.ok, false);
     assert.equal(bareRes.code, "UNBAN_FAILED", "a missing surface never crashes the outcome");
     assert.match(bareRes.error, /unbanMember/);
-    assert.equal(db.getAppealById(bare.appeal.id).status, "granted", "decision stands; execution reported");
+    assert.equal(
+      db.getAppealById(bare.appeal.id).status,
+      "open",
+      "#821: the failed execution REOPENS the appeal (real repo reopen, no seam needed)",
+    );
   });
 
   it("garbage gates: nothing is read, nothing is decided", async () => {

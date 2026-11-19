@@ -647,6 +647,77 @@ describe("banAppeals.claimAppealOutcome — first-decision-wins (claimUnban law)
   });
 });
 
+describe("banAppeals.reopenAppealAfterFailedExecution — #821 compensation CAS (granted→open)", () => {
+  const CID = communityKey("821-repo-reopen");
+
+  it("granted → open: decision columns clear to NULL, the injected clock stamps, the row RE-DECIDES", () => {
+    const appeal = openOk(CID, mkBan(CID).id);
+    const decided = db.claimAppealOutcome(appeal.id, {
+      status: "granted",
+      decidedBy: "700000000000000011",
+      nowMs: T0 + MIN,
+    });
+    assert.equal(decided.won, true);
+
+    const res = db.reopenAppealAfterFailedExecution(appeal.id, { nowMs: T0 + 2 * MIN });
+    assert.deepEqual({ ok: res.ok, won: res.won }, { ok: true, won: true });
+
+    const row = appealRow(appeal.id);
+    assert.equal(
+      row.status,
+      "open",
+      "the cycle's appeal returns to the claim domain — no re-file, UNIQUE untouched",
+    );
+    assert.equal(row.decided_by, null);
+    assert.equal(row.decided_at, null);
+    assert.equal(row.denial_reason, null, "even the claim-cleared column is BELTED to NULL");
+    assert.equal(row.updated_at, T0 + 2 * MIN, "the injected instant is the record");
+    assert.equal(row.created_at, T0, "history does not rewrite itself");
+
+    assert.equal(
+      db.claimAppealOutcome(appeal.id, {
+        status: "granted",
+        decidedBy: "700000000000000012",
+        nowMs: T0 + 3 * MIN,
+      }).won,
+      true,
+      "the retry decides the SAME row for real — that is #821's whole point",
+    );
+  });
+
+  it("ONLY 'granted' reopens — open/filed/denied rows are read back untouched", () => {
+    const fresh = openOk(CID, mkBan(CID).id);
+    const noop = db.reopenAppealAfterFailedExecution(fresh.id, { nowMs: T0 + MIN });
+    assert.equal(noop.won, false, "an OPEN row is not a compensation target");
+    assert.equal(noop.appeal.status, "open");
+
+    const denied = openOk(CID, mkBan(CID).id);
+    db.claimAppealOutcome(denied.id, {
+      status: "denied",
+      decidedBy: "700000000000000013",
+      denialReason: "no",
+      nowMs: T0 + MIN,
+    });
+    const denyNoop = db.reopenAppealAfterFailedExecution(denied.id, { nowMs: T0 + 2 * MIN });
+    assert.equal(denyNoop.won, false, "a DENIED decision is nobody's to undo here");
+    assert.equal(appealRow(denied.id).status, "denied");
+    assert.equal(appealRow(denied.id).denial_reason, "no", "the CAS touched NOTHING — not even the clock");
+  });
+
+  it("missing appeal answers {ok:true, won:false, appeal:null}; garbage ids the {ok:false} answer", () => {
+    assert.deepEqual(db.reopenAppealAfterFailedExecution(9_999_999), {
+      ok: true,
+      won: false,
+      appeal: null,
+    });
+    for (const bad of GARBAGE_APPEAL_IDS) {
+      const res = db.reopenAppealAfterFailedExecution(bad);
+      assert.equal(res.ok, false);
+      assert.equal(res.error, "No such ban appeal.");
+    }
+  });
+});
+
 describe("banAppeals cursors — pair law, per-direction isolation, last-write-wins", () => {
   const CID = communityKey("773-repo-cursor");
 

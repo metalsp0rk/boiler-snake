@@ -981,10 +981,60 @@ async function grantClemency({ appealId, staffUserId = null, deps = {} } = {}) {
       );
     }
 
-    // ── hard unban failure: decision stands, execution did NOT ─────────────
+    // ── hard unban failure: UNDO the decision so it can be retried (#821) ─
+    // Pre-#821 this arm left the appeal TERMINAL `granted` with no unban,
+    // no DM, live buttons, and a spent welcome — one transient Discord
+    // failure (permissions blur, 5xx, guild outage) silently destroyed the
+    // appeal's user-facing half with no supported retry, reopen, or deny.
+    // The claim is this appeal's mutex and only its WINNER executes here,
+    // so the granted→open restore is raceless by construction; the repo
+    // CAS is the belt. No invite, no DM, and no ticket close either way —
+    // nothing downstream may run off a lift that did not happen.
     if (!unban.ok) {
-      logWith(log, "error", "clemency unban FAILED — no invite, no DM, ticket kept open", ids, unban.error);
+      logWith(
+        log,
+        "error",
+        "clemency unban FAILED — no invite, no DM; attempting REOPEN for retry",
+        ids,
+        unban.error,
+      );
       warnings.push(`The Discord unban failed: ${unban.error}`);
+
+      const reopenFn =
+        d.reopenAppealAfterFailedExecution ||
+        ((id, opts) => dbApi().reopenAppealAfterFailedExecution(id, opts));
+      let reopen = null;
+      try {
+        reopen = await reopenFn(appeal.id, { nowMs: d.nowMs });
+      } catch (err) {
+        reopen = { ok: false, error: err?.message || String(err) };
+      }
+      const reopened = reopen?.ok === true && reopen.won === true;
+      const reopenError = reopened
+        ? null
+        : String(reopen?.error || "reopen reported no cause");
+      if (reopened) {
+        warnings.push(
+          "The appeal was **reopened** — fix the cause (bot role above the " +
+            "ban, Ban Members permission) and click Clemency again.",
+        );
+      } else {
+        // The restore itself failed: the row STAYS granted — the honest
+        // legacy truth, now named as such with the manual recovery path.
+        logWith(
+          log,
+          "error",
+          "clemency REOPEN FAILED — row stays granted; manual recovery required",
+          ids,
+          reopenError,
+        );
+        warnings.push(
+          `The appeal could NOT be reopened (${reopenError}) — it stays ` +
+            "granted with no unban executed: lift the ban manually and " +
+            "close this ticket.",
+        );
+      }
+
       outcomeAudit(
         d,
         {
@@ -999,16 +1049,55 @@ async function grantClemency({ appealId, staffUserId = null, deps = {} } = {}) {
             subject_user_id: record.user_id,
             unban_failed: true,
             unban_error: unban.error,
+            reopened,
+            ...(reopenError ? { reopen_error: reopenError } : {}),
           },
         },
         log,
         ids,
       );
+      // Warnings land BEFORE any belt-close (the ticket may stop existing).
       await postTicketWarnings({ appeal, warnings, deps: d, log, ids });
-      return fail(CODE_UNBAN_FAILED, unban.error, {
+
+      if (reopened) {
+        // Ban-ended-in-window belt: if a human lifted the ban while the
+        // row sat `granted`, the #811 auto-close CAS missed the terminal
+        // shape. Re-read the record; a settled one closes the (now-pending
+        // again) appeal through the SAME #811 entry — its CAS admits
+        // 'open', and an ACTIVE record is a clean no-op skip.
+        const liveRecord = readBanRecord(d, record.id, log, ids);
+        if (liveRecord && String(liveRecord.status) !== "active") {
+          await closeOnBanEnd({
+            communityId,
+            banRecordId: record.id,
+            cause:
+              "the clemency unban failed and the ban record settled as " +
+              `\`${liveRecord.status}\` during the failure window`,
+            deps: d,
+          });
+        }
+      }
+
+      const liveAppeal = reopen?.ok === true ? reopen.appeal ?? null : null;
+      const liveStatus = liveAppeal ? liveAppeal.status : "granted";
+      const reply = reopened
+        ? `**Clemency:** the Discord unban failed — nothing was lifted: ` +
+            `${unban.error}\nThe appeal was REOPENED for a retry: fix the ` +
+            "cause and click Clemency again."
+        : liveAppeal && liveStatus !== "granted"
+          ? `**Clemency:** the Discord unban failed — nothing was lifted: ` +
+            `${unban.error}\nThe appeal row moved to \`${liveStatus}\` during ` +
+            "the failure window — the live row is the truth; nothing was forced."
+          : `**Clemency:** the Discord unban failed — nothing was lifted: ` +
+            `${unban.error}\nThe appeal could NOT be reopened (${reopenError}) ` +
+            "— it is granted with no unban executed. Lift the ban manually " +
+            "and close this ticket.";
+      return fail(CODE_UNBAN_FAILED, reply, {
         ...facts,
-        decision: "granted",
-        liveStatus: "granted",
+        decision: reopened ? "reopened" : "granted",
+        reopened,
+        reopenError,
+        liveStatus,
         welcome,
         unban,
         recordStatus: record.status,

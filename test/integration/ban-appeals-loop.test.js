@@ -1113,6 +1113,35 @@ describe("integration: ban appeals full loop (#773)", () => {
     assert.equal(env.db.getAppealById(appeal.id).status, "granted");
   });
 
+  it("#821 a HARD unban failure REOPENS the appeal — the next click runs the full locked order", async () => {
+    const { appeal } = await openAppealCycle("unbanfail-821");
+    env.guild.members._failUnbans.push({ message: "Missing Access", code: 50013 });
+
+    const header = headerMessage(appeal);
+    const first = await ticketClick(`ap:clemency:${appeal.id}`, { message: header });
+    const reply = lastReplyContent(first);
+    assert.match(reply, /the Discord unban failed/i, "the specific cause rides the reply");
+    assert.match(reply, /Missing Access/, "translated by the outbound, verbatim below the label");
+    assert.match(reply, /REOPENED for a retry/, "#821: the reply names the compensation");
+    assert.equal(env.guild._unbans.length, 0, "the armed throw stopped the lift before Discord");
+
+    const row = env.db.getAppealById(appeal.id);
+    assert.equal(row.status, "open", "the terminal granted was COMPENSATED — retryable, not a trap");
+    assert.equal(row.decided_by, null, "the decision columns cleared with it");
+    assert.ok(row.ticket_channel_id, "the ticket stays attached — the SAME appeal, the SAME cycle");
+
+    // Staff fixes the role/permission; the SAME button completes it. Pre-#821
+    // this click answered "already decided as granted" forever.
+    const second = await ticketClick(`ap:clemency:${appeal.id}`, { message: header });
+    assert.equal(
+      lastReplyContent(second),
+      `**Clemency:** granted — appeal #${appeal.id}. The ban was lifted and the member was notified by DM.`,
+      "the retry runs the FULL locked order and answers the happy copy",
+    );
+    assert.equal(env.guild._unbans.length, 1, "exactly ONE real unban — delivered by the retry");
+    assert.equal(env.db.getAppealById(appeal.id).status, "granted");
+  });
+
   it("a second ban after clemency files a fresh appeal; ap:deny → reason modal → denial DM with eligibility + staff note; first-decision-wins answers every re-click", async () => {
     // Cycle 1: ban → appeal → clemency settles it (re-ban becomes lawful).
     const target = (await openAppealCycle("denyc1")).target;
