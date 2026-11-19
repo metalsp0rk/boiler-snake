@@ -39,7 +39,7 @@ const { AUTOMOD_ACTIONS, normalizeAutomodMode } = require("./automodSettings");
 /** The pinned row state machine (migration 069 CHECK mirrors it). */
 const AUTOMOD_ACTION_STATES = Object.freeze([
   "suggested", // pending suggestion (suggest mode) — claimable, not run
-  "approved", // claimed (auto slot insert or Approve click) — owned, running/ran
+  "approved", // claimed (auto slot insert or Approve click) — owned, running/ran (#823: at BOOT, an owned row is an orphan — settleInterruptedAutomodActions)
   "dismissed", // staff declined the suggestion — never runs
   "executed", // mutation completed (or no_action recorded its outcome)
   "refused", // a guard/precondition said no — specific error_text recorded
@@ -411,6 +411,45 @@ function recordAutomodActionResult(
   return { ok: false, deduped: true, row };
 }
 
+/**
+ * #823 (audit C2-2) — settle action rows a DEAD run still owns.
+ *
+ * A row in `approved` is claimed (by the auto-mode slot INSERT or an
+ * Approve click) and only reachable by its claimer: re-clicks answer
+ * `inFlight`, dismiss refuses (`WHERE state='suggested'`), finalize is
+ * gated `state='approved'` — but gated FOR THE DEAD. With no TTL on
+ * `claimed_at` and no sweep for this table, one crash between claim and
+ * `recordAutomodActionResult` wedged the row forever (the #419 lesson,
+ * verbatim: "a 'claimed forever' turned a transient throw into a
+ * permanently stuck row").
+ *
+ * The fix copies the DOCTRINE, not the mechanism: unlike the unban lease
+ * (stealable because an unban is idempotent), a kicked/banned member may
+ * already be gone — the crash left the Discord side UNKNOWN — so no
+ * re-claim ever re-runs the mutation. A live run never survives a
+ * process death, so at boot every still-`approved` row is an orphan:
+ * settle it honestly to `failed` with a result-unknown cause. The ledger
+ * stops lying, the card/click surfaces the truth, staff decide next.
+ *
+ * @returns {{ changed: number }} rows settled
+ */
+function settleInterruptedAutomodActions({ nowMs } = {}) {
+  const at = Number.isFinite(Number(nowMs)) ? Number(nowMs) : now();
+  const info = db
+    .prepare(
+      `UPDATE automod_case_actions
+       SET state='failed',
+           error_text=?,
+           updated_at=?
+       WHERE state='approved'`,
+    )
+    .run(
+      "Run interrupted by restart — result unknown; verify the outcome on Discord before retrying this action.",
+      at,
+    );
+  return { changed: info.changes };
+}
+
 // ── Reads ──────────────────────────────────────────────────────────────────
 
 /**
@@ -467,6 +506,7 @@ module.exports = {
   claimAutomodSuggestion,
   dismissAutomodSuggestion,
   recordAutomodActionResult,
+  settleInterruptedAutomodActions,
   getAutomodAction,
   getAutomodActionBySlot,
   listAutomodActionsForCase,

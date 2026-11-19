@@ -265,15 +265,18 @@ const decisionField = (payload) => payload.embeds[0].fields[0].value;
 const embed = (payload) => payload.embeds[0];
 
 function captureConsole() {
-  const orig = { error: console.error, log: console.log };
+  const orig = { error: console.error, log: console.log, warn: console.warn };
   const lines = [];
-  console.error = (...args) => lines.push(args.map(String).join(" "));
-  console.log = (...args) => lines.push(args.map(String).join(" "));
+  const cap = (...args) => lines.push(args.map(String).join(" "));
+  console.error = cap;
+  console.log = cap;
+  console.warn = cap; // #823: the sweep's honest-SKIP rides warn — capture it too
   return {
     lines,
     restore() {
       console.error = orig.error;
       console.log = orig.log;
+      console.warn = orig.warn;
     },
   };
 }
@@ -845,7 +848,11 @@ test("boot sweep terminalizes stuck processing rows and posts the interrupted no
     refer.setRunCaseHook(null); // start() wired the production hook — inert after this test
     cap.restore();
   }
-  assert.deepEqual(out, { checked: 1, flipped: 1 });
+  assert.deepEqual(
+    { checked: out.checked, flipped: out.flipped },
+    { checked: 1, flipped: 1 },
+    "#823 widened the sweep result (actionsSettled) — pin the case fields by name",
+  );
 
   const row = db.getAutomodCaseById(caseRow.id);
   assert.equal(row.status, "failed");
@@ -894,6 +901,92 @@ test("the sweep survives a dead channel (best-effort notice, the flip is what ma
     cap.lines.some((l) => l.includes("boot sweep notice (best effort)")),
     `the dead notice is logged, never silent: ${cap.lines.join(" | ")}`,
   );
+});
+
+// ── #823 (audit C2-2): the sweep's action-row settle ────────────────────────
+
+test("#823 the boot sweep settles action rows a dead run left claimed", () => {
+  const actions = require("../src/db/repositories/automodCaseActions");
+  const cid = communityKey(`${GUILD}-823-sweep-${(seq += 1)}`);
+  const created = db.createAutomodCase({
+    communityId: cid,
+    referrerUserId: REF,
+    messageId: null,
+    channelId: null,
+    targetUserId: SUB,
+    note: null,
+  });
+  assert.equal(created.ok, true, created.error);
+
+  // A suggestion an Approve click claimed — then the process died before
+  // the outcome could land. The CASE row stays `recorded` here on purpose:
+  // the action settle must not depend on an interrupted case existing.
+  const sug = actions.insertAutomodActionSuggestion({
+    communityId: cid,
+    guildId: GUILD,
+    caseId: created.case.id,
+    subjectUserId: SUB,
+    action: "kick",
+    mode: "suggest",
+    params: { reason: "raid second wave" },
+  });
+  assert.equal(sug.ok, true, sug.error);
+  const claimed = actions.claimAutomodSuggestion(sug.row.id, "staff", {});
+  assert.equal(claimed.ok, true, claimed.error && JSON.stringify(claimed));
+
+  const cap = captureConsole();
+  let sweep;
+  try {
+    sweep = harness.sweepInterruptedRuns({ client: null });
+  } finally {
+    cap.restore();
+  }
+  assert.ok(sweep.actionsSettled >= 1, `the wedge settled: ${sweep.actionsSettled}`);
+
+  const settled = actions.getAutomodAction(sug.row.id);
+  assert.equal(settled.state, "failed");
+  assert.match(settled.error_text, /interrupted by restart — result unknown/);
+  assert.ok(
+    cap.lines.some((l) =>
+      l.includes("case-action row(s) left claimed by a dead run settled to failed"),
+    ),
+    `the settle is logged, never silent: ${cap.lines.join(" | ")}`,
+  );
+});
+
+test("#823 the action settle degrades honestly when the db handle cannot do it", () => {
+  // A handle WITHOUT the settle fn (older/injected surface): a loud SKIP,
+  // never a silent pass — and the sweep itself keeps working.
+  const bareHandle = { prepare: () => ({ all: () => [], run: () => ({ changes: 0 }) }) };
+  const cap = captureConsole();
+  let sweepA;
+  let sweepB;
+  try {
+    sweepA = harness.sweepInterruptedRuns({ db: bareHandle });
+    // A handle whose settle THROWS: logged with the cause, sweep survives.
+    sweepB = harness.sweepInterruptedRuns({
+      db: {
+        ...bareHandle,
+        settleInterruptedAutomodActions: () => {
+          throw new Error("SQLITE_BUSY");
+        },
+      },
+    });
+  } finally {
+    cap.restore();
+  }
+  assert.equal(sweepA.actionsSettled, 0);
+  assert.ok(
+    cap.lines.some((l) => l.includes("#823 action-row settle SKIPPED")),
+    `missing surface is LOUD: ${cap.lines.join(" | ")}`,
+  );
+  assert.ok(
+    cap.lines.some(
+      (l) => l.includes("settling interrupted case-action claims failed") && l.includes("SQLITE_BUSY"),
+    ),
+    `the throw names its cause: ${cap.lines.join(" | ")}`,
+  );
+  assert.ok(sweepB && typeof sweepB === "object", "a throwing settle cannot kill the sweep");
 });
 
 // ── 10. refer trigger (the real slash arm) + its crash guard ─────────────────

@@ -338,3 +338,114 @@ describe("db facade surface for #730/#731 consumers", () => {
     assert.deepEqual([...db.AUTOMOD_CONSIDERED_STATES], [...db.AUTOMOD_ACTION_STATES]);
   });
 });
+
+// ── #823 (audit C2-2): settle action rows a dead run still owns ─────────────
+
+describe("#823 settleInterruptedAutomodActions — no wedge survives a restart", () => {
+  const approvedCount = () =>
+    db.db
+      .prepare("SELECT COUNT(*) AS n FROM automod_case_actions WHERE state='approved'")
+      .get().n;
+
+  it("settles approved rows from BOTH claim doors (slot INSERT and Approve-claim)", () => {
+    const cid = freshCommunity();
+
+    // Door 1: auto-mode slot insert — the INSERT is the claim (approved).
+    const slotted = repo.claimAutomodActionSlot(
+      baseIntent({ communityId: cid, claimant: "auto", action: "kick", subjectUserId: "u-slot" }),
+    );
+    assert.equal(slotted.ok, true);
+
+    // Door 2: a suggestion claimed by an Approve click.
+    const suggested = repo.insertAutomodActionSuggestion(
+      baseIntent({ communityId: cid, action: "ban", mode: "suggest", subjectUserId: "u-click", caseId: 102, }),
+    );
+    assert.equal(suggested.ok, true);
+    const claimed = repo.claimAutomodSuggestion(suggested.row.id, "staff", {});
+    assert.equal(claimed.ok, true, "precondition: the click won the claim");
+
+    // The sweep is GLOBAL by doctrine (a boot sweep knows no community
+    // that a crash spared) — count the whole approved surface, settle it,
+    // prove the ledger is empty of claims.
+    const pending = approvedCount();
+    assert.ok(pending >= 2, "at least our two doors are claims in flight");
+    const settled = repo.settleInterruptedAutomodActions();
+    assert.equal(settled.changed, pending, "every claim in flight settles together");
+    assert.equal(approvedCount(), 0, "no approved row survives a boot sweep — by design");
+
+    for (const rowId of [slotted.row.id, suggested.row.id]) {
+      const row = repo.getAutomodAction(rowId);
+      assert.equal(row.state, "failed", "the wedge resolves to the honest terminal");
+      assert.match(
+        row.error_text,
+        /interrupted by restart — result unknown/,
+        "the cause admits the Discord side is UNKNOWN — never a re-run promise",
+      );
+      assert.match(row.error_text, /verify the outcome on Discord before retrying/);
+      assert.ok(row.updated_at >= row.claimed_at, "the settle stamps the row clock");
+    }
+  });
+
+  it("touches NOTHING that is not an orphan claim", () => {
+    const cid = freshCommunity();
+    const untouched = {};
+
+    untouched.suggested = repo.insertAutomodActionSuggestion(
+      baseIntent({ communityId: cid, subjectUserId: "u1", action: "warn", caseId: 201 }),
+    ).row;
+    untouched.dismissed = repo.insertAutomodActionSuggestion(
+      baseIntent({ communityId: cid, subjectUserId: "u2", action: "warn", caseId: 202 }),
+    ).row;
+    repo.dismissAutomodSuggestion(untouched.dismissed.id, "staff", { note: "not mine" });
+    const doneSuggested = repo.insertAutomodActionSuggestion(
+      baseIntent({ communityId: cid, subjectUserId: "u3", action: "warn", caseId: 203 }),
+    ).row;
+    repo.claimAutomodSuggestion(doneSuggested.id, "staff", {});
+    untouched.executed = repo
+      .recordAutomodActionResult(doneSuggested.id, { state: "executed", resultText: "warned" }, {})
+      .row;
+    const refusedSuggested = repo.insertAutomodActionSuggestion(
+      baseIntent({ communityId: cid, subjectUserId: "u4", action: "kick", caseId: 204 }),
+    ).row;
+    repo.claimAutomodSuggestion(refusedSuggested.id, "staff", {});
+    untouched.refused = repo
+      .recordAutomodActionResult(refusedSuggested.id, { state: "refused", errorText: "hierarchy" }, {})
+      .row;
+    untouched.failed = repo
+      .recordAutomodActionResult(
+        repo.claimAutomodActionSlot(baseIntent({ communityId: cid, subjectUserId: "u5", action: "kick", caseId: 205 })).row.id,
+        { state: "failed", errorText: "boom" },
+        {},
+      ).row;
+
+    // Drain the table of claims first, THEN prove the sweep leaves every
+    // other state alone (row-level, exact).
+    repo.settleInterruptedAutomodActions();
+    const snapshots = Object.fromEntries(
+      Object.entries(untouched).map(([k, row]) => {
+        const r = repo.getAutomodAction(row.id);
+        return [k, { state: r.state, error_text: r.error_text }];
+      }),
+    );
+    const settled = repo.settleInterruptedAutomodActions();
+    assert.equal(settled.changed, 0, "nothing is an orphan claim once claims are drained");
+    for (const [label, snap] of Object.entries(snapshots)) {
+      const r = repo.getAutomodAction(untouched[label].id);
+      assert.deepEqual(
+        { state: r.state, error_text: r.error_text },
+        snap,
+        `${label} rows ride through the sweep untouched`,
+      );
+    }
+  });
+
+  it("is idempotent — a settled ledger stays settled", () => {
+    const cid = freshCommunity();
+    const row = repo.claimAutomodActionSlot(
+      baseIntent({ communityId: cid, subjectUserId: "u-only", action: "ban", caseId: 301 }),
+    ).row;
+    assert.equal(repo.settleInterruptedAutomodActions().changed, 1);
+    assert.equal(repo.settleInterruptedAutomodActions().changed, 0);
+    assert.equal(repo.getAutomodAction(row.id).state, "failed");
+  });
+});
