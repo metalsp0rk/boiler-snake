@@ -200,6 +200,46 @@ function fencedBlock(text) {
 }
 
 /**
+ * `fencedBlock` with a hard output cap (#818).
+ *
+ * The plain fence law (fence = longest inner backtick run + 1) can produce a
+ * block LONGER than the text it wraps: an all-backtick body of length L
+ * yields 3L+4 characters. Embed descriptions (4096) and message content are
+ * hard-capped, so a hostile-but-in-limits input (e.g. a ~4000-char backtick
+ * run inside the appeal statement's own cap) made
+ * `EmbedBuilder.setDescription` THROW — a deterministic wedge. This variant
+ * truncates the body (code-point-safe) until the WHOLE block fits `cap`,
+ * re-deriving the fence from the truncated body every step, so "the block
+ * fits the cap" and "nothing inside escapes the fence" hold TOGETHER.
+ *
+ * @param {string} text
+ * @param {number} cap hard max length of the returned block
+ * @param {string} [notice] marker appended to the body on truncation
+ *   (kept inside the fence — it can never open one itself)
+ * @returns {{ block: string, truncated: boolean }}
+ */
+function fencedBlockWithinCap(text, cap, notice = "") {
+  let body = String(text ?? "");
+  let truncated = false;
+  const render = (s) => {
+    const fence = "`".repeat(Math.max(3, longestBacktickRun(s) + 1));
+    return { fence, total: fence.length * 2 + s.length + 2 };
+  };
+  let r = render(body);
+  while (r.total > cap) {
+    truncated = true;
+    // Any body longer than (cap−4)/3 can never fit (worst case is an
+    // all-backtick body: 3L+4). Shrink toward that bound in one step.
+    const maxBody = Math.max(0, Math.floor((cap - 4) / 3) - notice.length);
+    const cut = Math.min(body.length, maxBody);
+    body = `${sliceSafe(body, cut)}${cut > 0 ? notice : ""}`;
+    r = render(body);
+    if (cut === 0) break; // empty body: the minimal 8-char block
+  }
+  return { block: `${r.fence}\n${body}\n${r.fence}`, truncated };
+}
+
+/**
  * Split text into ≤ chunkChars pieces on code-point boundaries (never
  * between the halves of a surrogate pair — core/text rule).
  *
@@ -756,5 +796,7 @@ module.exports = {
   // collision naming) without re-implementing them in the test file.
   inlineEscape,
   fencedBlock,
+  fencedBlockWithinCap,
+  splitChunks,
   uniqueName,
 };

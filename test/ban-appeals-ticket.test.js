@@ -52,7 +52,11 @@ const {
   AP_PAUSE_PREFIX,
 } = require("../src/features/banAppeals/constants");
 const { formatChannelCreateError } = require("../src/features/tickets/overwrites");
-const { fencedBlock, inlineEscape } = require("../src/features/tickets/reportEvidence");
+const {
+  fencedBlock,
+  fencedBlockWithinCap,
+  inlineEscape,
+} = require("../src/features/tickets/reportEvidence");
 const { escapeDisplayName } = require("../src/features/banAppeals/markdownEscape");
 
 after(() => cleanup());
@@ -676,4 +680,89 @@ test("channel-name law: the appeal rename respects the shared 100-char cap", () 
 test("inline escape sanity the header relies on: digits ride unchanged, markers backslash-escape", () => {
   assert.equal(inlineEscape(USER), USER);
   assert.equal(inlineEscape("<@1>"), "\\<\\@1\\>");
+});
+
+/* ══ #818 — the fence law vs. the 4096 embed-description cap ══════════════
+ * The law that JUSTIFIES the cap first: the plain fence block of an
+ * in-limits statement overflows the embed cap (setDescription used to THROW,
+ * wedging the ticket open forever). Then the cap law itself. */
+
+const CAP_HEADER = {
+  appeal: { id: 90, created_at: NOW, ferry_paused: 0 },
+  banRecord: {
+    id: 9,
+    ban_number: 9,
+    user_id: USER,
+    moderator_id: null,
+    reason: "",
+    banned_at: NOW,
+    expires_at: null,
+  },
+};
+
+test("#818 the plain fence law CAN overflow the embed cap (this is what threw pre-fix)", () => {
+  const monster = "`".repeat(3990);
+  assert.ok(
+    fencedBlock(monster).length > 4096,
+    "a pure-backtick statement inside its own cap fences past 4096",
+  );
+});
+
+test("#818 the monster statement is CLAMPED into the embed: ≤4096, inert fence, follow-up flagged", () => {
+  const monster = "`".repeat(3990);
+  const payload = buildAppealHeader({ ...CAP_HEADER, statement: monster });
+  const e = embedJson(payload);
+  assert.ok(e.description.length <= 4096, `clamped description (${e.description.length} ≤ 4096)`);
+  assert.match(e.description, /embed truncated/, "the embed says the statement was cut");
+  assert.equal(payload.statementTruncatedForEmbed, true, "openAppealTicket must post the full text");
+  // Inertness SURVIVES the clamp: the opening fence still outgrows every
+  // inner backtick run — a truncated block can never smuggle a mention.
+  const open = e.description.match(/^(`+)/)[1];
+  const body = e.description.slice(open.length + 1, -(open.length + 1));
+  let longest = 0;
+  let run = 0;
+  for (const ch of body) {
+    if (ch === "`") {
+      run += 1;
+      if (run > longest) longest = run;
+    } else {
+      run = 0;
+    }
+  }
+  assert.ok(open.length > longest, "fence outgrows every inner run after the clamp");
+});
+
+test("#818 a normal statement stays BYTE-IDENTICAL to the pre-#818 header: verbatim fence, no flag", () => {
+  const payload = buildAppealHeader({
+    ...CAP_HEADER,
+    statement: "I was away — read the audit log",
+  });
+  assert.equal(embedJson(payload).description, fencedBlock("I was away — read the audit log"));
+  assert.equal(payload.statementTruncatedForEmbed, false, "no clamp → no follow-up path");
+});
+
+test("#818 an EMPTY statement keeps the placeholder — never a fenced empty block", () => {
+  const payload = buildAppealHeader({ ...CAP_HEADER, statement: "   " });
+  assert.equal(embedJson(payload).description, "_No statement stored._");
+  assert.equal(payload.statementTruncatedForEmbed, false);
+});
+
+test("#818 fencedBlockWithinCap: under-cap passes through; worst-case inputs hold the cap; no half surrogates", () => {
+  assert.deepEqual(
+    fencedBlockWithinCap("hi", 4096, "…"),
+    { block: fencedBlock("hi"), truncated: false },
+    "an under-cap block is byte-identical to fencedBlock (the header law for honest input)",
+  );
+  const LONE =
+    /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
+  for (const input of [
+    "`".repeat(5000),
+    "a`".repeat(3000),
+    "😀".repeat(2500) + "`".repeat(2000),
+    "x".repeat(4095),
+  ]) {
+    const { block } = fencedBlockWithinCap(input, 4096, "\n…(truncated)");
+    assert.ok(block.length <= 4096, `cap holds for ${input.slice(0, 8)}… (${block.length})`);
+    assert.ok(!LONE.test(block), "the code-point-safe cut never splits a surrogate pair");
+  }
 });

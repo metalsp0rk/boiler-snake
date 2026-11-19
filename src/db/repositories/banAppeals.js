@@ -338,6 +338,31 @@ function listOpenAppeals(limit = LIST_SCAN_DEFAULT) {
 }
 
 /**
+ * #819 — appeals stranded in `filed` with NO ticket channel: the trap state
+ * between fileAppeal and attach (crash, channel-create failure, embed
+ * overflow era). UNIQUE(ban_record_id) means the appeal right for that ban
+ * cycle is exactly ONE row, so a `filed` row nothing re-drives silently
+ * DESTROYS that right — this is the bounded scan the boot re-drive reads.
+ * Oldest-first; the ceiling keeps a broken guild from storming boot.
+ *
+ * @param {number} [limit] scan bound (default 10, clamped to the 500 ceiling)
+ * @returns {object[]} filed appeal rows (possibly empty; never null)
+ */
+function listFiledAppealsWithoutTicket(limit = 10) {
+  const max = Math.min(
+    LIST_SCAN_MAX,
+    Math.max(1, Math.trunc(Number(limit)) || 10),
+  );
+  return db
+    .prepare(
+      `SELECT * FROM ban_appeals
+        WHERE status='filed' AND ticket_channel_id IS NULL
+        ORDER BY id ASC LIMIT ?`,
+    )
+    .all(max);
+}
+
+/**
  * Attach the staff ticket channel (first attach wins — an appeal gets
  * exactly one ticket; a racing second attach reads `won:false` plus the LIVE
  * row and keeps the channel that is actually on the record).
@@ -628,6 +653,7 @@ module.exports = {
   getAppealByTicketChannel,
   listOpenAppeals,
   listOpenAppealsByUser,
+  listFiledAppealsWithoutTicket,
   attachAppealTicketChannel,
   openAppeal,
   claimAppealOutcome,

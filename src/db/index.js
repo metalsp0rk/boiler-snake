@@ -756,5 +756,6 @@ module.exports = {
   loadAppealCursor: banAppeals.loadAppealCursor,
   setAppealFerryPaused: banAppeals.setAppealFerryPaused,
   listOpenAppeals: banAppeals.listOpenAppeals,
+  listFiledAppealsWithoutTicket: banAppeals.listFiledAppealsWithoutTicket,
   listOpenAppealsByUser: banAppeals.listOpenAppealsByUser,
 };

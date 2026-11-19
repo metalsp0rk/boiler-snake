@@ -178,6 +178,29 @@ const FERRY_USER_HOURLY_CAP = 20;
  */
 const FERRY_CATCHUP_MAX = 50;
 
+/* ── #818 — appeal header embed vs the 4096 description cap ─────────────────
+ * The statement (≤ 4000) rides the ticket header embed as a fenced block.
+ * The fence law (fence > longest backtick run + 1) can INFLATE past the
+ * cap (an all-backtick body of length L yields 3L+4 chars), and
+ * `setDescription` throwing used to wedge the ticket open permanently.
+ * The header now clamps to this cap and openAppealTicket follows up with
+ * the FULL statement in message chunks of this size (fence worst case
+ * 3·1300+4 = 3904 < 4000 content cap — a chunk can never overflow).
+ */
+const APPEAL_EMBED_DESCRIPTION_MAX = 4096;
+const APPEAL_STATEMENT_CHUNK_CHARS = 1300;
+const STATEMENT_EMBED_TRUNCATION_NOTICE =
+  "\n\n…(embed truncated — full statement posted below)";
+
+/**
+ * #819 — boot re-drive bound for appeals stuck `filed` with no ticket
+ * (crash / channel-create failure between fileAppeal and attach). UNIQUE
+ * (ban_record_id) makes the appeal right per ban cycle EXACTLY ONE, so a
+ * `filed` row with no ticket is a trap state the boot pass must attempt to
+ * heal — bounded so a broken guild can never storm boot.
+ */
+const FILED_REDIVE_MAX = 10;
+
 /* ── Refusal copy builders (issue §1 + locked decision 6) ───────────────────
  * Every refusal names its SPECIFIC cause, ends with "Nothing was filed.",
  * and the CALLER logs `[appeals] …` with guild/user/record ids (the copy
@@ -313,6 +336,11 @@ module.exports = {
   FERRY_USER_COOLDOWN_MS,
   FERRY_USER_HOURLY_CAP,
   FERRY_CATCHUP_MAX,
+  // #818/#819 header-embed cap + filed re-drive bound
+  APPEAL_EMBED_DESCRIPTION_MAX,
+  APPEAL_STATEMENT_CHUNK_CHARS,
+  STATEMENT_EMBED_TRUNCATION_NOTICE,
+  FILED_REDIVE_MAX,
   // refusal copy builders
   refusalNotYou,
   refusalNoRecord,

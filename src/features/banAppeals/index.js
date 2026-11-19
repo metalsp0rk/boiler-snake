@@ -37,6 +37,7 @@ const {
 const {
   registerEvents,
   runBootCatchUp,
+  runBootFiledRedrive,
   handleAppealTicketButton,
   handleDenyReasonModal,
 } = require("./events");
@@ -57,9 +58,18 @@ const {
  */
 function start(supervisor, featureCtx) {
   void featureCtx;
-  runBootCatchUp(supervisor).catch((err) =>
-    console.error(`${LOG_PREFIX} boot ferry catch-up failed:`, err?.message || err),
-  );
+  // #819 BEFORE the ferry pass: a re-driven appeal becomes `open` with its
+  // ticket, and the ferry catch-up (which scans `open` appeals) then owns
+  // its history in the same boot. Sequential, still fire-and-forget: boot
+  // never blocks on either, and each pass logs its own failures.
+  runBootFiledRedrive(supervisor)
+    .catch((err) =>
+      console.error(`${LOG_PREFIX} filed-appeal boot re-drive failed:`, err?.message || err),
+    )
+    .then(() => runBootCatchUp(supervisor))
+    .catch((err) =>
+      console.error(`${LOG_PREFIX} boot ferry catch-up failed:`, err?.message || err),
+    );
   return { stop() {} };
 }
 
