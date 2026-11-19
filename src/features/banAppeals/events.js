@@ -74,6 +74,7 @@ const {
 
 const dbFacade = () => require("../../db");
 const communityApi = () => require("../../platform/community");
+const auditTrailApi = () => require("../../core/auditTrail");
 
 /* ── Tiny readers / shared edge helpers ───────────────────────────────────── */
 
@@ -721,6 +722,180 @@ async function runBootCatchUp(supervisor) {
   return { ran: true, appeals: appeals.length, relayed };
 }
 
+/**
+ * #819 — boot re-drive for appeals stranded `filed` with NO ticket.
+ *
+ * One appeal per ban cycle is schema law (uq_ban_appeals_ban_record), so the
+ * window between fileAppeal and ticket attach (crash, channel-create
+ * failure) is a TRAP state: invisible to every staff surface (the open-appeal
+ * scan, ticket buttons, the console) and unre-fileable (UNIQUE refuses a
+ * retry). This pass is the repair the trap never had: re-enter the SAME
+ * flow — openAppealTicket is idempotent for re-drive (channel create +
+ * first-attach-wins CAS + open CAS; a lost race continues the LIVE row).
+ *
+ * Failures must not stay invisible either (rule 2/3 + the audit's
+ * "stamp a staff-visible notice"): every failed re-drive posts a danger
+ * embed to the guild's staff log channel AND lands a durable admin_audit
+ * row, so a human owns what the automation could not open. Bounded by
+ * FILED_REDIVE_MAX (oldest first) so one broken guild can never storm boot.
+ *
+ * @param {import("../../platform/boot").Supervisor|null} supervisor
+ * @returns {Promise<{ran: boolean, scanned: number, opened: number, failed: number}>}
+ */
+async function runBootFiledRedrive(supervisor) {
+  const client = resolveDiscordClient(supervisor, { label: "appeals" });
+  if (!client) {
+    return { ran: false, scanned: 0, opened: 0, failed: 0 };
+  }
+  const rows = dbFacade().listFiledAppealsWithoutTicket(
+    constants.FILED_REDIVE_MAX,
+  );
+  let opened = 0;
+  let failed = 0;
+  for (const appeal of rows) {
+    const ids =
+      `community=${appeal.community_id} appeal=${appeal.id} ` +
+      `record=${appeal.ban_record_id}`;
+    try {
+      const record = dbFacade().getBanRecord(appeal.ban_record_id) ?? null;
+      if (!record) {
+        // The ban record is gone: no ticket can be built (openAppealTicket
+        // requires it by law). Loud + durable; the row stays `filed` for a
+        // human to close out.
+        failed += 1;
+        reportFailure(
+          "filed-appeal re-drive — BAN RECORD GONE (no ticket possible)",
+          ids,
+          "the ban record behind this appeal no longer exists",
+        );
+        await reportRedriveFailure({
+          supervisor,
+          appeal,
+          record: null,
+          cause:
+            "The ban record behind this appeal no longer exists — no staff " +
+            "ticket can be built. Close the appeal out by hand.",
+        });
+        continue;
+      }
+      const res = await ticket.openAppealTicket({
+        appeal,
+        banRecord: record,
+        communityId: appeal.community_id,
+        client,
+      });
+      if (res?.ok === true) {
+        opened += 1;
+        console.log(
+          `${LOG_PREFIX} filed-appeal re-drive OPENED ${ids} — the appeal ` +
+            `that lost its ticket before is now open`,
+        );
+        auditTrailApi().recordSystemAudit({
+          communityId: appeal.community_id,
+          action: "ban_appeals.filed_ticket_redriven",
+          targetType: "ban_appeal",
+          targetId: String(appeal.id),
+          details: { ban_record_id: appeal.ban_record_id },
+        });
+      } else {
+        failed += 1;
+        const cause = String(
+          res?.error || "openAppealTicket returned no result",
+        );
+        reportFailure("filed-appeal re-drive", ids, cause);
+        await reportRedriveFailure({ supervisor, appeal, record, cause });
+      }
+    } catch (err) {
+      failed += 1;
+      const cause = err?.message || String(err);
+      reportFailure("filed-appeal re-drive", ids, err);
+      await reportRedriveFailure({
+        supervisor,
+        appeal,
+        record: null,
+        cause: `Unexpected failure: ${cause}`,
+      });
+    }
+  }
+  if (rows.length > 0) {
+    console.log(
+      `${LOG_PREFIX} filed-appeal re-drive done scanned=${rows.length} ` +
+        `opened=${opened} failed=${failed}`,
+    );
+  }
+  return { ran: true, scanned: rows.length, opened, failed };
+}
+
+/**
+ * Staff-visible notice for a re-drive failure (#819): danger embed to the
+ * guild's audit-log channel (the #810 quarantine posture) + one durable
+ * admin_audit row. Best-effort each way — a lost embed never hides the
+ * audit row and neither failure aborts the sweep.
+ */
+async function reportRedriveFailure({ supervisor, appeal, record, cause }) {
+  const community = communityApi().getCommunityById(appeal.community_id);
+  const guildId = community?.external_guild_id ?? null;
+  try {
+    auditTrailApi().recordSystemAudit({
+      communityId: appeal.community_id,
+      action: "ban_appeals.filed_ticket_redrive_failed",
+      targetType: "ban_appeal",
+      targetId: String(appeal.id),
+      details: {
+        ban_record_id: appeal.ban_record_id,
+        error: cause,
+      },
+    });
+  } catch (err) {
+    reportFailure("filed-appeal re-drive audit", `appeal=${appeal.id}`, err);
+  }
+  const outbound = resolveOutbound(supervisor, appeal.community_id, {
+    label: "appeals",
+  });
+  if (!outbound || !guildId) return;
+  try {
+    const { EmbedBuilder } = require("discord.js");
+    const { Color } = require("../../core/theme");
+    const { sendAuditLog } = require("../logs/auditLog");
+    const { sliceSafe } = require("../../core/text");
+    const embed = new EmbedBuilder()
+      .setColor(Color.danger)
+      .setTitle(
+        "Ban appeal filed WITHOUT a staff ticket — automatic re-drive FAILED",
+      )
+      .setDescription(
+        "This appeal was filed but its staff review channel never opened " +
+          "(crash / channel failure). The boot retry could not open it " +
+          "either — **a staff member must handle this appeal by hand**: the " +
+          "statement IS saved and readable in the audit trail, and the user " +
+          "was told their appeal is pending.",
+      )
+      .addFields(
+        {
+          name: "User",
+          value: record?.user_id
+            ? `\`${String(record.user_id)}\``
+            : "_ban record gone_",
+          inline: true,
+        },
+        {
+          name: "Appeal",
+          value: `#${appeal.id} (record ${appeal.ban_record_id})`,
+          inline: true,
+        },
+        { name: "Last error", value: sliceSafe(cause, 900) || "—" },
+      )
+      .setTimestamp(new Date());
+    await sendAuditLog(outbound, guildId, { embeds: [embed] });
+  } catch (err) {
+    reportFailure(
+      "filed-appeal re-drive staff embed",
+      `appeal=${appeal.id} guild=${guildId}`,
+      err,
+    );
+  }
+}
+
 /* ══ Bindings ═══════════════════════════════════════════════════════════════ */
 
 /** Clients already bound this process (double-boot idempotence belt). */
@@ -825,6 +1000,7 @@ function registerEvents(supervisor, featureCtx) {
 module.exports = {
   registerEvents,
   runBootCatchUp,
+  runBootFiledRedrive,
   // Registry arms (index.js claims `ap:` + `ap:deny:m:` under banAppeals).
   handleAppealTicketButton,
   handleDenyReasonModal,

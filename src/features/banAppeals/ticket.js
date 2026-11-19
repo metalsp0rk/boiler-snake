@@ -66,6 +66,9 @@ const {
   BUTTON_LABEL_DENY,
   BUTTON_LABEL_PAUSE,
   BUTTON_LABEL_RESUME,
+  APPEAL_EMBED_DESCRIPTION_MAX,
+  APPEAL_STATEMENT_CHUNK_CHARS,
+  STATEMENT_EMBED_TRUNCATION_NOTICE,
 } = require("./constants");
 // core/theme and core/text are load-safe (discord.js + each other only).
 const {
@@ -241,12 +244,21 @@ function buildAppealButtons(appeal) {
 function buildAppealHeader(input = {}) {
   const { appeal, banRecord, ticket, displayName, warningRefs, noteRefs } =
     input;
-  const { fencedBlock } = evidenceApi();
   const { escapeDisplayName } = escapeApi();
 
   const statement = String(
     input.statement ?? appeal?.appeal_statement ?? "",
   ).trim();
+  // #818: the fence law (fence > longest backtick run) can inflate past the
+  // 4096 embed-description cap — a backtick-heavy statement USED TO throw in
+  // setDescription and wedge the whole ticket open. Clamp instead: the embed
+  // carries a truncated view, openAppealTicket follows up with the FULL
+  // statement as message chunks whenever this flag is set.
+  const capped = evidenceApi().fencedBlockWithinCap(
+    statement,
+    APPEAL_EMBED_DESCRIPTION_MAX,
+    STATEMENT_EMBED_TRUNCATION_NOTICE,
+  );
   const userId = String(banRecord?.user_id ?? "?");
 
   const refLine = (refs) => {
@@ -269,7 +281,7 @@ function buildAppealHeader(input = {}) {
     .setDescription(
       statement === ""
         ? "_No statement stored._"
-        : fencedBlock(statement),
+        : capped.block,
     )
     .addFields(
       {
@@ -328,6 +340,9 @@ function buildAppealHeader(input = {}) {
     embeds: [embed],
     components: buildAppealButtons(appeal),
     allowedMentions: { parse: [] },
+    // INTERNAL signal consumed by openAppealTicket (#818): the embed body
+    // was truncated, so the full statement must follow as message chunks.
+    statementTruncatedForEmbed: statement !== "" && capped.truncated,
   };
 }
 
@@ -555,6 +570,47 @@ async function openAppealTicket(params = {}) {
         ok: false,
         error: `Could not post the appeal header into the new staff channel: ${cause}`,
       };
+    }
+
+    // ── #818 full-statement follow-up ───────────────────────────────────────
+    // The header embed clamps its fenced statement to the description cap;
+    // whenever that clamp fired, the VERBATIM remainder must still reach the
+    // staff channel — the statement is evidence, and the embed is only its
+    // display. Chunks are fenced per piece (fence worst case stays inside
+    // the content cap), never mention-parse, and a failed chunk keeps the
+    // #818/#730 pending law: no ticket without complete evidence.
+    if (header.statementTruncatedForEmbed) {
+      const fullStatement = String(
+        statement ?? appeal?.appeal_statement ?? "",
+      ).trim();
+      const chunks = evidenceApi().splitChunks(
+        fullStatement,
+        APPEAL_STATEMENT_CHUNK_CHARS,
+      );
+      try {
+        for (const [i, chunk] of chunks.entries()) {
+          await channel.send({
+            content:
+              `**Appeal statement, part ${i + 1}/${chunks.length}** ` +
+              `(verbatim continuation):\n` +
+              evidenceApi().fencedBlock(chunk),
+            allowedMentions: { parse: [] },
+          });
+        }
+      } catch (err) {
+        const cause = err?.message || String(err);
+        console.error(
+          `${LOG_PREFIX} appeal statement follow-up post failed ${ids()} ` +
+            `guild=${guildId} channel=${channel?.id} — ORPHANED CHANNEL ` +
+            `(delete ${channel?.name ?? channel?.id}); appeal stays pending ` +
+            `(staff must see the FULL statement):`,
+          cause,
+        );
+        return {
+          ok: false,
+          error: `Could not post the full appeal statement into the staff channel: ${cause}`,
+        };
+      }
     }
 
     // ── attach + open (CAS; the LIVE row always wins a race) ────────────────

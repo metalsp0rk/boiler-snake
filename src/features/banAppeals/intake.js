@@ -13,12 +13,13 @@
  * 07 owns the InteractionCreate wiring); it never replies itself and never
  * rejects.
  *
- * Pending-truth law (#730, issue §2): a ticket failure leaves the appeal row
- * `filed` with NULL ticket — the honest pending state — the user gets the
- * SPECIFIC cause and is never told "filed", and the failure is logged loudly
- * with ids. There is deliberately NO automatic ticket retry in v1: the filed
- * row + the loud log are the pending surface (a boot/staff sweep is a
- * documented follow-up, not shipped copy).
+ * Pending-truth law (#730, issue §2 + #819): a ticket failure leaves the
+ * appeal row `filed` with NULL ticket — the honest pending state — the user
+ * gets the SPECIFIC cause and is never told "filed", and the failure is
+ * logged loudly with ids. #819 shipped the retry: the boot re-drive
+ * (`runBootFiledRedrive`, events.js) re-opens filed-no-ticket appeals and
+ * stamps a staff-visible notice when a retry fails — the copy may promise
+ * the automatic retry because it now exists.
  *
  * Decision-code enum (INTAKE_CODES — the single source later tasks match
  * on; values are stable strings, never re-spelled inline):
@@ -455,9 +456,9 @@ function refusalTicketFailed(cause) {
   return (
     "**Appeal:** your statement was saved, but the private staff review " +
     `channel could not be opened (${String(cause ?? "unknown failure")}). ` +
-    "Staff can still see the pending appeal on their side — if you don't " +
-    "hear back, reach out to a staff member another way. The ban itself is " +
-    "unchanged."
+    "The bot retries opening it automatically every time it restarts, and " +
+    "the audit trail holds the record — if you don't hear back, reach out " +
+    "to a staff member another way. The ban itself is unchanged."
   );
 }
 

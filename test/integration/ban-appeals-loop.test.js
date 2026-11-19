@@ -56,6 +56,7 @@ const { createIntegrationEnv } = require("../helpers/harness");
 const {
   createUser,
   createMember,
+  createGuild,
   createButtonInteraction,
   createModalSubmitInteraction,
   lastReplyContent,
@@ -1337,6 +1338,174 @@ describe("integration: ban appeals full loop (#773)", () => {
     const row = env.db.getAppealById(appeal.id);
     assert.equal(row.ferry_user_msg_id, "ferry-in-1", "cursors stayed truthful");
     assert.equal(row.ferry_ticket_msg_id, "msg-staff-1");
+  });
+
+  /* ══ 14b. #818/#819 — statement-embed cap + filed-ticket boot re-drive ═════ */
+
+  /** Payload embeds ride the channel double as EmbedBuilder instances. */
+  const embedJsonOf = (m) =>
+    m.embeds[0]?.toJSON ? m.embeds[0].toJSON() : m.embeds[0];
+
+  it("#818 the backtick-monster statement OPENS its ticket: clamped header + verbatim follow-up chunks", async () => {
+    // Pre-fix this submit NEVER produced a ticket: the monster statement
+    // fenced past 4096, setDescription threw, and UNIQUE(ban_record_id)
+    // made the failure permanent (the user forfeited the appeal right).
+    const monster = "`".repeat(3990);
+    const { appeal, ch } = await openAppealCycle("monster", {
+      statement: monster,
+    });
+    assert.equal(appeal.status, "open", "the ticket OPENS — the wedge is gone");
+
+    // The tickets pipeline posts its own opener first — the appeal header
+    // is the send whose embed carries the appeal title (law of msg-sent-2).
+    const headerIdx = ch.sent.findIndex(
+      (m) => String(embedJsonOf(m).title || "").startsWith("Ban appeal "),
+    );
+    assert.ok(headerIdx >= 0, "the appeal header landed in the ticket channel");
+    const desc = embedJsonOf(ch.sent[headerIdx]).description;
+    assert.ok(desc.length <= 4096, `header description clamped (${desc.length} ≤ 4096)`);
+    assert.match(desc, /embed truncated/, "the embed says the display was cut");
+
+    // The full statement lands as fenced continuation messages…
+    const continuations = ch.sent
+      .slice(headerIdx + 1)
+      .filter((m) => String(m.content).startsWith("**Appeal statement"));
+    assert.equal(continuations.length, 4, "3990 chars / 1300 per chunk = 4 parts");
+    let recovered = "";
+    for (const [i, m] of continuations.entries()) {
+      const lines = String(m.content).split("\n");
+      assert.ok(
+        lines[0].startsWith(`**Appeal statement, part ${i + 1}/4**`),
+        "each part names itself and the total",
+      );
+      assert.equal(lines[1], lines[lines.length - 1], "fence opens and closes equal");
+      assert.ok(
+        lines[1].length - 1 >= Math.max(...lines[2].match(/`+/g).map((s) => s.length)),
+        "chunk fence outgrows its inner runs (inert)",
+      );
+      recovered += lines.slice(2, -1).join("\n");
+    }
+    assert.equal(recovered, monster, "the statement arrives BYTE-FOR-BYTE across the parts");
+    assert.deepEqual(
+      continuations.map((m) => m.allowedMentions),
+      [{ parse: [] }, { parse: [] }, { parse: [] }, { parse: [] }],
+      "continuations never mention-parse",
+    );
+  });
+
+  it("#819 the boot re-drive OPENS a filed-no-ticket appeal once the guild is visible (trap healed)", async () => {
+    const lateGuildId = "guild-late-join-819";
+    const lateCommunity = require("../../src/platform/community").ensureCommunity({
+      platform: "discord",
+      instanceKey: "discord",
+      externalGuildId: lateGuildId,
+    });
+    const target = addAppealTarget("redrive");
+    const record = env.db.createBanRecord({
+      communityId: lateCommunity,
+      userId: target.id,
+      moderatorId: env.users.adminUser.id,
+      source: "staff",
+      reason: "ban in a guild the bot had not seen yet",
+      bannedAt: Date.now(),
+      expiresAt: null,
+    });
+    assert.ok(record.ok);
+
+    // File while the guild is invisible: filed + honest TICKET_FAILED.
+    await emitGuildless(
+      guildlessPress({ user: target, customId: `${C.APPEAL_PREFIX}${record.record.id}` }),
+    );
+    const submit = await emitGuildless(
+      guildlessModalSubmit({
+        user: target,
+        customId: `${C.MODAL_APPEAL_PREFIX}${record.record.id}`,
+        statement: "the guild was unreachable at filing time",
+      }),
+    );
+    assert.match(
+      lastReplyContent(submit),
+      /retries opening it automatically/,
+      "the pending copy may promise the retry — #819 SHIPPED it",
+    );
+    const filed = env.db.getAppealByBanRecord(lateCommunity, record.record.id);
+    assert.equal(filed.status, "filed");
+    assert.equal(filed.ticket_channel_id, null);
+
+    // The guild becomes visible; the boot pass re-drives the SAME flow.
+    const lateGuild = createGuild({ id: lateGuildId });
+    lateGuild.members.me = env.guild.members.me; // the bot is a member now
+    env.client.addGuild(lateGuild);
+
+    const out = await appealsEvents.runBootFiledRedrive(env.supervisor);
+    assert.equal(out.ran, true);
+    assert.equal(out.scanned, 1, "exactly the stranded row was scanned");
+    assert.equal(out.opened, 1, "the re-drive OPENED the appeal");
+    assert.equal(out.failed, 0);
+
+    const healed = env.db.getAppealByBanRecord(lateCommunity, record.record.id);
+    assert.equal(healed.status, "open", "the trap state HEALED through the real CAS flow");
+    assert.ok(healed.ticket_channel_id, "the live ticket is on the record");
+    const ch = lateGuild.channels.cache.get(healed.ticket_channel_id);
+    assert.ok(ch, "the ticket channel lives on the late-joining guild");
+    assert.equal(
+      env.db.db
+        .prepare(
+          `SELECT COUNT(*) AS n FROM admin_audit
+            WHERE action='ban_appeals.filed_ticket_redriven' AND community_id=?`,
+        )
+        .get(lateCommunity).n,
+      1,
+      "the boot repair is durable in the audit trail",
+    );
+  });
+
+  it("#819 a re-drive that STILL fails stays honest: row remains filed, staff notice is durable", async () => {
+    const darkCommunity = require("../../src/platform/community").ensureCommunity({
+      platform: "discord",
+      instanceKey: "discord",
+      externalGuildId: "guild-redrive-dark",
+    });
+    const target = addAppealTarget("redrive-dark");
+    const record = env.db.createBanRecord({
+      communityId: darkCommunity,
+      userId: target.id,
+      moderatorId: env.users.adminUser.id,
+      source: "staff",
+      reason: "ban in a guild the bot will never see",
+      bannedAt: Date.now(),
+      expiresAt: null,
+    });
+    assert.ok(record.ok);
+    await emitGuildless(
+      guildlessPress({ user: target, customId: `${C.APPEAL_PREFIX}${record.record.id}` }),
+    );
+    await emitGuildless(
+      guildlessModalSubmit({
+        user: target,
+        customId: `${C.MODAL_APPEAL_PREFIX}${record.record.id}`,
+        statement: "no ticket will ever open here",
+      }),
+    );
+
+    const out = await appealsEvents.runBootFiledRedrive(env.supervisor);
+    assert.equal(out.scanned, 1);
+    assert.equal(out.opened, 0, "an unreachable guild cannot be opened by retry");
+    assert.equal(out.failed, 1);
+
+    const row = env.db.getAppealByBanRecord(darkCommunity, record.record.id);
+    assert.equal(row.status, "filed", "NO fake-open: the row never lies about its ticket");
+    assert.equal(row.ticket_channel_id, null);
+    assert.equal(
+      env.db.db
+        .prepare(
+          `SELECT COUNT(*) AS n FROM admin_audit
+            WHERE action='ban_appeals.filed_ticket_redrive_failed' AND community_id=?`,
+        )
+        .get(darkCommunity).n,
+      1,
+      "the failed re-drive is durable in the audit trail (staff-visible #819)",
+    );
   });
 
   /* ══ 15. #811 — the ban ends, the appeal closes with it ═══════════════════ */
