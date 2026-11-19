@@ -17,8 +17,9 @@
  * happy path asserts the EXACT sequence ["create","evidence","delete",
  * "audit"]; every evidence-failure arm asserts "delete" is absent from it.
  *
- * Covers (acceptance): decision-2 parse table (yes/Y/Yes/y delete; no/n keep
- * silent; 'maybe' keep + the EXACT echo in reply AND snapshot_note; "" keep);
+ * Covers (acceptance): #877 select-value parse table (exact ['yes'] deletes;
+ * ['keep'] and [] keep silently; forged/unrecognized values keep + the EXACT
+ * echo in reply AND snapshot_note, case preserved, never destroying);
  * expired/unknown/wrong-kind token → no create; one-shot replay; non-staff
  * denial + lost-staff re-check (token untouched); the full happy path against
  * the REAL openTicketChannel (staff-self creator === opener, NO DMs,
@@ -258,11 +259,14 @@ function putMessageReport(env, overrides = {}) {
   });
 }
 
-/** Modal submit carrying tk:rep:m:<token> + context + delete-answer fields. */
+/** Modal submit carrying tk:rep:m:<token> + context + delete-select fields.
+ *  `del` is the raw fieldMap value for rep_delete: a scalar is wrapped into
+ *  the single-select values array the real payload carries (#877); an array
+ *  passes through verbatim (forged multi/empty submits). */
 function makeSubmit({
   env,
   token,
-  del = "yes",
+  del = ["yes"],
   context,
   user = env.reporter,
   member = env.reporterMember,
@@ -277,7 +281,7 @@ function makeSubmit({
     fields: {
       [constants.MODAL_REPORT_FIELD_CONTEXT]:
         context ?? "cross-posted spam invite links, please remove",
-      [constants.MODAL_REPORT_FIELD_DELETE]: del,
+      [constants.MODAL_REPORT_FIELD_DELETE]: Array.isArray(del) ? del : [del],
     },
   });
 }
@@ -325,27 +329,37 @@ function jumpUrlOf(env) {
   return `https://discord.com/channels/${env.guildId}/${env.sourceChannel.id}/${env.reportedMessage.id}`;
 }
 
-// ---------- decision-2 parse table ----------
+// ---------- #877 select-value parse table ----------
 
-describe("report message submit — delete-choice parse (decision 2: never destroy on a misread)", () => {
+describe("report message submit — delete-choice parse (#877: strict value equality, never destroy on a misread)", () => {
+  // Values as the required rep_delete SELECT submits them. The real UI can
+  // only ever send ['keep'] or ['yes']; every other row simulates a forged
+  // or malformed submit and pins the defense-in-depth arms.
   const PARSE_TABLE = [
-    { answer: "yes", deletes: true },
-    { answer: "Y", deletes: true },
-    { answer: "Yes", deletes: true },
-    { answer: "y", deletes: true },
-    { answer: "no", deletes: false },
-    { answer: "n", deletes: false },
+    { answer: ["yes"], deletes: true },
+    { answer: ["keep"], deletes: false },
+    // Required field makes [] theoretical (foreign/old-form modal) — the
+    // keep-path must still hold, silently.
+    { answer: [], deletes: false },
     {
-      answer: "maybe",
+      answer: ["YES"],
+      deletes: false,
+      echo: "input 'YES' not understood — message kept",
+    },
+    {
+      answer: ["maybe"],
       deletes: false,
       echo: "input 'maybe' not understood — message kept",
     },
-    // Required field makes "" theoretical — the keep-path must still hold.
-    { answer: "", deletes: false },
+    {
+      answer: ["yes", "keep"],
+      deletes: false,
+      echo: "input 'yes, keep' not understood — message kept",
+    },
   ];
 
   for (const { answer, deletes, echo } of PARSE_TABLE) {
-    it(`"${answer}" → ${deletes ? "delete" : "keep"}${echo ? " + exact echo" : " (silent)"}`, async () => {
+    it(`${JSON.stringify(answer)} → ${deletes ? "delete" : "keep"}${echo ? " + exact echo" : " (silent)"}`, async () => {
       const env = makeMessageEnv();
       const r = makeRecorder();
       spyDelete(env.reportedMessage, r.order);
@@ -645,7 +659,7 @@ describe("report message submit — happy path (decision 4 order, decision 5 tic
     spyDelete(env.reportedMessage, r.order);
     const token = putMessageReport(env);
 
-    const interaction = makeSubmit({ env, token, del: "no" });
+    const interaction = makeSubmit({ env, token, del: "keep" });
     await report.handleReportMessageModal(interaction, RUN_CTX(env), {
       deps: r.deps,
     });
@@ -869,7 +883,7 @@ describe("report message submit — duplicate nudge (decision 12: still creates,
     spyDelete(env.reportedMessage, r.order);
     const token = putMessageReport(env);
 
-    const interaction = makeSubmit({ env, token, del: "no" });
+    const interaction = makeSubmit({ env, token, del: "keep" });
     await report.handleReportMessageModal(interaction, RUN_CTX(env), {
       deps: r.deps,
     });
@@ -904,7 +918,7 @@ describe("report message submit — partial failures keep the ticket and name th
     spyDelete(env.reportedMessage, r.order);
     const token = putMessageReport(env);
 
-    const interaction = makeSubmit({ env, token, del: "no" });
+    const interaction = makeSubmit({ env, token, del: "keep" });
     const { lines, restore } = captureConsoleError();
     try {
       await report.handleReportMessageModal(interaction, RUN_CTX(env), { deps: r.deps });

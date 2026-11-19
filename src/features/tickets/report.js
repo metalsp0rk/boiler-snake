@@ -79,6 +79,8 @@ const {
   MODAL_REPORT_USER_PREFIX,
   MODAL_REPORT_FIELD_CONTEXT,
   MODAL_REPORT_FIELD_DELETE,
+  MODAL_REPORT_DELETE_OPTION_KEEP,
+  MODAL_REPORT_DELETE_OPTION_YES,
 } = require("./constants");
 
 /**
@@ -413,6 +415,26 @@ function readModalText(interaction, fieldId) {
     return typeof raw === "string" ? raw.trim() : "";
   } catch {
     return "";
+  }
+}
+
+/**
+ * Read one modal string-select field tolerantly (mirrors readModalText).
+ * Discord enforces the required flag on `rep_delete` at submit, so an
+ * absence/throw here means a malformed or foreign modal — an empty array
+ * keeps the flow honest (the keep-path stands) instead of dying in a
+ * parser. Non-array returns are flattened to [] never a crash.
+ *
+ * @param {object} interaction modal submit
+ * @param {string} fieldId select customId (constants.js)
+ * @returns {string[]} submitted values, [] when absent
+ */
+function readModalSelectValues(interaction, fieldId) {
+  try {
+    const raw = interaction?.fields?.getStringSelectValues?.(fieldId);
+    return Array.isArray(raw) ? raw : [];
+  } catch {
+    return [];
   }
 }
 
@@ -852,41 +874,47 @@ async function handleReportUserModal(interaction, ctx, opts = {}) {
 /** Fallback tail for kept/deleted note lines when no jump link is buildable. */
 const NO_JUMP = "jump link unavailable";
 
-/** Decision-2 delete words (case-insensitive, post-trim) → delete. */
-const DELETE_WORDS = new Set(["yes", "y"]);
-
-/** Decision-2 keep words that echo NOTHING — recognized negative answers. */
-const KEEP_WORDS = new Set(["no", "n"]);
-
 /** Cause text inside the evidence-failure line is capped so the 2000-char
  * reply can never be busted by a pathological error message. */
 const CAUSE_CAP = 300;
 
 /**
- * Decision-2 delete-choice parse — VERBATIM safety contract: only
- * `yes`/`y` (case-insensitive) delete; ANYTHING ELSE keeps, and an
- * unrecognized non-empty input echoes
- * `input 'X' not understood — message kept`. The echo shows the submitted
- * string with surrounding whitespace stripped only (readModalText trims;
- * case is preserved — lowercasing is for the MATCH, never for the echo),
- * so the reporter re-reads exactly what they typed. NEVER destroy on a
- * misread: recognition is the only path to a destructive choice.
+ * Delete-choice parse (#877; decision-2's never-destroy-on-a-misread
+ * contract restated for the required `rep_delete` SELECT, #745 decision 2
+ * superseded on its input widget only) — strict VALUE EQUALITY over the
+ * submitted values: ONLY the single exact `yes` deletes. The exact `keep`
+ * and an empty pick (`[]` — the field is required, so that is reachable
+ * only via a malformed/foreign submit) keep silently, echoing NOTHING.
+ * Anything else also keeps and echoes
+ * `input 'X' not understood — message kept`: unreachable through the real
+ * UI (the select offers exactly two values), the branch stays as defense in
+ * depth so a forged or foreign submit can NEVER destroy on a misread. The
+ * echo carries the submitted value(s) verbatim post-trim — case preserved,
+ * the reporter re-reads exactly what arrived.
  *
- * @param {string} raw trimmed modal answer ("" when absent — the field is
- *   required, so that case is only reachable via a foreign modal)
+ * @param {string[]} values raw select values (readModalSelectValues; []
+ *   when absent)
  * @returns {{ deleteIntent: boolean, echoNote: string|null }}
  */
-function parseDeleteChoice(raw) {
-  const value = typeof raw === "string" ? raw.trim() : "";
-  const norm = value.toLowerCase();
-  if (DELETE_WORDS.has(norm)) return { deleteIntent: true, echoNote: null };
-  // "" (theoretical — required field), "no" and "n": keep, no echo.
-  if (value === "" || KEEP_WORDS.has(norm)) {
+function parseDeleteChoice(values) {
+  const picked = Array.isArray(values)
+    ? values
+        .filter((v) => typeof v === "string")
+        .map((v) => v.trim())
+        .filter((v) => v !== "")
+    : [];
+  if (picked.length === 1 && picked[0] === MODAL_REPORT_DELETE_OPTION_YES) {
+    return { deleteIntent: true, echoNote: null };
+  }
+  if (
+    picked.length === 0 ||
+    (picked.length === 1 && picked[0] === MODAL_REPORT_DELETE_OPTION_KEEP)
+  ) {
     return { deleteIntent: false, echoNote: null };
   }
   return {
     deleteIntent: false,
-    echoNote: `input '${value}' not understood — message kept`,
+    echoNote: `input '${picked.join(", ")}' not understood — message kept`,
   };
 }
 
@@ -1100,9 +1128,11 @@ async function handleReportMessageModal(interaction, ctx, opts = {}) {
       return;
     }
 
-    // 3. Delete choice, decision 2 verbatim: recognition-only, echo on garbage.
+    // 3. Delete choice (#877): strict value-equality on the required
+    //    rep_delete select — only the exact single `yes` deletes; empty or
+    //    unknown picks keep, unknown ones echo.
     const { deleteIntent, echoNote } = parseDeleteChoice(
-      readModalText(interaction, MODAL_REPORT_FIELD_DELETE),
+      readModalSelectValues(interaction, MODAL_REPORT_FIELD_DELETE),
     );
 
     const ids = submitIds(interaction, "report_message");

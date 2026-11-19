@@ -198,10 +198,10 @@ Staff right-click a **message** → Apps → **Report Post**, or a **member** �
 
 | Command | Modal | Fields |
 |---------|-------|--------|
-| Report Post | `Report this post` | **Additional context** (paragraph, required) · **Delete original? (yes/no)** (short text, required, **no default**) |
+| Report Post | `Report this post` | **Additional context** (paragraph, required) · **Delete original?** (required single-select: *Keep the original* / *Delete after evidence posts* — **no option default**) |
 | Report User | `Report this user` | **Additional context** (paragraph, required) — never deletes anything |
 
-**Delete rule** — recognition is the only path to a destructive choice (the #471 H2-15 never-destroy-on-a-misread idiom): `yes` / `y` (case-insensitive) deletes the original **after** the evidence copy lands in the ticket; `no` / `n` keeps it; **anything else also keeps**, echoing the raw input in the ephemeral reply and in the ticket's report record: `input 'X' not understood — message kept`.
+**Delete rule** — value equality is the only path to a destructive choice (the #471 H2-15 never-destroy-on-a-misread idiom, restated for the #877 select): choosing **Delete after evidence posts** (value `yes`) deletes the original **after** the evidence copy lands in the ticket; **Keep the original** (value `keep`) keeps it. The select is required with no pre-selected option — Discord blocks submit until an explicit pick. A forged or malformed submit can still never destroy: anything other than the exact single `yes` value keeps, echoing the raw input in the ephemeral reply and in the ticket's report record: `input 'X' not understood — message kept`.
 
 Refused up front (ephemeral, nothing recorded): a bot subject — `Cannot open a ticket for a bot.`; a self-report — ``You can't report yourself — use `/ticket create` to reach staff instead. Nothing was recorded.`; an unresolvable target — `Could not resolve the reported message — it may have been deleted. Nothing was recorded.` / `Could not resolve the reported member — they may have left the server. Nothing was recorded.` The pending capture is one-shot, lives ~10 minutes in the running process, and does not survive a restart — a stale modal submit answers: `This report form has expired or was already used — run the command again.`
 
