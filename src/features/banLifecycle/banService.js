@@ -842,7 +842,9 @@ async function banUser(opts = {}) {
  * Settle ONE expired ban (the ticker's per-row call, #772 §4).
  * CAS law: claimUnban first — a loser performs ZERO outbound calls; NOT_BANNED
  * means the ban vanished outside the bot and the row settles
- * `unbanned_manual` (repo machine truth), NOT an error.
+ * `unbanned_manual` (repo machine truth), NOT an error — and settles it
+ * SILENTLY (#817: an unobserved lift is log-only by reconciliation law;
+ * only WITNESSED unbans welcome).
  *
  * @param {object|number} recordOrId ban_records row or its id
  * @param {object} [deps] shared injected deps ({ outbound, guildName,
@@ -1126,6 +1128,11 @@ async function finalizeExpiry(recordOrId, deps = {}) {
         expires_at: row.expires_at,
         source: row.source,
         not_banned: externallyUnbanned,
+        // #817 stamp: an unobserved lift is settle-silently BY LAW — the
+        // audit row records which law withheld the DM.
+        ...(externallyUnbanned
+          ? { welcome_skipped_reason: "downtime_reconcile" }
+          : {}),
       },
     });
     // #811: the cycle is over — an appeal still riding it closes now (the
@@ -1139,15 +1146,34 @@ async function finalizeExpiry(recordOrId, deps = {}) {
       opts,
       log
     );
-    const guildName = await resolveGuildName(opts, outbound, communityId);
-    const welcome = await attemptWelcome(
-      communityId,
-      userId,
-      row,
-      opts,
-      log,
-      guildName
-    );
+    // ── #817: the NOT_BANNED arm NEVER welcomes ───────────────────────────
+    // "The ban was already gone" means the GuildBanRemove event was NEVER
+    // seen (downtime, or a dropped session that will not replay) — the
+    // unban's moment is undateable, the exact state reconciliation treats as
+    // log-only. Firing the welcome chain off a row the sweep only just
+    // noticed is the days-late "You're back!" lie §2's law exists to stop.
+    // Lifts the bot WITNESSES stay fully owned by handleExternalUnban (the
+    // event welcomes what it sees); clemency owns its own DM. This arm
+    // speaks only for unobserved lifts, and it speaks with the durable
+    // audit stamp (welcome_skipped_reason) + the honest embed skip below.
+    let welcome = null;
+    if (externallyUnbanned) {
+      welcome = {
+        attempted: false,
+        skipped:
+          "ban was lifted outside the bot without an observed event — log-only settle, no retroactive DM (#817)",
+      };
+    } else {
+      const guildName = await resolveGuildName(opts, outbound, communityId);
+      welcome = await attemptWelcome(
+        communityId,
+        userId,
+        row,
+        opts,
+        log,
+        guildName
+      );
+    }
 
     return {
       ok: true,

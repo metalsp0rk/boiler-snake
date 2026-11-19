@@ -29,7 +29,10 @@
  *      .handleExternalUnban — MANUAL-BEATS-TICKER CAS + audit — with the
  *      welcome DM suppressed by the service's own toggle-off silence law
  *      (§2: log-only reconciliation, NO retroactive DMs; the normal
- *      welcome/rejoin law is untouched for every future cycle).
+ *      welcome/rejoin law is untouched for every future cycle). On the boot
+ *      pass that combines the two (`opts.reconcile`) this runs BEFORE the
+ *      sweep slice (#817): rows lifted by hand while offline settle here
+ *      log-only, so the sweep can never fire their expiry welcome days late.
  *
  * ── Never-throw law (AGENTS.md Error Handling) ─────────────────────────────
  * The tick returns counters, never a rejection: every row, embed, community
@@ -408,6 +411,20 @@ async function runBanExpiryTick(supervisor, opts = {}) {
     errors: 0,
   };
 
+  if (opts.reconcile === true) {
+    // #817 — reconciliation runs BEFORE this pass's sweep slice, never after.
+    // The boot order was sweep-first: a row whose ban was lifted by hand
+    // during downtime hit the sweep's NOT_BANNED arm and ran the FULL
+    // terminal chain — rejoin backfill, invite mint, welcome DM — days late.
+    // That is exactly the lie the "log-only while down" law (§2) forbids,
+    // and reconcile (which deliberately suppresses those side effects) had
+    // no say because it ran second. Reconciled-first settles those rows
+    // truthfully; the sweep then only sees rows whose expiry is REAL and
+    // whose live ban (if any) it legitimately owns. Rows still live-banned
+    // keep the full expiry behavior including the welcome — unchanged.
+    out.reconciliation = await runBootReconciliation(supervisor, opts);
+  }
+
   try {
     const facade = dbFacade();
     const due = facade.listDueExpiredBans(nowMs).slice(0, limit);
@@ -503,9 +520,6 @@ async function runBanExpiryTick(supervisor, opts = {}) {
     console.error(`${LOG_PREFIX} expiry tick failed:`, err?.message || err);
   }
 
-  if (opts.reconcile === true) {
-    out.reconciliation = await runBootReconciliation(supervisor, opts);
-  }
   return out;
 }
 
@@ -722,8 +736,9 @@ async function runBootReconciliation(supervisor, opts = {}) {
  * boundaries, overlap 'skip' (a slow Discord must not stack sweeps), and
  * runImmediately so rows that expired during downtime unban on boot
  * (§4: "on startup, expired rows unban immediately"). The same immediate
- * first fire carries the ONE reconciliation pass (§2); every later tick is
- * the pure expiry sweep.
+ * first fire carries the ONE reconciliation pass (§2) BEFORE its sweep
+ * slice (#817 — boot settles stale rows log-only before any expiry DM can
+ * fire); every later tick is the pure expiry sweep.
  *
  * @param {object|null} supervisor PR 7 supervisor
  * @param {object} [featureCtx] load.js feature context (unused)

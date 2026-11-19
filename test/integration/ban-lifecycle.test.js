@@ -893,6 +893,45 @@ describe("integration: ban lifecycle (#772)", () => {
     assert.equal(target.sends.length, 0, "still zero DMs");
   });
 
+  it("#817 boot pass reconciles BEFORE sweeping — a stale row never gets a late welcome DM", async () => {
+    // Row A — expired during downtime AND lifted by hand: gone from the
+    // guild ban list, invisible to no event. Pre-#817 the boot pass swept
+    // FIRST: the NOT_BANNED arm ran the full terminal chain (backfill,
+    // invite, WELCOME DM) days late — the exact lie §2's log-only law
+    // exists to prevent.
+    const stale = addBanTarget("bootstale");
+    const created = env.db.createBanRecord({
+      communityId: env.communityId,
+      userId: stale.id,
+      moderatorId: env.users.adminUser.id,
+      source: "staff",
+      reason: "expired while down, lifted by hand",
+      bannedAt: Date.now() - 2 * DAY,
+      expiresAt: Date.now() - DAY, // DUE the moment boot runs
+    });
+    assert.ok(created.ok);
+
+    // Row B — genuinely still banned, term lapsed while down: reconcile
+    // SEES the live ban and leaves it to the sweep, which must act fully.
+    const live = addBanTarget("bootlive");
+    await slashBan(live, { reason: "spam", duration: "24h" });
+
+    const out = await banTicker.runBanExpiryTick(fakeSupervisor(env.client), {
+      now: Date.now() + DAY + 60_000,
+      reconcile: true,
+    });
+
+    // Order proven by RESULTS: the stale row settled LOG-ONLY first…
+    assert.equal(out.reconciliation?.reconciled, 1, "the reconcile pass healed the stale row");
+    assert.equal(latestRecord(stale).status, "unbanned_manual");
+    assert.equal(welcomeDmsFor(stale).length, 0, "NO late welcome for the hand-lifted ban");
+    // …while the live row got the full, immediate expiry treatment (§4).
+    assert.equal(out.unbanned, 1, "the live-expired row unbanned on the same boot pass");
+    assert.equal(out.welcomed, 1);
+    assert.equal(welcomeDmsFor(live).length, 1, "a REAL expiry still welcomes");
+    assert.equal(env.guild._unbans.length, 1, "only the live row's auto-unban was called");
+  });
+
   /* ── 11. #809 re-ban guard on the expiry sweep ────────────────────────── */
 
   /** The claim lease (repo constant) — retry becomes possible past it.
@@ -1040,6 +1079,9 @@ describe("integration: ban lifecycle (#772)", () => {
     const row = latestRecord(target);
     assert.equal(row.status, "unbanned_manual", "the pre-existing 10026 settle stands");
     assert.match(row.unban_reason, /already lifted outside the bot/);
+    // #817: the sweep NEVER welcomes an unobserved lift — log-only settle.
+    assert.equal(out.welcomed, 0, "no retroactive welcome for a lift no event witnessed");
+    assert.equal(row.welcome_dm_sent, 0, "the welcome claim stays unspent");
   });
 
   it("#809: a legacy NULL-marker record keeps the historical behavior — unbans on a different live reason", async () => {
