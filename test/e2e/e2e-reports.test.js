@@ -28,7 +28,7 @@ describe("e2e: context-menu reports (Report Post / Report User / Open-ticket-for
   let env;
 
   /** shared arc state (suite runs serially) */
-  let firstModal = null; // { invoke, state, customId } for the 'no' submit
+  let firstModal = null; // { invoke, state, customId } for the 'keep' submit
   let firstReport = null; // { number, channelId, messageId }
   let keptSnapshotNoteTicket = null;
 
@@ -60,11 +60,17 @@ describe("e2e: context-menu reports (Report Post / Report User / Open-ticket-for
     );
   }
 
-  /** Flattened text-input custom_ids of a stored modal-display callback. */
+  /**
+   * Flattened field custom_ids of a stored modal-display callback, in
+   * document order: every top-level component is a Label (type 18) whose
+   * payload lives under `component` (#877); legacy action rows (type 1,
+   * `components` array) stay supported for other modals. Collects text
+   * inputs (4) AND string selects (3).
+   */
   function modalFields(state) {
     return (state.response_json?.data?.components ?? [])
-      .flatMap((row) => row.components ?? [])
-      .filter((c) => c.type === 4)
+      .flatMap((row) => (row.type === 18 ? [row.component] : (row.components ?? [])))
+      .filter((c) => c.type === 4 || c.type === 3)
       .map((c) => c.custom_id);
   }
 
@@ -153,7 +159,7 @@ describe("e2e: context-menu reports (Report Post / Report User / Open-ticket-for
     assert.equal(state.response_json?.type, 4, "denial reply, never a modal");
   });
 
-  // ── Report Post: invoke → modal → submit 'no' ───────────────────────────
+  // ── Report Post: invoke → modal → submit 'keep' ─────────────────────────
 
   it("Report Post invoke shows the two-field report modal (one-shot token in custom_id)", async () => {
     const msg = await env.mock.inject("harassment in the open", env.ids.target);
@@ -173,6 +179,27 @@ describe("e2e: context-menu reports (Report Post / Report User / Open-ticket-for
       ["rep_context", "rep_delete"],
       "context + required delete fields, in order",
     );
+    // #877 fidelity: Label-component shape (type 18) with a REQUIRED
+    // two-option delete select and no pre-selected disposition.
+    const labels = state.response_json.data.components;
+    assert.deepEqual(
+      labels.map((c) => c.type),
+      [18, 18],
+      "both fields arrive as Label components (#877)",
+    );
+    const deleteSelect = labels[1].component;
+    assert.equal(deleteSelect.custom_id, "rep_delete");
+    assert.equal(deleteSelect.type, 3, "StringSelect");
+    assert.equal(deleteSelect.required, true, "submit blocked until an explicit pick");
+    assert.deepEqual(
+      deleteSelect.options.map((o) => o.value),
+      ["keep", "yes"],
+      "exactly the two dispositions",
+    );
+    assert.ok(
+      deleteSelect.options.every((o) => !o.default),
+      "no pre-selected disposition on a destructive question",
+    );
     assert.equal(
       state.initial_response_message_id,
       null,
@@ -182,10 +209,10 @@ describe("e2e: context-menu reports (Report Post / Report User / Open-ticket-for
     firstReport.customId = firstModal.customId;
   });
 
-  it("submit 'no': ticket opens, evidence posts, ORIGINAL SURVIVES (decision 4/2)", async () => {
+  it("submit 'keep': ticket opens, evidence posts, ORIGINAL SURVIVES (decision 4/2, #877 select)", async () => {
     const submit = await env.mock.modal({
       customId: firstModal.customId,
-      fields: { rep_context: "harassment in #general", rep_delete: "no" },
+      fields: { rep_context: "harassment in #general", rep_delete: "keep" },
     });
     const reply = await env.mock.awaitSettledReply(submit);
     const m = /Ticket \*\*#(\d+)\*\* opened: <#(\d+)>/.exec(String(reply.content));
@@ -273,7 +300,7 @@ describe("e2e: context-menu reports (Report Post / Report User / Open-ticket-for
   it("second report on the SAME message still opens, nudging with the earlier ticket", async () => {
     const { reply } = await reportPost(firstReport.messageId, {
       context: "still active",
-      deleteAnswer: "no",
+      deleteAnswer: "keep",
     });
     const text = String(reply.content);
     assert.match(text, /opened: <#\d+>/, "second ticket opened");
@@ -286,9 +313,11 @@ describe("e2e: context-menu reports (Report Post / Report User / Open-ticket-for
     );
   });
 
-  // ── decision 2: recognition-only delete ─────────────────────────────────
+  // ── #877 defense in depth: a forged select value can never destroy ──────
 
-  it("unrecognized delete answer echoes verbatim and KEEPS the message", async () => {
+  it("forged delete answer echoes verbatim and KEEPS the message", async () => {
+    // Unreachable through the real UI (the required select offers exactly
+    // keep/yes) — the mock forges the submit to pin the fail-safe arm.
     const msg = await env.mock.inject("standing post", env.ids.target);
     const { reply } = await reportPost(msg.id, {
       context: "look at this",

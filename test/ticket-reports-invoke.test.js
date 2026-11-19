@@ -626,40 +626,62 @@ describe("report invoke — failure semantics", () => {
   });
 });
 
-// ---------- modal builders (decision 1: TEXT INPUTS ONLY) ----------
+// ---------- modal builders (#877: Label-wrapped fields, required select) ----------
 
-describe("reportModals — single text-input-only modals", () => {
+describe("reportModals — Label-component modals with a required delete select", () => {
   const TOKEN = "0".repeat(32);
 
-  /** Flat list of every component across the modal's action rows. */
-  function flatComponents(json) {
-    return json.components.flatMap((row) => row.components);
+  /** Assert every top-level component is a Label (type 18); return the
+   *  inner components in modal order. */
+  function labelComponents(json) {
+    for (const row of json.components) {
+      assert.equal(row.type, 18, "every top-level component is a Label (#877)");
+    }
+    return json.components.map((label) => label.component);
   }
 
-  it("message modal: context (Paragraph, required, 4000) + delete (Short, required, no default)", () => {
+  it("message modal: context (Paragraph, required, 4000) + required delete select, no default", () => {
     const json = modalJson(reportModals.buildReportMessageModal(TOKEN));
     assert.equal(json.custom_id, constants.MODAL_REPORT_MESSAGE_PREFIX + TOKEN);
     assert.equal(json.title, "Report this post");
-    assert.equal(json.components.length, 2, "two single-input action rows");
-
-    const inputs = flatComponents(json);
-    assert.deepEqual(
-      inputs.map((c) => c.custom_id),
-      [constants.MODAL_REPORT_FIELD_CONTEXT, constants.MODAL_REPORT_FIELD_DELETE],
+    assert.equal(
+      json.components.length,
+      2,
+      "two Label components — well inside the 5-component cap",
     );
-    // 4 = Text — a context-menu modal carries nothing else (decision 1).
-    assert.deepEqual(inputs.map((c) => c.type), [4, 4]);
 
-    const [context, del] = inputs;
+    const [context, del] = labelComponents(json);
+    // 4 = Text input, 3 = String select (#877: the delete question is a
+    // required select; the modal-components API retired decision 1's
+    // "TEXT INPUTS ONLY" premise).
+    assert.deepEqual([context.type, del.type], [4, 3]);
+    assert.equal(context.custom_id, constants.MODAL_REPORT_FIELD_CONTEXT);
+    assert.equal(del.custom_id, constants.MODAL_REPORT_FIELD_DELETE);
+
+    assert.equal(json.components[0].label, "Additional context");
     assert.equal(context.label, "Additional context");
     assert.equal(context.style, 2, "Paragraph");
     assert.equal(context.required, true);
     assert.equal(context.max_length, 4000);
-    assert.equal(del.label, "Delete original? (yes/no)");
-    assert.equal(del.style, 1, "Short");
-    assert.equal(del.required, true, "delete-choice is required, NO default");
-    assert.equal(del.value, undefined, "no pre-filled answer");
-    assert.equal(del.max_length, 10);
+
+    assert.equal(json.components[1].label, "Delete original?");
+    assert.equal(
+      del.required,
+      true,
+      "required select: Discord blocks submit until an explicit pick",
+    );
+    assert.deepEqual(
+      del.options.map((o) => [o.label, o.value]),
+      [
+        ["Keep the original", constants.MODAL_REPORT_DELETE_OPTION_KEEP],
+        ["Delete after evidence posts", constants.MODAL_REPORT_DELETE_OPTION_YES],
+      ],
+      "exactly the two dispositions, values from constants",
+    );
+    assert.ok(
+      del.options.every((o) => !o.default),
+      "no pre-selected disposition on a destructive question",
+    );
   });
 
   it("user modal: context input only, token in the customId", () => {
@@ -667,13 +689,13 @@ describe("reportModals — single text-input-only modals", () => {
     assert.equal(json.custom_id, constants.MODAL_REPORT_USER_PREFIX + TOKEN);
     assert.equal(json.title, "Report this user");
 
-    const inputs = flatComponents(json);
-    assert.equal(inputs.length, 1);
-    assert.equal(inputs[0].type, 4, "text input only");
-    assert.equal(inputs[0].custom_id, constants.MODAL_REPORT_FIELD_CONTEXT);
-    assert.equal(inputs[0].style, 2, "Paragraph");
-    assert.equal(inputs[0].required, true);
-    assert.equal(inputs[0].max_length, 4000);
+    const [context] = labelComponents(json);
+    assert.equal(json.components.length, 1);
+    assert.equal(context.type, 4, "text input only — no delete field (decision 7)");
+    assert.equal(context.custom_id, constants.MODAL_REPORT_FIELD_CONTEXT);
+    assert.equal(context.style, 2, "Paragraph");
+    assert.equal(context.required, true);
+    assert.equal(context.max_length, 4000);
   });
 
   it("both customIds stay inside Discord's 100-char cap", () => {

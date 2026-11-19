@@ -270,9 +270,9 @@ Discord **context-menu** commands — no slash. Open via **right-click (long-pre
 **Report Post** (message context menu) → modal `Report this post`:
 
 - `Additional context` — paragraph, required
-- `Delete original? (yes/no)` — short text, required, **no default** (a destructive question is never pre-answered)
+- `Delete original?` — required **single-select** (#877): *Keep the original* / *Delete after evidence posts*, no option default (a destructive question is never pre-answered — Discord blocks submit until an explicit pick)
 
-**Delete rule** — recognition is the only path to a destructive choice (#471 H2-15 idiom): `yes` / `y` (case-insensitive) deletes the original message **after** its evidence copy lands in the ticket; `no` / `n` keeps it; **anything else also keeps** and echoes the raw input in the reply and the ticket record: `input 'X' not understood — message kept`. Never destroyed on a misread.
+**Delete rule** — strict value equality is the only path to a destructive choice (#471 H2-15 idiom, restated for the #877 select): the exact `yes` option value deletes the original message **after** its evidence copy lands in the ticket; the `keep` value keeps it; anything else (reachable only via a forged or malformed submit) **also keeps** and echoes the raw input in the reply and the ticket record: `input 'X' not understood — message kept`. Never destroyed on a misread.
 
 **Report User** (user context menu) → modal `Report this user`: `Additional context` only. Never deletes anything. Bot targets and self-reports are refused: `Cannot open a ticket for a bot.` / ``You can't report yourself — use `/ticket create` to reach staff instead. Nothing was recorded.`
 

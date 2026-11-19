@@ -30,10 +30,18 @@ const MODAL_FIELD_STAFF_NOTE = "staff_note";
 const MODAL_REPORT_MESSAGE_PREFIX = "tk:rep:m:";
 /** Modal prefix: report-user submit — `tk:rep:u:<token>` */
 const MODAL_REPORT_USER_PREFIX = "tk:rep:u:";
-/** Text input customId inside both report modals: additional context */
+/** Field customId inside both report modals: additional context (TextInput, #877) */
 const MODAL_REPORT_FIELD_CONTEXT = "rep_context";
-/** Text input customId inside the report-post modal: delete the original? (yes/no) */
+/** Field customId inside the report-post modal: delete the original? (StringSelect, #877) */
 const MODAL_REPORT_FIELD_DELETE = "rep_delete";
+/**
+ * Option VALUES of the report-post delete select (#877). The submit contract
+ * is value-equality: ONLY `MODAL_REPORT_DELETE_OPTION_YES` deletes (and only
+ * after the evidence copy posts); `MODAL_REPORT_DELETE_OPTION_KEEP` keeps;
+ * anything else keeps too (recognition is the only path to destruction).
+ */
+const MODAL_REPORT_DELETE_OPTION_KEEP = "keep";
+const MODAL_REPORT_DELETE_OPTION_YES = "yes";
 
 const DEFAULT_PANEL_TITLE = "Support Tickets";
 const DEFAULT_PANEL_DESCRIPTION =
@@ -54,6 +62,8 @@ module.exports = {
   MODAL_REPORT_USER_PREFIX,
   MODAL_REPORT_FIELD_CONTEXT,
   MODAL_REPORT_FIELD_DELETE,
+  MODAL_REPORT_DELETE_OPTION_KEEP,
+  MODAL_REPORT_DELETE_OPTION_YES,
   DEFAULT_PANEL_TITLE,
   DEFAULT_PANEL_DESCRIPTION,
 };

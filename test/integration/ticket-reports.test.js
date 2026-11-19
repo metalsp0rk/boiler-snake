@@ -219,15 +219,19 @@ describe("integration: ticket-reports", () => {
 
   /**
    * Report-message modal submit with the real field ids from constants.js.
+   * The delete answer rides as the SELECT values array the real payload
+   * carries (#877); a scalar is wrapped, an array passes through verbatim.
    * @param {string} customId
    * @param {string} context
-   * @param {string} deleteAnswer "yes" | "no" | anything else
+   * @param {string|string[]} deleteAnswer "keep" | "yes" | anything else
    * @param {object} [extra] submitReport overrides (non-staff submitter etc.)
    */
   function reportPostFields(context, deleteAnswer) {
     return {
       [reportConstants.MODAL_REPORT_FIELD_CONTEXT]: context,
-      [reportConstants.MODAL_REPORT_FIELD_DELETE]: deleteAnswer,
+      [reportConstants.MODAL_REPORT_FIELD_DELETE]: Array.isArray(deleteAnswer)
+        ? deleteAnswer
+        : [deleteAnswer],
     };
   }
 
@@ -708,7 +712,7 @@ describe("integration: ticket-reports", () => {
     const first = await fullReportPostLoop({
       message,
       context: "first report",
-      deleteAnswer: "no",
+      deleteAnswer: "keep",
     });
     assert.ok(
       !env.lastReplyContent(first.submit).includes("Already reported"),
@@ -718,7 +722,7 @@ describe("integration: ticket-reports", () => {
     const second = await fullReportPostLoop({
       message,
       context: "second report",
-      deleteAnswer: "no",
+      deleteAnswer: "keep",
     });
     assert.notEqual(second.ticket.id, first.ticket.id, "both reports produced their own ticket");
 

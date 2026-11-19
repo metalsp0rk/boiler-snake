@@ -3810,7 +3810,7 @@ index 43ed722..cab72b6 100644
 +  })
 +})
 diff --git a/src/services/test-control.ts b/src/services/test-control.ts
-index 000b187..8f7edaf 100644
+index 000b187..8dbfa92 100644
 --- a/src/services/test-control.ts
 +++ b/src/services/test-control.ts
 @@ -10,14 +10,24 @@ import { generateSnowflake } from '../snowflake'
@@ -4197,7 +4197,7 @@ index 000b187..8f7edaf 100644
  }
  
  /**
-@@ -430,18 +724,111 @@ interface CommandIdRow {
+@@ -430,18 +724,169 @@ interface CommandIdRow {
   * Discord client. Prefers a guild-scoped command match (when `guild_id` is
   * given) and falls back to a global command of the same name; a request
   * with no `guild_id` only ever matches a global command.
@@ -4235,16 +4235,74 @@ index 000b187..8f7edaf 100644
 +        .get(request.message_id) as MessageIdRow | undefined
 +      if (!attached) return { ok: false, reason: 'unknown_command' }
 +    }
-+    // Real Discord delivers modal values as action rows of TEXT_INPUT
-+    // (type 4) components carrying `value`; discord.js ModalValues reads
-+    // exactly that shape for interaction.fields.getTextInputValue().
++    // Real Discord delivers modal values in the SAME component shape the
++    // modal was shown with: label-component modals (modal-components API,
++    // boiler-snake #877) come back as LABEL (type 18) entries wrapping the
++    // answered component — TextInput carries `value`, StringSelect carries
++    // `values` — while legacy modals come back as ACTION_ROW (type 1) rows
++    // of TEXT_INPUT (type 4). discord.js ModalSubmitFields parses exactly
++    // these shapes. The mock mirrors the DISPLAYED modal: the bot's
++    // modal-display callback is persisted in interactions.response_json, so
++    // the stored payload (matched by data.custom_id) decides each field's
++    // wrap and widget type; an unknown display falls back to the legacy
++    // action-row TEXT_INPUT shape (prior behavior).
++    const displayRow = db
++      .prepare(
++        "SELECT response_json FROM interactions WHERE response_json IS NOT NULL AND json_extract(response_json, '$.data.custom_id') = ? ORDER BY rowid DESC LIMIT 1"
++      )
++      .get(request.custom_id) as { response_json: string } | undefined
++    const shownFields = new Map<
++      string,
++      { label?: string; wrapped: boolean; type: number }
++    >()
++    if (displayRow) {
++      try {
++        const parsed = JSON.parse(displayRow.response_json) as {
++          data?: { components?: Record<string, unknown>[] }
++        }
++        for (const top of parsed?.data?.components ?? []) {
++          if (!top || typeof top !== 'object') continue
++          if ('component' in top) {
++            // LABEL wrapper: the answer payload lives under `component`.
++            const inner = top.component as Record<string, unknown> | undefined
++            if (inner && typeof inner.custom_id === 'string') {
++              shownFields.set(inner.custom_id, {
++                label: typeof top.label === 'string' ? top.label : undefined,
++                wrapped: true,
++                type: Number(inner.type),
++              })
++            }
++          } else if (Array.isArray(top.components)) {
++            for (const inner of top.components as Record<string, unknown>[]) {
++              if (inner && typeof inner.custom_id === 'string') {
++                shownFields.set(inner.custom_id, {
++                  wrapped: false,
++                  type: Number(inner.type),
++                })
++              }
++            }
++          }
++        }
++      } catch {
++        // Malformed stored payload: keep the legacy fallback shape.
++        shownFields.clear()
++      }
++    }
 +    const components = Object.entries(request.fields ?? {}).map(
-+      ([fieldCustomId, value]) => ({
-+        type: 1,
-+        components: [
-+          { type: 4, custom_id: fieldCustomId, value: String(value) },
-+        ],
-+      })
++      ([fieldCustomId, value]) => {
++        const shown = shownFields.get(fieldCustomId)
++        const answered =
++          shown?.type === 3
++            ? { type: 3, custom_id: fieldCustomId, values: [String(value)] }
++            : { type: 4, custom_id: fieldCustomId, value: String(value) }
++        return shown?.wrapped
++          ? {
++              type: 18,
++              ...(shown.label !== undefined ? { label: shown.label } : {}),
++              component: answered,
++            }
++          : { type: 1, components: [answered] }
++      }
 +    )
 +    const interaction = createInteraction(db, {
 +      interactionId,
@@ -4311,7 +4369,7 @@ index 000b187..8f7edaf 100644
          )
          .get(request.application_id, request.guild_id, request.command_name) as
          CommandIdRow | undefined)
-@@ -451,7 +838,7 @@ export function createTestInteraction(
+@@ -451,7 +896,7 @@ export function createTestInteraction(
      ? undefined
      : (db
          .prepare(
@@ -4320,7 +4378,7 @@ index 000b187..8f7edaf 100644
          )
          .get(request.application_id, request.command_name) as
          CommandIdRow | undefined)
-@@ -459,12 +846,49 @@ export function createTestInteraction(
+@@ -459,12 +904,49 @@ export function createTestInteraction(
    const command = guildCommand ?? globalCommand
    if (!command) return { ok: false, reason: 'unknown_command' }
  
@@ -4376,7 +4434,7 @@ index 000b187..8f7edaf 100644
  
    const interaction = createInteraction(db, {
      interactionId,
-@@ -474,9 +898,91 @@ export function createTestInteraction(
+@@ -474,9 +956,91 @@ export function createTestInteraction(
      guildId: request.guild_id,
      channelId: request.channel_id,
      commandId: command.id,
