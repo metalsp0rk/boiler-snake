@@ -506,3 +506,39 @@ describe("permissions.js — requireStaff/requireSeniorStaff truth-table matrix"
     assert.equal(typeof surface.requireSeniorStaff, "function");
   });
 });
+
+/* ══ #829 — permsAllow: the ONE fail-closed `.has` permission probe ═══════ */
+
+describe("permsAllow — a permission surface that cannot be interrogated REFUSES", () => {
+  const { permsAllow } = require("../src/core/permissions.js");
+  const FLAG = 1n << 10n; // the probe never interprets the bit itself
+
+  it("answers TRUE only for a truthful positive .has", () => {
+    assert.equal(permsAllow({ has: (f) => f === FLAG }, FLAG), true);
+  });
+
+  it("answers FALSE for the whole shape-drift family (the deleted fail-open copy's consent set)", () => {
+    const cases = [
+      ["null (discord.js uncached-member truth)", null],
+      ["undefined", undefined],
+      ["false", false],
+      ["empty object, no .has", {}],
+      [".has is not a function", { has: "yes" }],
+      ["has() answers false", { has: () => false }],
+      ["has() answers undefined", { has: () => undefined }],
+      ["has() answers truthy non-true", { has: () => 1 }],
+      ["has() throws", { has: () => { throw new Error("bitfield exploded"); } }],
+    ];
+    for (const [label, perms] of cases) {
+      assert.equal(permsAllow(perms, FLAG), false, `${label} must REFUSE`);
+    }
+  });
+
+  it("passes the flag to .has verbatim, once per call — the probe owns no state", () => {
+    const seen = [];
+    const perms = { has: (f) => { seen.push(f); return f === FLAG; } };
+    assert.equal(permsAllow(perms, FLAG), true);
+    assert.equal(permsAllow(perms, 1n << 40n), false);
+    assert.deepEqual(seen, [FLAG, 1n << 40n], "the flag rides to .has verbatim");
+  });
+});

@@ -10,6 +10,33 @@ const { replyDenied, replyOrFollowUpEphemeral } = require("./interaction");
 const { MSG_DENIED } = require("./theme");
 
 /**
+ * The ONE `.has(flag)` permission probe (#829). FAILS CLOSED.
+ *
+ * A missing/garbage permission surface is NOT consent: discord.js
+ * `permissionsFor` legitimately returns null for uncached/non-instance
+ * members (`DataManager.resolve` → null), and ducked/partials/platform
+ * drift can hand back anything. Pre-#829 the gork copies DIVERGED on
+ * exactly this line — `readDiscord` fail-closed (#475/F1-4),
+ * `summarizeRange` fail-OPEN — while gating the SAME ViewChannel parity
+ * law at the same call sequence; a null-perms drift waved the `/gork
+ * summarize` parity gate (#46) through on channel content the invoking
+ * staffer may not be able to see. One law, one home: a perm shape we
+ * cannot interrogate REFUSES, exactly like a throwing one already did.
+ *
+ * @param {{has?: (flag: bigint) => boolean}|null|undefined} perms bitfield-ish surface
+ * @param {bigint} flag PermissionFlagsBits member
+ * @returns {boolean} true ONLY when the surface answers the flag positively
+ */
+function permsAllow(perms, flag) {
+  if (!perms || typeof perms.has !== "function") return false;
+  try {
+    return perms.has(flag) === true;
+  } catch {
+    return false; // a throwing perm surface fails closed
+  }
+}
+
+/**
  * Guild admin/mod gate used by most config commands (Manage Guild).
  * @param {import("discord.js").ChatInputCommandInteraction} interaction
  * @returns {boolean}
@@ -202,6 +229,7 @@ async function requireStaffFromContext(ctx) {
 }
 
 module.exports = {
+  permsAllow,
   isAdminOrMod,
   isStaff,
   isSeniorStaff,

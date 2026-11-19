@@ -28,7 +28,7 @@
  *  - User-only referral: the subject's recent messages across channels the
  *    REFERRER can view — asker parity, decision-46 mechanics. Channels the
  *    referrer cannot view are NEVER fetched (fail-closed permission reads,
- *    same #475 posture as readDiscord.permsAllow) and counted into
+ *    same fail-closed law as core/permissions.permsAllow, #829) and counted into
  *    `window.channels_skipped_not_visible`. The scan is bounded by the
  *    AUTOMOD_CONTEXT_USER_SCAN_* constants (≤15 fetched channels × ≤25
  *    messages per fetch, ≤100 collected messages) — never a whole-server
@@ -69,6 +69,7 @@
 
 const { PermissionFlagsBits } = require("discord.js");
 const { sliceSafe } = require("../../core/text");
+const { permsAllow } = require("../../core/permissions");
 const {
   getAutomodCase,
   listWarnings,
@@ -270,16 +271,7 @@ function projectWindowMessage(message, { channelId, isAnchor = false }) {
   };
 }
 
-// ── permission checks (fail CLOSED — #475 posture, readDiscord.permsAllow) ─
-
-function permsHas(perms, flag) {
-  if (!perms || typeof perms.has !== "function") return false;
-  try {
-    return perms.has(flag) === true;
-  } catch {
-    return false; // a throwing perm surface fails closed
-  }
-}
+// ── permission checks (fail CLOSED — core/permissions.permsAllow, #829) ────
 
 /**
  * ViewChannel for a concrete member on a concrete channel. Missing/garbage
@@ -291,7 +283,7 @@ function memberCanView(channel, member, flag = PermissionFlagsBits.ViewChannel) 
   try {
     if (!channel || !member) return false;
     if (typeof channel.permissionsFor !== "function") return false;
-    return permsHas(channel.permissionsFor(member), flag);
+    return permsAllow(channel.permissionsFor(member), flag);
   } catch (err) {
     console.error(
       `[automod] case-context channel permission read failed (channel ${channel?.id ?? "?"}):`,

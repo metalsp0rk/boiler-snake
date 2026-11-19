@@ -60,6 +60,7 @@
 
 const { PermissionFlagsBits } = require("discord.js");
 const { sliceSafe } = require("../../core/text");
+const { permsAllow } = require("../../core/permissions");
 const { parseDiscordLink, formatReadLine } = require("./tools/readDiscord");
 const { discordCommunityId } = require("../../platform/community");
 const {
@@ -122,15 +123,13 @@ function toMessageArray(result) {
 const sortOldestFirst = (messages) => [...messages].sort((a, b) => idCmp(a?.id, b?.id));
 const sortNewestFirst = (messages) => [...messages].sort((a, b) => idCmp(b?.id, a?.id));
 
-/** `.has(flag)` probe tolerating missing/garbage perm surfaces (true = proceed). */
-function permsAllow(perms, flag) {
-  if (!perms || typeof perms.has !== "function") return true;
-  try {
-    return perms.has(flag) === true;
-  } catch {
-    return false; // a throwing perm surface fails closed
-  }
-}
+// #829: the ONE fail-closed perm probe lives in core/permissions (with the
+// readDiscord twin unified). The pre-#829 LOCAL copy here failed OPEN on a
+// null/garbage perm surface — the same ViewChannel parity gate (#46) the
+// gork tool copy refuses closed — so perm-shape drift (discord.js answers
+// permissionsFor → null for uncached members) waved `/gork summarize`
+// through on channels the invoking staffer may not see. Law now: no
+// interrogable surface → REFUSE, at both gates below.
 
 /**
  * Discord system message (joins, pins, call starts) — skipped as

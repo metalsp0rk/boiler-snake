@@ -141,6 +141,12 @@ describe("drift scan: promoted helpers keep ONE home", () => {
         "snippet",
         "platformLabel",
         "isCommunityRow",
+        // #829: permsAllow's two gork copies (fail-closed readDiscord,
+        // fail-OPEN summarizeRange) gated the SAME ViewChannel parity law
+        // and diverged on exactly the line that matters. Unified
+        // fail-closed in core/permissions; a re-declared local copy is now
+        // a DRIFT OFFENDER, not a "deliberate divergence".
+        "permsAllow",
       ]) {
         if (new RegExp(`^function ${name}\\(`, "m").test(src)) {
           offenders.push(`${path.relative(SRC, file)} re-declares ${name}`);
@@ -158,9 +164,11 @@ describe("drift scan: promoted helpers keep ONE home", () => {
     );
     assert.deepEqual(
       featureCopies.map((f) => path.relative(SRC, f)),
-      // gork permsAllow-style DELIBERATE divergence lives in summarizeRange /
-      // tools — those names are not in this list; describeError/sleep had zero
-      // semantic divergence, so no feature may keep a copy.
+      // #829 retired the last "deliberate divergence" excuse: gork's two
+      // permsAllow copies (one fail-closed, one fail-OPEN, gating the SAME
+      // parity law) are now ONE core/permissions helper, scan-listed above.
+      // describeError/sleep always had zero semantic divergence — no feature
+      // may keep a copy of anything.
       [],
       "identical clusters were promoted; a new local copy needs a reason"
     );
