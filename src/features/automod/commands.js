@@ -105,19 +105,26 @@ const commands = [
             ),
         ),
     )
-    // rules source|extract|clear — the rules text is EXTRACTED from the
-    // guild's rules channel in a one-time batch (never typed by hand):
-    // `source` stores the channel AND runs the extraction, `extract` re-runs
-    // it against the stored channel, `clear` removes both the text and the
-    // source. The judge still reads the distilled text (automod_rules).
+    // rules source|extract|show|clear — the rules text is EXTRACTED from
+    // the guild's rules channel in a one-time batch (never typed by hand):
+    // `source` stores the channel AND extracts, `extract` re-runs it
+    // against the stored channel, `show` reads the CURRENT policy text in
+    // full (#815), `clear` removes both the text and the source. Since
+    // #815 the STORE is confirm-gated (H2-15): without `confirm: true` the
+    // extraction PREVIEWS the distilled text and stores nothing — the
+    // output of a member-writable channel becomes "THE policy" only after
+    // staff READ it. The judge still reads the distilled text
+    // (automod_rules).
     .addSubcommandGroup((group) =>
       group
         .setName("rules")
-        .setDescription("Rules channel source: set it, extract, or clear (admin).")
+        .setDescription("Rules channel source: set it, extract, show, or clear (admin).")
         .addSubcommand((sc) =>
           sc
             .setName("source")
-            .setDescription("Set the rules channel and extract the rules from it now.")
+            .setDescription(
+              "Set the rules channel and preview/extract the rules from it (confirm: true stores).",
+            )
             .addChannelOption((opt) =>
               opt
                 .setName("channel")
@@ -127,13 +134,34 @@ const commands = [
                   ChannelType.GuildAnnouncement,
                 )
                 .setRequired(true),
+            )
+            .addBooleanOption((opt) =>
+              opt
+                .setName("confirm")
+                .setDescription(
+                  "true stores the distilled text as the policy; without it you only PREVIEW it",
+                ),
             ),
         )
         .addSubcommand((sc) =>
           sc
             .setName("extract")
             .setDescription(
-              "Re-run the rules extraction from the stored rules channel (refresh after channel edits).",
+              "Re-run the rules extraction from the stored rules channel (confirm: true stores).",
+            )
+            .addBooleanOption((opt) =>
+              opt
+                .setName("confirm")
+                .setDescription(
+                  "true stores the distilled text as the policy; without it you only PREVIEW it",
+                ),
+            ),
+        )
+        .addSubcommand((sc) =>
+          sc
+            .setName("show")
+            .setDescription(
+              "Show the CURRENT stored rules text — what the judge applies, in full.",
             ),
         )
         .addSubcommand((sc) =>

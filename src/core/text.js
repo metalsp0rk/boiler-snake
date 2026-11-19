@@ -66,6 +66,31 @@ function sliceSafe(s, end) {
 }
 
 /**
+ * Split text into ≤ chunkChars pieces on code-point boundaries (never
+ * between the halves of a surrogate pair — this module's own rule).
+ *
+ * Promoted from the tickets evidence renderer (#829 law: one home — the
+ * automod rules read-back must not import ACROSS features for a generic
+ * chunker; reportEvidence keeps its re-export).
+ *
+ * @param {string} text
+ * @param {number} chunkChars
+ * @returns {string[]} non-empty chunks (one empty chunk for empty input)
+ */
+function splitChunks(text, chunkChars) {
+  const chunks = [];
+  let rest = text == null ? "" : String(text);
+  while (rest.length > chunkChars) {
+    const cut = safeCutIndex(rest, chunkChars);
+    chunks.push(rest.slice(0, cut));
+    rest = rest.slice(cut);
+  }
+  if (rest.length > 0) chunks.push(rest);
+  if (chunks.length === 0) chunks.push("");
+  return chunks;
+}
+
+/**
  * Max code-unit length of a normalized title / title key (roadmap §7.16.1).
  */
 const TITLE_KEY_MAX_LEN = 80;
@@ -169,6 +194,7 @@ function snippet(content, max = 80) {
 module.exports = {
   safeCutIndex,
   sliceSafe,
+  splitChunks,
   joinCapped,
   normalizeTitle,
   snippet,

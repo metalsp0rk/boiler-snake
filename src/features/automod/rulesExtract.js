@@ -24,6 +24,15 @@
  * Dependency seams default to the live discord.js Guild on `deps.guild`
  * (caseContext `buildDefaultDeps` pattern: explicit seams always win,
  * tests script every read + the provider round).
+ *
+ * #815 (preview + belt): `store: false` runs the WHOLE pipeline — read,
+ * distill, validate, injection belt — and returns the text WITHOUT
+ * touching `automod_rules`. The confirm-gated config arms preview first,
+ * so staff READ the policy before it becomes the policy. The injection
+ * belt (findInjectionInRulesText) refuses distilled text that names
+ * targets (mentions, snowflake ids) or carries instruction-override
+ * boilerplate — on preview runs too, so a previewed policy can never be
+ * one the store would reject.
  */
 
 const { getAiConfig, chatCompletion } = require("../../core/ai");
@@ -224,7 +233,39 @@ function buildDefaultDeps(deps = {}) {
  *   truncated: boolean, channelId: string }
  *   | { ok: false, error: string, channelGone?: boolean }>}
  */
-async function extractRules({ communityId, guildId, channelId, deps = {} }) {
+/**
+ * #815 — injection belt over DISTILLED rules text.
+ *
+ * The corpus is member-writable content and the distilled text becomes
+ * "THE policy" in EVERY case's system prompt (prompt.js). Rules must
+ * describe CONDUCT, never name TARGETS, and must never carry an
+ * instruction-override payload: the judge text may not embed mentions,
+ * raw snowflake ids, or "ignore previous instructions/rules" boilerplate.
+ * Deterministic shapes only (a name is uncatchable; an id is).
+ *
+ * @param {string} text distilled rules text
+ * @returns {{ line: string, label: string }|null} the first offense
+ */
+function findInjectionInRulesText(text) {
+  const patterns = [
+    { label: "a Discord mention", re: /<@[!&]?[0-9]{5,20}>/ },
+    { label: "a raw user/server id", re: /\b[0-9]{17,20}\b/ },
+    {
+      label: "instruction-override boilerplate",
+      re: /ignore\s+(?:all\s+)?(?:previous|prior|above|earlier|these)\s+(?:instructions?|rules?|directives?|prompts?)/i,
+    },
+  ];
+  for (const rawLine of String(text ?? "").split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line) continue;
+    for (const { label, re } of patterns) {
+      if (re.test(line)) return { line: line.slice(0, 120), label };
+    }
+  }
+  return null;
+}
+
+async function extractRules({ communityId, guildId, channelId, deps = {}, store = true }) {
   const d = buildDefaultDeps(deps);
   const tag = `(community ${communityId ?? "?"} guild ${guildId ?? "?"} rules channel ${channelId ?? "?"})`;
   const fail = async (what, error, cause = null, extra = {}) => {
@@ -243,13 +284,13 @@ async function extractRules({ communityId, guildId, channelId, deps = {} }) {
   }
   inFlight.add(communityId);
   try {
-    return await extractRulesInner({ communityId, guildId, channelId, d, tag, fail });
+    return await extractRulesInner({ communityId, guildId, channelId, d, tag, fail, store });
   } finally {
     inFlight.delete(communityId);
   }
 }
 
-async function extractRulesInner({ communityId, guildId, channelId, d, tag, fail }) {
+async function extractRulesInner({ communityId, guildId, channelId, d, tag, fail, store = true }) {
   // 1. Channel exists and we can read it. The seam lookups are wrapped so
   //    a throwing deps shape (e.g. deps.guild = null from a contextless
   //    interaction) refuses SPECIFICALLY — the module never rejects (its
@@ -393,13 +434,23 @@ async function extractRulesInner({ communityId, guildId, channelId, d, tag, fail
         "shorten the channel's rule posts and re-run.",
     );
   }
-  const stored = setRules(communityId, distilled);
-  if (!stored.ok) return { ok: false, error: stored.error };
+  // #815 injection belt — BEFORE anything reads or stores the text (a
+  // preview run must show the SAME refusal a confirm run would hit, so
+  // staff never preview a policy the store would reject).
+  const injection = findInjectionInRulesText(distilled);
+  if (injection) {
+    return fail(
+      "result",
+      "The distilled rules were REFUSED — the text contains " +
+        `${injection.label}: \`${injection.line}\`. Rules describe conduct, never ` +
+        "specific users or overrides. Nothing was stored; edit or delete the " +
+        "offending posts in the rules channel and re-run.",
+    );
+  }
 
-  return {
-    ok: true,
-    rules: stored.rules,
-    rulesChars: stored.rulesChars,
+  // Shared fact tail for both shapes (preview and stored report the SAME
+  // counters — the preview is the honest mirror of what a store would do).
+  const facts = {
     messagesRead: kept + dropped,
     pinsKept: pinEntries.length,
     kept,
@@ -409,12 +460,27 @@ async function extractRulesInner({ communityId, guildId, channelId, d, tag, fail
     historyFailed: fetchFailed,
     channelId,
   };
+
+  if (store !== true) {
+    return { ok: true, preview: true, rules: distilled, rulesChars: distilled.length, ...facts };
+  }
+
+  const stored = setRules(communityId, distilled);
+  if (!stored.ok) return { ok: false, error: stored.error };
+
+  return {
+    ok: true,
+    rules: stored.rules,
+    rulesChars: stored.rulesChars,
+    ...facts,
+  };
 }
 
 module.exports = {
   extractRules,
   isExtracting,
   // exported for unit tests (pure seams):
+  findInjectionInRulesText,
   toEntry,
   assembleTranscript,
   buildDistillPrompt,

@@ -64,7 +64,7 @@
 const { EmbedBuilder } = require("discord.js");
 const { buildMessageJumpUrl } = require("../../core/jumpUrl");
 const { Color, tsFull, truncateDescription, truncateField } = require("../../core/theme");
-const { joinCapped, safeCutIndex, sliceSafe } = require("../../core/text");
+const { joinCapped, safeCutIndex, sliceSafe, splitChunks } = require("../../core/text");
 const { downloadGuarded } = require("../../core/ssrfGuard");
 const { sanitizeFilename, mediaKind } = require("./assets");
 
@@ -239,26 +239,10 @@ function fencedBlockWithinCap(text, cap, notice = "") {
   return { block: `${r.fence}\n${body}\n${r.fence}`, truncated };
 }
 
-/**
- * Split text into ≤ chunkChars pieces on code-point boundaries (never
- * between the halves of a surrogate pair — core/text rule).
- *
- * @param {string} text
- * @param {number} chunkChars
- * @returns {string[]} non-empty chunks
- */
-function splitChunks(text, chunkChars) {
-  const chunks = [];
-  let rest = text;
-  while (rest.length > chunkChars) {
-    const cut = safeCutIndex(rest, chunkChars);
-    chunks.push(rest.slice(0, cut));
-    rest = rest.slice(cut);
-  }
-  if (rest.length > 0) chunks.push(rest);
-  if (chunks.length === 0) chunks.push("");
-  return chunks;
-}
+// splitChunks: promoted to core/text (#829 one-home law — automod's rules
+// read-back needs the same code-point-safe chunker and must NOT import
+// across features). Re-exported below for the existing consumers
+// (banAppeals/ticket.js rides the lazy accessor).
 
 /**
  * Text → plain section descriptors (one per split part), rendered as fenced
