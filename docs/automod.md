@@ -462,7 +462,17 @@ unchanged — it still only says where recommendations will post.
    **action tools and the note tool only record intent** during the loop —
    nothing mutates until commit, and each tool result tells the model so
    (`applied at commit`; suggest-mode lines read
-   `**Status:** awaiting staff approval`).
+   `**Status:** awaiting staff approval`). **Participant binding (#816)**
+   then gates every sanction call: `warn` / `ticket` / `timeout` / `kick` /
+   `ban` run only against the members this case is about — the referral
+   target, the resolved subject, and the authors of the window the case
+   actually fetched (the same set #734's delete allow-list proves). Any
+   other `user_id` refuses at dispatch with the "not a participant" cause —
+   mode-independent, above the per-(action, user) slot law, so injected
+   window text ("ban `<@id>`") converts into a refusal, never a ledger
+   entry. `delete_message` keeps its own author law, and `no_action`,
+   lookups and notes (which execute nothing against a member) stay
+   unbound by design.
 6. When the model stops (or the round cap hits), the harness **commits in
    two phases around the actions** (#733): first the **note pre-pass** — the
    one-note law enforced BEFORE any action runs (exactly one note per
