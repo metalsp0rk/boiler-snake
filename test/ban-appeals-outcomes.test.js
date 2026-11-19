@@ -1366,3 +1366,77 @@ describe("outcomes.closeOnBanEnd — the ban-ended system close (#811)", () => {
     assert.equal(db.getAppealById(appeal.id).status, "closed");
   });
 });
+
+/* ══ #820 — outcome REPLIES assert only the facts the engine computed ══════
+ * The staff reply is the artifact staff keep; it may never claim an unban
+ * or a DM that did not happen. Pure builders, full branch matrix. */
+
+const { describe: d820, it: i820 } = require("node:test");
+
+d820("#820 outcome reply builders (facts-keyed staff copy)", () => {
+  i820("all-happy clemency keeps the shipped sentence BYTE-IDENTICAL", () => {
+    assert.equal(
+      outcomes.clemencyReplyText(7, {
+        dmDelivered: true,
+        unban: { attempted: true, ok: true, notBanned: false },
+      }),
+      "**Clemency:** granted — appeal #7. The ban was lifted and the member was notified by DM.",
+    );
+  });
+
+  i820("settled-record clemency says NO UNBAN WAS NEEDED — never claims a lift", () => {
+    const text = outcomes.clemencyReplyText(8, {
+      dmDelivered: true,
+      unban: { attempted: false, ok: true, notBanned: false },
+    });
+    assert.match(text, /already ended, so no unban was needed/);
+    assert.ok(!/was lifted/.test(text), "no claim of a lift the engine never ran");
+  });
+
+  i820("10026 clemency says the live ban was ALREADY GONE", () => {
+    const text = outcomes.clemencyReplyText(9, {
+      dmDelivered: true,
+      unban: { attempted: true, ok: true, notBanned: true },
+    });
+    assert.match(text, /already gone \(nothing to lift\)/);
+    assert.ok(!/was lifted/.test(text), "nothing was lifted — it was already gone");
+  });
+
+  i820("undelivered DM: the reply ADMITS it — and never echoes the cause (K2)", () => {
+    for (const [id, unban] of [
+      [10, { attempted: true, ok: true, notBanned: false }],
+      [11, { attempted: false, ok: true, notBanned: false }],
+      [12, { attempted: true, ok: true, notBanned: true }],
+    ]) {
+      const text = outcomes.clemencyReplyText(id, {
+        dmDelivered: false,
+        dmError: "Cannot send messages to this user (50007)",
+        unban,
+      });
+      assert.match(text, /could NOT be reached by DM/, `clemency branch appeal=${id}`);
+      assert.ok(!text.includes("50007"), "K2: the cause stays a log/audit fact");
+    }
+    const denied = outcomes.denyReplyText(13, {
+      dmDelivered: false,
+      dmError: "Cannot send messages to this user (50007)",
+    });
+    assert.match(denied, /could NOT be reached by DM/);
+    assert.ok(!denied.includes("50007"));
+    assert.match(denied, /the ban stands/, "the denial itself still lands");
+  });
+
+  i820("deny happy copy stays BYTE-IDENTICAL and branches ONLY on dmDelivered", () => {
+    assert.equal(
+      outcomes.denyReplyText(14, { dmDelivered: true }),
+      "**Denied:** appeal #14 denied — the ban stands and the member was notified by DM.",
+    );
+  });
+
+  i820("facts survive the JSON serialization of the reply text (no [object])", () => {
+    const text = outcomes.clemencyReplyText(15, {
+      dmDelivered: true,
+      unban: { attempted: true, ok: true, notBanned: false },
+    });
+    assert.ok(!/\[object|undefined|null/.test(text), text);
+  });
+});

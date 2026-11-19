@@ -275,6 +275,65 @@ function alreadyDecidedError(liveStatus) {
   );
 }
 
+/* ── STAFF-side outcome reply builders (#820, exported for units + docs) ────
+ * The decision audit reply is the artifact staff KEEP — it may only assert
+ * what actually happened (the domain's own never-claim-what-we-did-not-do
+ * law). Every sentence branches on a FACT the service computed: the unban
+ * (skipped on an already-settled record / already-gone per 10026 / actually
+ * lifted) and the DM (delivered or not). The DM's CAUSE stays a log/audit
+ * fact (K2 law): the reply says the DM failed, never echoes why.
+ * The all-happy strings are byte-identical to the pre-#820 copy. */
+
+/**
+ * The granted-clemency staff reply from `grantClemency`'s facts.
+ * @param {number|string} appealId
+ * @param {{dmDelivered?: boolean, unban?: {attempted?: boolean, notBanned?: boolean}}} facts
+ */
+function clemencyReplyText(appealId, facts = {}) {
+  const head = `**Clemency:** granted — appeal #${appealId}. `;
+  const unban = facts.unban ?? {};
+  const dmDelivered = facts.dmDelivered === true;
+  if (unban.attempted === false) {
+    // Settled record: the automation NEVER touched a ban (a newer cycle may
+    // own it). Saying "the ban was lifted" would be a lie with teeth.
+    return (
+      head +
+      "The ban record had already ended, so no unban was needed" +
+      (dmDelivered
+        ? " and the member was notified by DM."
+        : "; the member could NOT be reached by DM — tell them the outcome directly.")
+    );
+  }
+  if (unban.notBanned === true) {
+    return (
+      head +
+      "The live ban was already gone (nothing to lift)" +
+      (dmDelivered
+        ? " and the member was notified by DM."
+        : "; the member could NOT be reached by DM — tell them the outcome directly.")
+    );
+  }
+  return (
+    head +
+    "The ban was lifted" +
+    (dmDelivered
+      ? " and the member was notified by DM."
+      : ", but the member could NOT be reached by DM — tell them the outcome directly.")
+  );
+}
+
+/**
+ * The denial staff reply from `deny`'s facts.
+ * @param {number|string} appealId
+ * @param {{dmDelivered?: boolean}} facts
+ */
+function denyReplyText(appealId, facts = {}) {
+  const head = `**Denied:** appeal #${appealId} denied — the ban stands`;
+  return facts.dmDelivered === true
+    ? `${head} and the member was notified by DM.`
+    : `${head}. The member could NOT be reached by DM — tell them the outcome directly.`;
+}
+
 /* ── USER-side copy builders (issue §4; exported for 07 + docs + units) ─────
  * `**Label:** value` law (#471 H2-13), allowedMentions { parse: [] } on
  * every payload (dmCopy DM law). The parameters ARE the privacy boundary:
@@ -1686,6 +1745,8 @@ module.exports = {
   buildDenyDm,
   buildPlainCloseDm,
   alreadyDecidedError,
+  clemencyReplyText,
+  denyReplyText,
   // the outcome engine (07 wires every entry):
   grantClemency,
   deny,

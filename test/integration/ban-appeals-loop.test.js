@@ -1000,9 +1000,10 @@ describe("integration: ban appeals full loop (#773)", () => {
 
     const ix = await ticketClick(`ap:clemency:${appeal.id}`, { message: header });
     assert.ok(ix.deferred, "the outcome arm deferred the update first");
-    assert.match(
+    assert.equal(
       lastReplyContent(ix),
-      new RegExp(`\\*\\*Clemency:\\*\\* granted — appeal #${appeal.id}\\.`),
+      `**Clemency:** granted — appeal #${appeal.id}. The ban was lifted and the member was notified by DM.`,
+      "#820: the all-facts-true reply is byte-identical to the shipped copy",
     );
 
     // Discord side: exactly one unban with the clemency reason; the ban gone.
@@ -1086,6 +1087,31 @@ describe("integration: ban appeals full loop (#773)", () => {
   });
 
   /* ══ 11. deny (deliverable 7): second cycle end to end ═════════════════════ */
+
+  it("#820 a clemency whose DM could not land ADMITS it in the staff reply (cause stays a log fact)", async () => {
+    const { target, appeal } = await openAppealCycle("dmfail-reply");
+    target.dmsClosed = true; // the member closed their DMs before clemency
+
+    const header = headerMessage(appeal);
+    const ix = await ticketClick(`ap:clemency:${appeal.id}`, { message: header });
+    const reply = lastReplyContent(ix);
+    assert.match(
+      reply,
+      new RegExp(`\\*\\*Clemency:\\*\\* granted — appeal #${appeal.id}\\.`),
+    );
+    assert.match(reply, /The ban was lifted/, "the unban DID happen — that truth stays");
+    assert.match(
+      reply,
+      /could NOT be reached by DM — tell them the outcome directly/,
+      "pre-fix this reply claimed 'the member was notified by DM' REGARDLESS",
+    );
+    assert.ok(
+      !/50007|Cannot send messages/i.test(reply),
+      "K2 law: the DM cause lives in the log/audit, never in channel copy",
+    );
+    assert.equal(env.guild._unbans.length, 1, "the clemency itself still executed");
+    assert.equal(env.db.getAppealById(appeal.id).status, "granted");
+  });
 
   it("a second ban after clemency files a fresh appeal; ap:deny → reason modal → denial DM with eligibility + staff note; first-decision-wins answers every re-click", async () => {
     // Cycle 1: ban → appeal → clemency settles it (re-ban becomes lawful).
