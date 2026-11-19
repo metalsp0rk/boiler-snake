@@ -147,6 +147,9 @@ describe("drift scan: promoted helpers keep ONE home", () => {
         // fail-closed in core/permissions; a re-declared local copy is now
         // a DRIFT OFFENDER, not a "deliberate divergence".
         "permsAllow",
+        // #815: splitChunks promoted to core/text so the automod rules
+        // read-back does not have to import across features.
+        "splitChunks",
       ]) {
         if (new RegExp(`^function ${name}\\(`, "m").test(src)) {
           offenders.push(`${path.relative(SRC, file)} re-declares ${name}`);

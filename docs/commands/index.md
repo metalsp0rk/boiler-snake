@@ -1527,8 +1527,9 @@ Manage Server in the picker AND in the handler. Every mutation records an
 ```bash
 /automodconfig channel set channel:#automod   # warns if @everyone can view (never rewrites)
 /automodconfig channel clear
-/automodconfig rules source channel:#rules      # stores the channel + runs the one-time batch extraction now
-/automodconfig rules extract                    # re-run after rules-channel edits
+/automodconfig rules source channel:#rules      # stores the channel + PREVIEWS the extraction (confirm: true stores)
+/automodconfig rules extract                    # re-run after rules-channel edits (preview; confirm: true stores)
+/automodconfig rules show                       # read the CURRENT policy text back in full (what the judge applies)
 /automodconfig rules clear                      # clears the rules text AND the source channel
 /automodconfig enable on|off                  # master switch (default off)
 /automodconfig mode action:<a> mode:off|suggest|auto
@@ -1540,7 +1541,7 @@ Manage Server in the picker AND in the handler. Every mutation records an
 | Subcommand | Effect |
 |------------|--------|
 | `channel set\|clear` | Case-card channel. `set` replies with a **Warning** when `@everyone` can view the channel — overwrites are read, NEVER rewritten. Clearing while enabled is allowed (referrals name the missing piece). |
-| `rules source\|extract\|clear` | The judge's rules text (required to run a case) is **extracted, never typed**: `source channel:` (required; text/announcement channels only — *"The channel that holds the server rules (I need read access)"*) stores the rules channel and runs the one-time batch extraction, `extract` re-runs it against the stored source, `clear` resets text + source. Distilled cap 4000 chars — an over-cap result refuses and stores nothing. |
+| `rules source\|extract\|show\|clear` | The judge's rules text (required to run a case) is **extracted, never typed**: `source channel:` (required; text/announcement channels only — *"The channel that holds the server rules (I need read access)"*) stores the rules channel and runs the one-time batch extraction, `extract` re-runs it against the stored source, `show` reads the current policy text back in full, `clear` resets text + source. Since #815 the STORE is confirm-gated: without `confirm: true` the extraction PREVIEWS (full text echoed, nothing saved). Distilled cap 4000 chars — an over-cap result refuses and stores nothing, and distilled text naming specific users or carrying instruction-override boilerplate is refused by the injection belt. |
 | `enable on\|off` | Master switch, default **off**. Enabling does not arm any action — modes stay `suggest`. |
 | `mode` | Per-action mode for `no_action`, `warn`, `delete_message`, `ticket`, `timeout`, `kick`, `ban` (`off` / `suggest` / `auto`, default `suggest`). No mode exists for the staff-note tool — always on. |
 | `timeout-cap` | Max automod-run timeout, 60 s – 2,419,200 s (Discord's 28-day ceiling); default 3600. |

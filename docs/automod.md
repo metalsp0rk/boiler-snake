@@ -37,12 +37,15 @@ there is no automod-specific provider knob).
    currently view the picked channel — it never rewrites the channel's
    permissions itself.
 2. **Point at the rules channel**: `/automodconfig rules source <#rules>`
-   stores the channel AND runs the one-time batch extraction immediately —
-   the result reply reports the distilled char count and how many posts were
-   read. Refresh after channel edits with `/automodconfig rules extract`.
-   The distilled text caps at 4000 characters, enforced with an error
-   (never truncated; a failure stores nothing). Rules are **never typed by
-   hand** — see [Rules extraction](#rules-extraction).
+   stores the channel and runs the one-time batch extraction as a
+   **preview** — the distilled text is echoed to you IN FULL and nothing is
+   saved (#815). Re-run with `confirm: true` to store it as the policy;
+   refresh after channel edits with `/automodconfig rules extract` (same
+   preview → confirm flow). The distilled text caps at 4000 characters,
+   enforced with an error (never truncated; a failure stores nothing), and
+   text that names specific users or carries instruction-override
+   boilerplate is REFUSED outright. Rules are **never typed by hand** — see
+   [Rules extraction](#rules-extraction).
 3. **Enable**: `/automodconfig enable on`. Until then every referral refuses,
    naming the master switch as the specific cause.
 4. **Turn actions on deliberately.** Every mode starts at `suggest` — the
@@ -60,7 +63,11 @@ Rules are **never typed by hand** — that is the design posture. The operator
 points the guild at its rules channel and the bot distils the judge's rules
 text from it in a **one-time batch operation**: it fires when the source
 channel is set (`/automodconfig rules source <#rules>`) and re-runs on
-`/automodconfig rules extract`.
+`/automodconfig rules extract`. Since #815 the batch **previews** by
+default — the full distilled text is echoed to the clicking staff and
+nothing becomes the policy until the same command re-runs with
+`confirm: true`. `/automodconfig rules show` reads whatever text is
+currently in force, in full.
 
 - **Bounded batch read** — the channel's pinned posts (≤ **50**) plus recent
   history (≤ **200** messages in two 100-message pages), pins deduped
@@ -90,14 +97,24 @@ Over-cap trimming, a failed pins read, or an early-stopped history read add
 their own `**Note:**` disclosure lines — a degraded batch is reported, never
 hidden.
 
+The extracted reply — and the `**Rules preview — nothing was saved.**`
+reply of an unconfirmed run — echoes the FULL distilled text as inert block
+quotes (multi-part when long): a char count alone was never enough to
+review what the judge will apply (#815). On a store the full text is also
+durable in the audit record (`rules_text` on the `admin_audit` row); a
+preview mutates nothing, so nothing is audited as a policy write.
+
 The bot needs **View Channel + Read Message History** in the rules channel
 (checked fail-closed before anything is read). Honest failure causes, each
 replying its specific cause and fix: the channel is **gone** (deleted, or a
 type without messages), the bot **cannot read it** (missing
 View Channel / Read Message History or unreadable overwrites), the AI
-**provider is down or unconfigured**, or the distilled answer came back
-**over the 4000-char cap**. The downstream pipeline keeps judging the
-distilled TEXT — the judge never reads the channel itself.
+**provider is down or unconfigured**, the distilled answer came back
+**over the 4000-char cap**, or the distilled text tripped the injection
+belt — rules naming specific users (mentions, raw ids) or carrying
+instruction-override boilerplate are refused with the offending line
+quoted, and nothing is stored (#815). The downstream pipeline keeps judging
+the distilled TEXT — the judge never reads the channel itself.
 
 ## Commands
 
@@ -174,8 +191,9 @@ BEFORE the modal even opens
 |------------|--------------|
 | `channel set channel:` | Set the case-card channel. **Warns in the reply when `@everyone` can view it** (overwrite read only — never rewritten). |
 | `channel clear` | Unset the channel (cases refuse until set; allowed while enabled). |
-| `rules source channel:` | Point at the guild's rules channel (**required** channel option; the picker offers text and announcement channels) and run the one-time batch extraction NOW — rules are never typed by hand ([Rules extraction](#rules-extraction)). |
-| `rules extract` | Re-run the rules extraction from the stored rules channel (refresh after channel edits). |
+| `rules source channel: [confirm:]` | Point at the guild's rules channel (**required** channel option; the picker offers text and announcement channels) and run the one-time batch extraction as a PREVIEW; `confirm: true` stores the distilled text as the policy. Rules are never typed by hand ([Rules extraction](#rules-extraction)). |
+| `rules extract [confirm:]` | Re-run the rules extraction from the stored rules channel (refresh after channel edits). Without `confirm: true` you only PREVIEW the result. |
+| `rules show` | Read the CURRENT stored rules text back in full, ephemeral — exactly what the judge applies ([#815](https://github.com/metalsp0rk/boiler-snake/issues/815)). |
 | `rules clear` | Clear the rules text **and** the rules-channel source (allowed while enabled; cases refuse until the next extraction). |
 | `enable on\|off` | Master switch (default **off**). |
 | `mode action:… mode:off\|suggest\|auto` | Per-action mode for `no_action`, `warn`, `delete_message`, `ticket`, `timeout`, `kick`, `ban`. Default **suggest**. There is no mode for the staff-note tool — it is always on. |

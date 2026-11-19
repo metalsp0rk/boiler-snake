@@ -16,13 +16,19 @@
  *    auto), because re-arming auto kick/ban/timeout is the irreversible path.
  *
  * The rules arms never write rules text directly: `source` stores the rules
- * channel and runs the one-time batch extraction (./rulesExtract.js),
- * `extract` re-runs it, `clear` resets both. The extraction is long-running
- * (bounded channel read + one provider call) — its arms defer and editReply.
+ * channel, `extract` re-runs the batch (./rulesExtract.js), `show` reads the
+ * CURRENT policy text back in full (#815), `clear` resets both. Since #815
+ * the extraction STORE is confirm-gated (the same H2-15 idiom as
+ * `safety resume`): without `confirm: true` the batch PREVIEWS the full
+ * distilled text ephemerally and stores nothing — output of a
+ * member-writable channel becomes "THE policy" only after staff READ it.
+ * The extraction is long-running (bounded channel read + one provider
+ * call) — its arms defer and editReply.
  */
 
 const { PermissionsBitField } = require("discord.js");
 const { recordSlashAudit } = require("../../core/auditTrail");
+const { splitChunks } = require("../../core/text");
 const { logConfigChange } = require("../logs/auditLog");
 const { ensureCommunity } = require("../../platform/community");
 const { AUTOMOD_ACTIONS, AUTOMOD_RULES_MAX_LEN } = require("./constants");
@@ -225,22 +231,82 @@ function rulesExtractContent(result) {
 }
 
 /**
+ * #815 — echo the FULL rules text as inert block quotes ("> " prefix).
+ * Distiller output can contain arbitrary markdown, fence runs, or heading
+ * syntax — a block quote needs no escaping law to stay inert. Multi-part
+ * echoes number themselves so a continuation can never be mistaken for
+ * the whole text.
+ */
+const RULES_ECHO_CHUNK_CHARS = 1500;
+
+function rulesEchoChunks(text) {
+  const chunks = splitChunks(String(text ?? ""), RULES_ECHO_CHUNK_CHARS);
+  return chunks.map((chunk, i) => {
+    const head =
+      chunks.length > 1
+        ? `**Rules text, part ${i + 1}/${chunks.length}:**`
+        : "**Rules text:**";
+    const quoted = chunk
+      .split("\n")
+        .map((line) => (line.length > 0 ? `> ${line}` : ">"))
+        .join("\n");
+    return `${head}\n${quoted}`;
+  });
+}
+
+/**
  * ONE extraction body for BOTH arms (`source` stores then extracts,
  * `extract` re-runs the stored source). Long-running by design — a bounded
  * channel read + one provider call — so the arm defers ephemerally and
  * edits the result in. Failures store NOTHING (the service refuses over
  * cap) and reply with the specific cause verbatim.
+ *
+ * #815 — the store is CONFIRM-GATED (H2-15 idiom): `store: false` (no
+ * `confirm:` on the slash) previews the FULL distilled text and writes
+ * nothing (no mutation → nothing audited); `store: true` executes and
+ * echoes the FULL stored text back to the clicking staff, with the text
+ * durable in the audit ROW (the config-change EMBED keeps the counts —
+ * embed fields cap at 1024 chars and the rules cap is 4000; the durable
+ * truth is `admin_audit.details_json.rules_text`).
  */
-async function runRulesExtraction(commandCtx, channelId, { auditAction, commandLabel }) {
+async function runRulesExtraction(commandCtx, channelId, { auditAction, commandLabel, store }) {
   await commandCtx.defer({ sensitive: true });
   const result = await rulesExtract.extractRules({
     communityId: commandCtx.communityId,
     guildId: commandCtx.externalGuildId,
     channelId,
+    store,
     deps: { guild: commandCtx.rawInteraction?.guild ?? null },
   });
   if (!result.ok) {
     await commandCtx.editReply({ content: result.error });
+    return;
+  }
+
+  const echoParts = rulesEchoChunks(result.rules);
+  const echoContinues =
+    echoParts.length > 1
+      ? "\nThe text continues in the follow-up messages below."
+      : "";
+
+  if (result.preview) {
+    // Preview: staff READ exactly what a confirm would (modulo the LLM
+    // re-running) — and NOTHING became policy yet.
+    await commandCtx.editReply({
+      content:
+        `**Rules preview — nothing was saved.** **${result.rulesChars}** of ` +
+        `${AUTOMOD_RULES_MAX_LEN} chars distilled from <#${result.channelId}> — ` +
+        `${result.kept} post(s) distilled` +
+        `${result.pinsKept > 0 ? ` (${result.pinsKept} pinned)` : ""}.` +
+        echoContinues +
+        "\n\nRe-run with `confirm: true` to store it as the policy; until then the " +
+        "**current** rules stay in force. Distillation is an LLM pass — a later " +
+        "confirm may phrase the result differently, and what gets stored is " +
+        "always echoed back in full there.",
+    });
+    for (const part of echoParts) {
+      await commandCtx.reply({ content: part, sensitive: true });
+    }
     return;
   }
 
@@ -251,34 +317,49 @@ async function runRulesExtraction(commandCtx, channelId, { auditAction, commandL
     posts_dropped: result.dropped,
     pins_kept: result.pinsKept,
     truncated: result.truncated ? 1 : 0,
+    // #815: the durable record of a policy write is the TEXT, not a count.
+    rules_text: result.rules,
   });
   await auditEmbed(commandCtx, "Automod rules extracted", commandLabel, [
     `Rules text replaced (${result.rulesChars} chars) — distilled from <#${result.channelId}>.`,
+    "Full text: echoed to the clicking staff and durable in the audit record " +
+      "(`rules_text` on the admin_audit row).",
   ]);
-  await commandCtx.editReply({ content: rulesExtractContent(result) });
+  await commandCtx.editReply({
+    content: rulesExtractContent(result) + echoContinues,
+  });
+  for (const part of echoParts) {
+    await commandCtx.reply({ content: part, sensitive: true });
+  }
 }
 
 async function handleRulesSource(commandCtx) {
+  const confirm = commandCtx.options.getBoolean("confirm") === true;
   const channel = commandCtx.options.getChannel("channel", true);
   const result = service.setRulesChannel(commandCtx.communityId, channel.id);
   if (!result.ok) return replyError(commandCtx, result.error);
 
   auditMutation(commandCtx, "automod.rules_source_set", { rules_channel_id: channel.id });
   await auditEmbed(commandCtx, "Automod rules source set", "/automodconfig rules source", [
-    `Rules channel: <#${channel.id}> (${channel.id}) — extraction runs now.`,
+    `Rules channel: <#${channel.id}> (${channel.id}) — ${
+      confirm ? "extraction runs now" : "PREVIEWING the extraction (nothing is stored yet)"
+    }.`,
   ]);
 
   // The one-time batch operation fires immediately on set: the operator
   // sees the distilled result in the SAME interaction. If it fails the
   // SOURCE stays stored (config hygiene first) and the reply names the
-  // specific cause plus the refresh path.
+  // specific cause plus the refresh path. #815: without `confirm:` the
+  // extraction only PREVIEWS — storing policy text is the confirmed step.
   return runRulesExtraction(commandCtx, channel.id, {
     auditAction: "automod.rules_extracted",
     commandLabel: "/automodconfig rules source",
+    store: confirm,
   });
 }
 
 async function handleRulesExtract(commandCtx) {
+  const confirm = commandCtx.options.getBoolean("confirm") === true;
   const read = service.readSettings(commandCtx.communityId);
   if (!read.ok) return replyError(commandCtx, read.error);
   const channelId = read.settings.rulesChannelId;
@@ -292,7 +373,40 @@ async function handleRulesExtract(commandCtx) {
   return runRulesExtraction(commandCtx, channelId, {
     auditAction: "automod.rules_extracted",
     commandLabel: "/automodconfig rules extract",
+    store: confirm,
   });
+}
+
+/**
+ * #815 — `rules show`: the read arm the feature never had. Whatever the
+ * judge applies as "THE policy" is readable, in full, by staff —
+ * char count alone (status) was the only surface before.
+ */
+async function handleRulesShow(commandCtx) {
+  const read = service.readSettings(commandCtx.communityId);
+  if (!read.ok) return replyError(commandCtx, read.error);
+  const { rules, rulesChars, rulesChannelId } = read.settings;
+  if (!rules) {
+    await commandCtx.reply({
+      content:
+        "**No rules text is stored.** The judge runs with no guild policy. Set the source " +
+        "channel with `/automodconfig rules source <channel>` (preview), then confirm it.",
+      sensitive: true,
+    });
+    return;
+  }
+  const parts = rulesEchoChunks(rules);
+  await commandCtx.defer({ sensitive: true });
+  await commandCtx.editReply({
+    content:
+      `**Automod rules in force** — **${rulesChars}** of ${AUTOMOD_RULES_MAX_LEN} chars` +
+      (rulesChannelId ? ` (source: <#${rulesChannelId}>)` : " (no source channel stored)") +
+      `.\nRefresh with \`/automodconfig rules extract\`; the judge applies this text verbatim.` +
+      (parts.length > 1 ? "\nThe text continues in the follow-up messages below." : ""),
+  });
+  for (const part of parts) {
+    await commandCtx.reply({ content: part, sensitive: true });
+  }
 }
 
 async function handleRulesClear(commandCtx) {
@@ -506,6 +620,7 @@ module.exports = {
   // re-run the stored source, clear = text + source).
   handleRulesSource,
   handleRulesExtract,
+  handleRulesShow,
   handleRulesClear,
   handleEnable,
   handleMode,

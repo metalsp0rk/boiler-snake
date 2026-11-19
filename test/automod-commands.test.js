@@ -385,7 +385,7 @@ describe("/automodconfig — gates + mutations", () => {
   }
 
   describe("rules source|extract|clear — extraction arms", () => {
-    it("rules source stores the channel, extracts, and editReplies the distilled copy (both audits)", async () => {
+    it("rules source with confirm:true stores the channel, extracts, echoes the FULL text, and audits the TEXT (#815)", async () => {
       const communityId = freshCommunity();
       const { raw, rulesChannel } = makeRulesRaw();
       const { calls, restore } = stubExtract(extractionOk());
@@ -394,7 +394,7 @@ describe("/automodconfig — gates + mutations", () => {
           communityId,
           group: "rules",
           sub: "source",
-          options: { channel: { id: RULES_CH, type: 0 } },
+          options: { channel: { id: RULES_CH, type: 0 }, confirm: true },
           raw,
         });
         await automod.handlers.automodconfig(ctx, {});
@@ -407,14 +407,17 @@ describe("/automodconfig — gates + mutations", () => {
 
         // Long-running arm: deferred ephemerally, result edited in.
         assert.deepEqual(defers, [{ sensitive: true }]);
-        assert.equal(editReplies.length, 1, "one edit, no direct reply");
-        assert.equal(replies.length, 1);
+        assert.equal(editReplies.length, 1, "one edit");
+        // Shared stream: the edit + the full-text echo part (#815).
+        assert.equal(replies.length, 2, "the stored text is echoed in full, always");
 
-        // The batch ran over the raw guild the arm injected as deps.
+        // The batch ran over the raw guild the arm injected as deps —
+        // and STORES only because confirm:true was on the slash.
         assert.equal(calls.length, 1);
         assert.equal(calls[0].communityId, communityId);
         assert.equal(calls[0].guildId, EXTERNAL_GUILD);
         assert.equal(calls[0].channelId, RULES_CH);
+        assert.equal(calls[0].store, true, "confirm:true is what unlocks the store");
         assert.equal(calls[0].deps.guild, raw.guild, "deps.guild rides the raw interaction guild");
         assert.equal(calls[0].deps.guild.channels.cache.get(RULES_CH), rulesChannel);
 
@@ -424,6 +427,9 @@ describe("/automodconfig — gates + mutations", () => {
           /\*\*Automod rules extracted\*\* \(\*\*10\*\* of 4000 chars\) from <#700000000000000074> — 2 post\(s\) distilled \(1 pinned\)\./,
         );
         assert.match(c, /Refresh after channel edits with `\/automodconfig rules extract`\./);
+        const echo = replies[replies.length - 1].content;
+        assert.match(echo, /\*\*Rules text:\*\*/, "the echo names itself");
+        assert.match(echo, /^> 1\. No ads\.$/m, "inert block-quote rendering of the distilled text");
 
         const audits = db.listAdminAudit(communityId, { limit: 10 });
         const src = audits.find((r) => r.action === "automod.rules_source_set");
@@ -431,17 +437,86 @@ describe("/automodconfig — gates + mutations", () => {
         assert.equal(JSON.parse(src.details_json).rules_channel_id, RULES_CH);
         const ext = audits.find((r) => r.action === "automod.rules_extracted");
         assert.ok(ext, "the batch run is audited under its own verb");
-        assert.deepEqual(JSON.parse(ext.details_json), {
+        const extDetails = JSON.parse(ext.details_json);
+        assert.deepEqual(extDetails, {
           rules_chars: 10,
           rules_channel_id: RULES_CH,
           posts_kept: 2,
           posts_dropped: 0,
           pins_kept: 1,
           truncated: 0,
+          rules_text: "1. No ads.",
         });
+        void calls;
       } finally {
         restore();
       }
+    });
+
+    it("#815 rules source WITHOUT confirm previews the distilled text: store:false, nothing audited as extracted", async () => {
+      const communityId = freshCommunity();
+      const { raw } = makeRulesRaw();
+      // The real module returns `preview: true` on store:false; the stub
+      // scripts that contract (the module's own behavior is pinned in
+      // test/automod-rules-extract.test.js).
+      const { calls, restore } = stubExtract((args) =>
+        args.store === false
+          ? { ...extractionOk(), preview: true }
+          : extractionOk(),
+      );
+      try {
+        const { ctx, editReplies } = makeCtx({
+          communityId,
+          group: "rules",
+          sub: "source",
+          options: { channel: { id: RULES_CH, type: 0 } }, // no confirm
+          raw,
+        });
+        await automod.handlers.automodconfig(ctx, {});
+
+        assert.equal(calls[0].store, false, "no confirm → preview run");
+        const c = content(editReplies);
+        assert.match(c, /\*\*Rules preview — nothing was saved\.\*\*/, c);
+        assert.match(c, /Re-run with `confirm: true` to store it as the policy/, c);
+
+        // The SOURCE is config hygiene and stores anyway; the POLICY does not.
+        assert.equal(db.getGuildSettings(communityId).automod_rules_channel_id, RULES_CH);
+        assert.equal(db.getGuildSettings(communityId).automod_rules, null, "no policy without confirm");
+
+        const audits = db.listAdminAudit(communityId, { limit: 10 });
+        assert.ok(audits.some((r) => r.action === "automod.rules_source_set"));
+        assert.ok(
+          !audits.some((r) => r.action === "automod.rules_extracted"),
+          "a preview mutated nothing — nothing is audited as a policy write",
+        );
+      } finally {
+        restore();
+      }
+    });
+
+    it("#815 rules show reads the CURRENT policy text back in full (and says so when none is stored)", async () => {
+      const communityId = freshCommunity();
+
+      // Empty state first.
+      const empty = makeCtx({ communityId, group: "rules", sub: "show", options: {} });
+      await automod.handlers.automodconfig(empty.ctx, {});
+      assert.match(content(empty.replies), /No rules text is stored/, "the empty state is honest");
+
+      // Store through the real service, then read back.
+      const stored = db.updateGuildSettings
+        ? db.updateGuildSettings(communityId, { automod_rules: "1. Be cool.\n2. No spam." })
+        : null;
+      void stored;
+      const shown = makeCtx({ communityId, group: "rules", sub: "show", options: {} });
+      await automod.handlers.automodconfig(shown.ctx, {});
+      assert.match(content(shown.replies), /\*\*Automod rules in force\*\* — \*\*23\*\* of 4000 chars/, content(shown.replies));
+      const echo = content(shown.replies, 1);
+      assert.match(echo, /\*\*Rules text:\*\*/, "the echo names itself");
+      assert.match(echo, /> 1\. Be cool\./, "full text echoed, inert");
+      assert.match(echo, /> 2\. No spam\./);
+      // Reads mutate nothing.
+      const audits = db.listAdminAudit(communityId, { limit: 10 });
+      assert.ok(!audits.some((r) => String(r.action).startsWith("automod.rules")));
     });
 
     it("rules source stores the REAL provider-config refusal through the live module (no stub)", async () => {
@@ -537,7 +612,7 @@ describe("/automodconfig — gates + mutations", () => {
       }
     });
 
-    it("rules extract re-runs the STORED source (deferred, audited under automod.rules_extracted)", async () => {
+    it("rules extract with confirm:true re-runs the STORED source (deferred, audited under automod.rules_extracted)", async () => {
       const communityId = freshCommunity();
       service.setRulesChannel(communityId, RULES_CH);
       const { calls, restore } = stubExtract(extractionOk());
@@ -546,9 +621,11 @@ describe("/automodconfig — gates + mutations", () => {
           communityId,
           group: "rules",
           sub: "extract",
+          options: { confirm: true }, // #815: the store is the confirmed step
         });
         await automod.handlers.automodconfig(ctx, {});
         assert.equal(calls.length, 1);
+        assert.equal(calls[0].store, true, "confirm:true unlocks the store");
         assert.equal(calls[0].channelId, RULES_CH, "the arm re-read the stored source");
         assert.deepEqual(defers, [{ sensitive: true }]);
         assert.match(content(replies), /\*\*Automod rules extracted\*\* \(\*\*10\*\* of 4000 chars\)/);
@@ -635,7 +712,7 @@ describe("/automodconfig — gates + mutations", () => {
 
     it("non-admin never reaches any rules arm (handler gate before the store)", async () => {
       const communityId = freshCommunity();
-      for (const sub of ["source", "extract", "clear"]) {
+      for (const sub of ["source", "extract", "show", "clear"]) {
         const { ctx, replies, defers } = makeCtx({
           communityId,
           group: "rules",

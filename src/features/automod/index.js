@@ -173,6 +173,7 @@ async function handleAutomodConfig(commandCtx, featureCtx) {
   } else if (group === "rules") {
     if (sub === "source") return config.handleRulesSource(commandCtx);
     if (sub === "extract") return config.handleRulesExtract(commandCtx);
+    if (sub === "show") return config.handleRulesShow(commandCtx);
     if (sub === "clear") return config.handleRulesClear(commandCtx);
   } else if (group === "safety") {
     if (sub === "resume") return config.handleSafetyResume(commandCtx);
