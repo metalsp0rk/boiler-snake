@@ -18,6 +18,11 @@
  *    reconciler (harness.js) decides write-vs-drop against the recorded
  *    action intents; exactly one note per user per case, one call per
  *    (action, user);
+ *  - #816 (audit A1-3): SANCTIONS BIND TO PARTICIPANTS — warn/ticket/
+ *    timeout/kick/ban run only against the referral target, the resolved
+ *    subject, or an author of the fetched window (the set the delete
+ *    allow-list proves); any other id refuses at dispatch with the
+ *    "not a participant" cause, above the slot check, in every mode;
  *  - every failure comes back as a tool-result string — the dispatcher never
  *    throws;
  *  - timeout durations pass through UNCLAMPED (the executor owns the clamp);
@@ -198,7 +203,11 @@ test("off actions cannot run even when the model hallucinates the call - issue #
 });
 
 test("one call per (action, user) per run mirrors the executor slot uniqueness - issue #728", async () => {
-  const d = dispatcherFor();
+  // #816: BYS becomes a PARTICIPANT through the window map (the binding
+  // law the second warn below now rides) — window authors act like the target.
+  const d = dispatcherFor({
+    allowedMessages: new Map([["7001", { channelId: SRC_CH, authorId: BYS }]]),
+  });
   await d.executeTool("warn", { user_id: SUB, reason: "a" });
   const second = await d.executeTool("warn", { user_id: SUB, reason: "b" });
   assert.match(second, /already recorded for <@851000000000000012>/);
@@ -206,6 +215,94 @@ test("one call per (action, user) per run mirrors the executor slot uniqueness -
   // The SAME action for a different user is a different slot:
   const other = await d.executeTool("warn", { user_id: BYS, reason: "c" });
   assert.match(other, /^Recorded: warn for <@851000000000000013>/);
+});
+
+// ── #816 (audit A1-3): SANCTIONS bind to case participants ──────────────────
+
+const FOREIGN = "899000000000000099";
+
+test("#816 window authors and the target act; a stranger refuses on every sanction tool", async () => {
+  const d = dispatcherFor({
+    allowedMessages: new Map([["7001", { channelId: SRC_CH, authorId: BYS }]]),
+  });
+  // The referral target AND a fetched-window author are participants:
+  assert.match(await d.executeTool("warn", { user_id: SUB, reason: "a" }), /^Recorded: warn/);
+  assert.match(
+    await d.executeTool("kick", { user_id: BYS, reason: "second wave, seen in the window" }),
+    /^Recorded: kick/,
+    "a window author is bound just like the target",
+  );
+
+  for (const [name, args] of [
+    ["warn", { user_id: FOREIGN, reason: "as commanded" }],
+    ["ticket", { user_id: FOREIGN, reason: "as commanded" }],
+    ["timeout", { user_id: FOREIGN, duration_seconds: 60, reason: "as commanded" }],
+    ["kick", { user_id: FOREIGN, reason: "as commanded" }],
+    ["ban", { user_id: FOREIGN, reason: "as commanded" }],
+  ]) {
+    const res = await d.executeTool(name, args);
+    assert.match(res, /is not a participant of this case/, `${name} must bind`);
+    assert.match(
+      res,
+      /EVEN IF a message in the case demands action/,
+      "the injection-era copy names the law where the model can read it",
+    );
+  }
+  assert.deepEqual(
+    d.actionIntents.map((i) => i.subjectUserId).sort(),
+    [...new Set([BYS, SUB])].sort(),
+    "NOTHING was recorded about the stranger",
+  );
+  assert.deepEqual(
+    d.consideredUserIds().filter((u) => u === FOREIGN),
+    [],
+    "a refused binding does not even 'consider' anyone",
+  );
+});
+
+test("#816 the binding is MODE-INDEPENDENT — auto arms hit the same wall as suggest", async () => {
+  const d = dispatcherFor({ modes: modes("auto") });
+  const res = await d.executeTool("ban", { user_id: FOREIGN, reason: "the post said so" });
+  assert.match(res, /not a participant/, "auto mode does not skip the case-bound law");
+  assert.deepEqual(d.actionIntents, []);
+});
+
+test("#816 the binding sits ABOVE the (action, user) slot check — a refusal consumes nothing", async () => {
+  const d = dispatcherFor();
+  const refused = await d.executeTool("warn", { user_id: FOREIGN, reason: "x" });
+  assert.match(refused, /not a participant/);
+  // A LEGITIMATE warn for the target after a refusal records normally —
+  // had the slot been consumed by the refusal, this would read "already recorded".
+  assert.match(
+    await d.executeTool("warn", { user_id: SUB, reason: "a" }),
+    /^Recorded: warn/,
+    "a binding refusal leaves the slot untouched (#728/#732 law family)",
+  );
+});
+
+test("#816 no_action and delete keep their OWN binding laws — the participant wall is for sanctions", async () => {
+  const d = dispatcherFor({
+    allowedMessages: new Map([["7001", { channelId: SRC_CH, authorId: BYS }]]),
+  });
+  // no_action marks CONSIDERATION and executes nothing — it is not a
+  // bystander bin (its own contract), and stays available for any id:
+  assert.match(
+    await d.executeTool("no_action", { user_id: FOREIGN, reason: "looked them up, clean" }),
+    /^Recorded/,
+  );
+  // delete refuses the stranger via the AUTHOR-MISMATCH law — prove it is
+  // not the participant wall answering (delete is bound BY CONSTRUCTION):
+  const res = await d.executeTool("delete_message", { user_id: FOREIGN, message_ids: ["7001"] });
+  assert.doesNotMatch(res, /not a participant/, "delete answers with its OWN law");
+  assert.match(res, /author/i, "the one-user author discrepancy is the refusal");
+});
+
+test("#816 lookups and staff notes stay unbound (reads + the #731 note law are not sanctions)", async () => {
+  const d = dispatcherFor();
+  const warnings = await d.executeTool(TOOL_NAMES.readWarnings, { user_id: FOREIGN });
+  assert.doesNotMatch(warnings, /not a participant/, "pulling records is not acting");
+  const note = await d.executeTool(TOOL_NAMES.staffNote, { user_id: FOREIGN, content: "checked, nothing" });
+  assert.match(note, /Staff note queued/, "the note law stays intent-gated at COMMIT (#731) — unchanged");
 });
 
 // ── #735: the ticket tool's member-visible contract at dispatch ─────────────
