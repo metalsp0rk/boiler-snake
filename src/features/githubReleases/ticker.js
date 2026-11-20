@@ -142,12 +142,13 @@ async function sendReleaseNotification(outbound, watch, release) {
     const result = await outbound.sendChannel(watch.channel_id, {
       content,
       embeds: [toPlainEmbed(createReleaseEmbed(watch, release))],
-      // Strict role allow-list (#272, docs-verified): `{ roles: [id] }`
-      // WITHOUT `parse` pins the ping to the configured role — smuggled role
-      // tokens in release names/bodies stay plain text. `{parse:["roles"],
-      // roles:…}` is invalid per the live Discord docs (parse is mutually
-      // exclusive with the id lists). Precedent: eventReminders/service.js.
-      allowedMentions: roleId ? { roles: [roleId] } : { parse: [] },
+      // Role allow-list (#272) in its #836 BELT form (B1-8 corrected the
+      // old "strict arm, no parse" reading): `parse: []` kills every
+      // implicit mention class (omitted parse = server defaults;
+      // discord.js passes the payload through untouched) and `roles: [id]`
+      // explicitly allows exactly the configured role — smuggled role
+      // tokens in release names/bodies stay plain text by the payload.
+      allowedMentions: roleId ? { parse: [], roles: [roleId] } : { parse: [] },
     });
     if (!result || result.ok !== true) {
       const error = result?.error || "no ready client";

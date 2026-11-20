@@ -841,16 +841,18 @@ async function sendNotification(
     // /testnotification (plain reply, no override) looked fine. Live alerts
     // intentionally @everyone (docs/youtube-notifications.md); upload alerts
     // ping only the configured role, never @everyone (mirrors twitch ticker).
-    // #272: the role arm is the STRICT allow-list `{ roles: [id] }` — the
-    // live Discord docs make `parse` mutually exclusive with the id lists
-    // (`{parse:["roles"], roles:[…]}` is a validation error), and the strict
-    // form pins the ping to the listed role: role tokens smuggled into video
-    // titles stay plain text. Precedent: eventReminders/service.js.
+    // #272 role allow-list in its #836 BELT form (B1-8 corrected the old
+    // "strict arm, no parse" reading — discord.js passes allowedMentions
+    // through untouched and an omitted `parse` rides the server's full
+    // implicit list): `parse: []` kills the implicit classes, `roles: [id]`
+    // explicitly allows the configured role, so role tokens smuggled into
+    // video titles are inert by the PAYLOAD, not only by the body rewrite.
+    // Live alerts intentionally allow ONLY the everyone class.
     const allowedMentions =
       notificationType === "live"
         ? { parse: ["everyone"] }
         : uploadRoleId
-          ? { roles: [uploadRoleId] }
+          ? { parse: [], roles: [uploadRoleId] }
           : { parse: [] };
 
     // OutboundClient.sendChannel replaces client.channels.fetch + channel.send.

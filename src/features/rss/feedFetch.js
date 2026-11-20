@@ -117,6 +117,32 @@ function isSafeHeaderValue(value) {
 }
 
 /**
+ * #836 (audit B1-4): a conditional-GET validator must ALSO be SHORT. A
+ * hostile feed host can otherwise store a ~1 MiB "ETag" (DB bloat) that we
+ * then re-send on EVERY poll — upstream header caps answer 431/400, the
+ * feed fails permanently (backoff) until staff clear the columns by hand.
+ * 256 chars is far above any real ETag/Last-Modified and below every
+ * server-side header line limit that matters.
+ */
+const VALIDATOR_MAX_LEN = 256;
+
+/** A validator value fit for STORING and RE-SENDING (CRLF-safe AND capped). */
+function isUsableValidatorValue(value) {
+  return isSafeHeaderValue(value) && value.length <= VALIDATOR_MAX_LEN;
+}
+
+/**
+ * RFC 9110 §8.4.1 ORIGIN = scheme + host + PORT. #836 (B1-4): the old
+ * cross-hop strip compared hostnames only, so a same-host scheme/port hop
+ * (https→http or :443→:8443) kept the origin A validators and shipped them
+ * to origin B.
+ */
+function originOf(u) {
+  const port = u.port || (u.protocol === "https:" ? "443" : "80");
+  return `${u.protocol}//${u.hostname.toLowerCase()}:${port}`;
+}
+
+/**
  * Feed-URL policy that does NOT need DNS: scheme, parseability, userinfo
  * tricks, IP-literal posture. Shared by validateFeedUrl (add-time) and
  * guardedFetchForFeed (every poll AND every redirect hop) so the two can
@@ -150,6 +176,32 @@ function parseFeedUrl(rawUrl) {
     };
   }
   return { parsed };
+}
+
+/**
+ * #836 (audit B1-5): the STORED url is the add path's canonical output
+ * (`parsed.toString()` — trailing slash on bare hosts, default ports
+ * dropped, percent-encodings normalized). `remove`/`test`/`check` lookups
+ * are EXACT matches against that stored string, so an option string typed
+ * by hand ("example.com/feed") missed the stored
+ * ("https://example.com/feed/") and the docs' "paste the exact URL" escape
+ * hatch was broken by design. Run the SAME canonicalization before the
+ * lookup; strings the policy refuses are returned trimmed as-is (the
+ * exact-match answer stays exactly as honest as before).
+ *
+ * @param {string} raw
+ * @returns {string}
+ */
+function canonicalFeedUrl(raw) {
+  const s = String(raw ?? "").trim();
+  if (!s) return s;
+  const shape = parseFeedUrl(s);
+  if (shape.refusal) return s;
+  try {
+    return shape.parsed.toString();
+  } catch {
+    return s;
+  }
 }
 
 /**
@@ -305,12 +357,13 @@ async function guardedFetchForFeedInner(rawUrl, opts) {
     typeof opts.clearTimer === "function" ? opts.clearTimer : (h) => clearTimeout(h);
 
   // Conditional-GET request headers. Stored validators come from a past
-  // response on SOME host; isSafeHeaderValue keeps a poisoned DB value
-  // (CRLF) from becoming header injection on the wire. Invalid = skipped,
-  // so the poll degrades to an unconditional GET instead of failing.
+  // response on SOME ORIGIN; isUsableValidatorValue keeps a poisoned DB
+  // value (CRLF) from becoming header injection on the wire AND a hostile
+  // megabyte-ETag from failing this feed forever (#836 B1-4). Invalid or
+  // oversized = skipped — the poll degrades to an unconditional GET.
   const conditional = {};
-  if (isSafeHeaderValue(opts.etag)) conditional["If-None-Match"] = opts.etag;
-  if (isSafeHeaderValue(opts.lastModified)) {
+  if (isUsableValidatorValue(opts.etag)) conditional["If-None-Match"] = opts.etag;
+  if (isUsableValidatorValue(opts.lastModified)) {
     conditional["If-Modified-Since"] = opts.lastModified;
   }
 
@@ -380,11 +433,12 @@ async function guardedFetchForFeedInner(rawUrl, opts) {
         // policy + guard resolution re-runs on the next hop, so "redirect
         // chain lands on a private/reserved address" is refused there,
         // BEFORE that hop is ever connected to.
-        // Review fix N4: conditional-GET validators belong to the host that
-        // ISSUED them (RFC 9110 §8.4.1 origin scope) — a cross-host hop
-        // loses the stored If-None-Match/If-Modified-Since instead of
-        // leaking host A's validators to host B.
-        if (next.hostname.toLowerCase() !== new URL(current).hostname.toLowerCase()) {
+        // Review fix N4 + #836 (B1-4): conditional-GET validators belong to
+        // the ORIGIN that ISSUED them (RFC 9110 §8.4.1 — scheme + host +
+        // PORT, not hostname alone). Any origin change drops the stored
+        // If-None-Match/If-Modified-Since instead of leaking origin A's
+        // validators to origin B (same-host port/scheme hops included).
+        if (originOf(next) !== originOf(new URL(current))) {
           delete conditional["If-None-Match"];
           delete conditional["If-Modified-Since"];
         }
@@ -437,13 +491,14 @@ async function guardedFetchForFeedInner(rawUrl, opts) {
 /**
  * Response validator header with the SENT value as fallback (304s and many
  * 204-style hosts omit validators that stay in force — RFC 7232 §4.1/§3.3).
- * Values destined for storage or wire re-sending pass the same CRLF gate.
+ * Values destined for storage or wire re-sending pass the same CRLF gate
+ * AND the #836 length cap (an over-long validator stores AND re-sends).
  */
 function pickValidator(res, name, fallback) {
   const fromRes =
     typeof res?.headers?.get === "function" ? res.headers.get(name) : null;
-  if (isSafeHeaderValue(fromRes)) return fromRes;
-  return isSafeHeaderValue(fallback) ? fallback : null;
+  if (isUsableValidatorValue(fromRes)) return fromRes;
+  return isUsableValidatorValue(fallback) ? fallback : null;
 }
 
 module.exports = {
@@ -454,4 +509,5 @@ module.exports = {
   feedUserAgent,
   validateFeedUrl,
   guardedFetchForFeed,
+  canonicalFeedUrl,
 };

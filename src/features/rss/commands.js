@@ -35,6 +35,9 @@ const { joinCapped } = require("../../core/text");
 const { recordSlashAudit } = require("../../core/auditTrail");
 const { logConfigChange } = require("../logs/auditLog");
 const { resolveFeedDisplayName, neutralizeRichText } = require("./format");
+// #836 (B1-5): option strings are canonicalized with the SAME rule the add
+// path stored, before the exact-match lookup (see feedFetch.canonicalFeedUrl).
+const { canonicalFeedUrl } = require("./feedFetch");
 const subscriptions = require("./subscriptions");
 const {
   DEFAULT_RSS_POLL_INTERVAL_MINUTES,
@@ -151,7 +154,7 @@ const commands = [
       sub.addIntegerOption((opt) =>
         opt
           .setName("minutes")
-          .setDescription("Polling interval in minutes (1-60)")
+          .setDescription("Polling interval in minutes (5-60)")
           .setRequired(true)
           .setMinValue(1)
           .setMaxValue(60),
@@ -219,7 +222,13 @@ function renderSettingsBlock(settings, feedCount, cap) {
 function resolveFeedRows(db, communityId, feedOpt) {
   const wanted = String(feedOpt ?? "").trim();
   if (wanted) {
-    const row = db.getRssFeed(communityId, wanted);
+    let row = db.getRssFeed(communityId, wanted);
+    if (!row) {
+      // #836 (B1-5): the stored url is canonical; a typed variant is
+      // canonicalized with the same rule before the "missing" verdict.
+      const canon = canonicalFeedUrl(wanted);
+      if (canon !== wanted) row = db.getRssFeed(communityId, canon);
+    }
     return { rows: row ? [row] : [], missing: row ? null : wanted, empty: false };
   }
   const rows = db.listRssFeedsForCommunity(communityId);
@@ -600,9 +609,13 @@ async function handleSetRss(commandCtx, featureCtx) {
     // the write; the reply states the correction instead (the /setyoutube
     // interval copy twin).
     const n = Number(minutes);
-    if (!Number.isFinite(n) || n < 1 || n > 60) {
+    // #836 (audit B1-6): floor 5, not 1 — the poller TICKS every 5 minutes
+    // (ticker.js RSS_TICK_INTERVAL_MS); offering 1-4 promised a cadence the
+    // engine cannot honor.
+    if (!Number.isFinite(n) || n < 5 || n > 60) {
       await commandCtx.reply({
-        content: "Polling interval must be between 1 and 60 minutes.",
+        content:
+          "Polling interval must be between 5 and 60 minutes — the poller runs every 5 minutes.",
         sensitive: true,
       });
       return;

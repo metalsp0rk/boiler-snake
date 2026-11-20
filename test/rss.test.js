@@ -970,12 +970,12 @@ describe("rss format — buildNotification payload shape", () => {
           timestamp: "2026-10-22T10:00:00.000Z",
         },
       ],
-      allowedMentions: { roles: [RSS_ROLE_ID] },
+      allowedMentions: { parse: [], roles: [RSS_ROLE_ID] },
     });
     // The deepEqual above already pins every key; these restate the contract
     // the poller (subtask 08) composes against.
     assert.equal(payload.embeds.length, 1, "one message per new entry — no batching");
-    assert.equal("parse" in payload.allowedMentions, false, "#272: roles arm carries NO parse key");
+    assert.deepEqual(payload.allowedMentions.parse, [], "#836 belt: the roles arm carries parse:[] — implicit classes stay dead (#272 shape law corrected by B1-8)");
     assert.equal(typeof payload.embeds[0].toJSON, "undefined", "plain JSON already — toPlainEmbed is a pass-through");
   });
 
@@ -1249,14 +1249,14 @@ describe("rss format — content line and feed display name", () => {
     const padded = rssFormat.buildNotification(rssEntry(), rssFeed(), { notifyRoleId: `  ${RSS_ROLE_ID}  ` });
     assert.equal(padded.content, `<@&${RSS_ROLE_ID}> **Example News** \u2014 new post`, "valid ids are trimmed, not rejected");
     const numeric = rssFormat.buildNotification(rssEntry(), rssFeed(), { notifyRoleId: 12345 });
-    assert.deepEqual(numeric.allowedMentions, { roles: ["12345"] }, "numeric column reads coerce to the string form");
+    assert.deepEqual(numeric.allowedMentions, { parse: [], roles: ["12345"] }, "numeric column reads coerce to the string form");
   });
 });
 
-describe("rss format — allowedMentions strictness table (#272)", () => {
+describe("rss format — allowedMentions allow-list table (#272, belt form #836)", () => {
   const table = [
-    ["configured role → strict id arm", { notifyRoleId: RSS_ROLE_ID }, { roles: [RSS_ROLE_ID] }],
-    ["numeric-string id coerced", { notifyRoleId: "42" }, { roles: ["42"] }],
+    ["configured role → belt arm", { notifyRoleId: RSS_ROLE_ID }, { parse: [], roles: [RSS_ROLE_ID] }],
+    ["numeric-string id coerced", { notifyRoleId: "42" }, { parse: [], roles: ["42"] }],
     ["unset → parse-off arm", {}, { parse: [] }],
     ["null → parse-off arm", { notifyRoleId: null }, { parse: [] }],
     ["blank → parse-off arm", { notifyRoleId: "   " }, { parse: [] }],
@@ -1274,7 +1274,7 @@ describe("rss format — allowedMentions strictness table (#272)", () => {
       assert.ok(!wire.includes("everyone"), "the payload can never mention everyone");
       assert.ok(!wire.includes('"roles"') || "roles" in expected, "the parse-off arm carries no roles key either way");
       if ("roles" in expected) {
-        assert.equal("parse" in am, false, "#272: the strict arm is MUTUALLY EXCLUSIVE with parse — {parse:[...], roles:[...]} is a Discord validation error");
+        assert.deepEqual(am.parse, [], "#836: the roles arm MUST carry parse:[] — the old no-parse 'strict' arm rode Discord's implicit full parse default (B1-8)");
       } else {
         assert.equal("roles" in am, false);
       }

@@ -35,6 +35,7 @@ const {
   feedUserAgent,
   validateFeedUrl,
   guardedFetchForFeed,
+  canonicalFeedUrl,
 } = require("../src/features/rss/feedFetch");
 
 const PUBLIC_IP = "93.184.216.34"; // public example address (no traffic)
@@ -702,5 +703,112 @@ describe("rss/feedFetch response cap + timeout + UA", () => {
       assert.equal(res.ok, false);
       assert.equal(res.reason, `HTTP ${status}`);
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #836 (B1-4): conditional-GET validators are CAPPED and ORIGIN-scoped
+// (RFC 9110 §8.4.1: scheme + host + PORT — not hostname alone)
+// ---------------------------------------------------------------------------
+
+describe("rss/feedFetch conditional GET — #836 validator belt", () => {
+  const HUGE = `"${"e".repeat(4096)}"`;
+
+  it("an oversized STORED validator is never re-sent and never echoed back (self-heals the column)", async () => {
+    const fetchImpl = recordingFetch(response({ body: "x" }));
+    const res = await guardedFetchForFeed("https://feeds.test/rss", {
+      resolveHost: publicResolve,
+      fetchImpl,
+      etag: HUGE,
+      lastModified: "L".repeat(4096),
+    });
+    assert.equal(res.ok, true, "the poll degrades to an unconditional GET");
+    const headers = fetchImpl.calls[0].init.headers;
+    assert.equal("If-None-Match" in headers, false, "megabyte ETag never rides the wire (431/400 class)");
+    assert.equal("If-Modified-Since" in headers, false);
+    assert.equal(res.etag, null, "the oversized stored fallback is not echoed — the next save clears the column");
+    assert.equal(res.lastModified, null);
+  });
+
+  it("an oversized RESPONSE validator is never captured for storage (DB bloat class)", async () => {
+    const res = await guardedFetchForFeed("https://feeds.test/rss", {
+      resolveHost: publicResolve,
+      fetchImpl: recordingFetch(
+        response({ status: 200, headers: { etag: HUGE, "last-modified": "T".repeat(4096) }, body: "<rss/>" }),
+      ),
+    });
+    assert.equal(res.ok, true);
+    assert.equal(res.etag, null, "a 4 KiB ETag is a hostile payload, not a validator");
+    assert.equal(res.lastModified, null);
+  });
+
+  it("same-host PORT hop drops the validators (origin = scheme+host+port)", async () => {
+    const fetchImpl = recordingFetch((hop) =>
+      hop === 0
+        ? response({ status: 302, headers: { location: "https://feeds.test:8443/rss" } })
+        : response({ status: 200, body: "<rss/>" }),
+    );
+    const res = await guardedFetchForFeed("https://feeds.test/rss", {
+      resolveHost: publicResolve,
+      fetchImpl,
+      etag: '"origin-a"',
+      lastModified: "Wed, 15 Oct 2026 04:00:00 GMT",
+    });
+    assert.equal(res.ok, true);
+    assert.equal(fetchImpl.calls.length, 2);
+    assert.equal(fetchImpl.calls[0].init.headers["If-None-Match"], '"origin-a"', "origin A sent its own validators");
+    const hop2 = fetchImpl.calls[1].init.headers;
+    assert.equal("If-None-Match" in hop2, false, "origin B (same host, other port) never sees A's validators");
+    assert.equal("If-Modified-Since" in hop2, false);
+  });
+
+  it("same-host SCHEME hop (https→http) drops the validators too", async () => {
+    const fetchImpl = recordingFetch((hop) =>
+      hop === 0
+        ? response({ status: 301, headers: { location: "http://feeds.test/rss" } })
+        : response({ status: 200, body: "<rss/>" }),
+    );
+    const res = await guardedFetchForFeed("https://feeds.test/rss", {
+      resolveHost: publicResolve,
+      fetchImpl,
+      etag: '"secure-a"',
+    });
+    assert.equal(res.ok, true);
+    assert.equal("If-None-Match" in fetchImpl.calls[1].init.headers, false, "a downgrade must not carry the secure origin's validators");
+  });
+
+  it("a SAME-ORIGIN redirect (relative Location, default-port spelling) KEEPS the validators", async () => {
+    const fetchImpl = recordingFetch((hop) =>
+      hop === 0
+        ? response({ status: 302, headers: { location: "/feed/v2" } })
+        : response({ status: 200, body: "<rss/>" }),
+    );
+    const res = await guardedFetchForFeed("https://feeds.test:443/rss", {
+      resolveHost: publicResolve,
+      fetchImpl,
+      etag: '"same-origin"',
+    });
+    assert.equal(res.ok, true);
+    assert.equal(fetchImpl.calls.length, 2);
+    assert.equal(fetchImpl.calls[1].init.headers["If-None-Match"], '"same-origin"', "conditional GET survives a same-origin move (default port normalizes)");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #836 (B1-5): typed option strings canonicalize like the STORED url
+// ---------------------------------------------------------------------------
+
+describe("rss/feedFetch canonicalFeedUrl — lookup arms meet the stored shape", () => {
+  it("canonicalizes exactly like the add path stores", () => {
+    assert.equal(canonicalFeedUrl("HTTPS://Feeds.Example.COM:443/blog.xml"), "https://feeds.example.com/blog.xml");
+    assert.equal(canonicalFeedUrl("https://example.com"), "https://example.com/", "bare host gains the path the add path stored");
+    assert.equal(canonicalFeedUrl("  https://example.com/x  "), "https://example.com/x", "trimmed first");
+  });
+
+  it("policy-refused strings come back TRIMMED AS-IS (the honest miss stays honest)", () => {
+    for (const junk of ["", "   ", "example.com/feed", "ftp://example.com/x", "https://ok.com/@evil/"]) {
+      assert.equal(canonicalFeedUrl(junk), junk.trim(), `no canonicalization for ${JSON.stringify(junk)}`);
+    }
+    assert.equal(canonicalFeedUrl(null), "");
   });
 });

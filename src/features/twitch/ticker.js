@@ -139,12 +139,14 @@ async function sendGoLiveNotification(outbound, communityId, sub, stream) {
     const result = await outbound.sendChannel(notifyChannelId, {
       content,
       embeds: [toPlainEmbed(createGoLiveEmbed(sub, stream))],
-      // Strict role allow-list (#272, docs-verified): `{ roles: [id] }`
-      // WITHOUT `parse` pins the ping to the configured role — smuggled role
-      // tokens in stream titles stay plain text. `{parse:["roles"], roles:…}`
-      // is invalid per the live Discord docs (parse is mutually exclusive
-      // with the id lists). Precedent: eventReminders/service.js.
-      allowedMentions: roleId ? { roles: [roleId] } : { parse: [] },
+      // Role allow-list (#272) in its #836 BELT form (B1-8 corrected the
+      // old "strict arm, no parse" reading): `parse: []` kills every
+      // implicit mention class (an omitted parse defaults to the server's
+      // full list — discord.js passes the payload through untouched), and
+      // `roles: [id]` explicitly allows exactly the configured role, so
+      // smuggled role tokens in stream titles stay plain text by the
+      // payload itself, not just by the body rewrite.
+      allowedMentions: roleId ? { parse: [], roles: [roleId] } : { parse: [] },
     });
     if (!result || result.ok !== true) {
       // Channel id rides the log (issue #177): a DELETED override channel

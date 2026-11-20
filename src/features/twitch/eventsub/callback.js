@@ -39,6 +39,37 @@ const HMAC_PREFIX = "sha256=";
 /** Replay brake: reject deliveries older than this (Twitch retries stay well inside). */
 const MAX_MESSAGE_AGE_MS = 10 * 60_000;
 
+// #836 (audit B1-7): inside the age window, a captured delivery with a
+// VALID signature was re-acceptable indefinitely — HMAC proves who sent
+// it, not that we already ate it. Bounded FIFO-seen set of processed
+// `Webhook-Message-Id`s, consulted ONLY after the HMAC verdict (an
+// unauthenticated id must never evict authenticated state or grow the
+// table). Today's watermarks (claim-first stream claims, idempotent
+// revocation marks) neutralize a replay's effect; this closes the gap
+// for every future notification type that lacks a dedup ledger.
+// CHALLENGE deliveries are deliberately EXCLUDED from the dedup skip:
+// Twitch retries a challenge whose response was lost, and it must be
+// answered again (the whole subscription verification hangs on it).
+const SEEN_MESSAGE_IDS_MAX = 2048;
+const seenMessageIds = new Set(); // insertion order = FIFO ≈ LRU at this size
+
+function isSeenMessageId(id) {
+  return seenMessageIds.has(id);
+}
+
+function rememberMessageId(id) {
+  seenMessageIds.add(id);
+  while (seenMessageIds.size > SEEN_MESSAGE_IDS_MAX) {
+    const oldest = seenMessageIds.values().next().value;
+    seenMessageIds.delete(oldest);
+  }
+}
+
+/** Test seam: drop the seen-set (module state must not bleed across tests). */
+function _resetSeenMessageIdsForTests() {
+  seenMessageIds.clear();
+}
+
 let warnedDisabled = false;
 
 function respond(res, status, body = "") {
@@ -251,6 +282,23 @@ async function handleTwitchEventsub(req, res, deps = {}) {
       return;
     }
 
+    // #836 (B1-7): post-HMAC replay brake for the EFFECTFUL types, consulted
+    // only after the payload PARSES (a malformed body answers 400 and must
+    // not remember its id — the verdict for identical bytes stays stable).
+    // A challenge RETRY must be re-answered (Twitch retries when the
+    // challenge response is lost in transit — answering 204 would strand
+    // the subscription), so verification traffic rides past the seen-set;
+    // a duplicate notification/revocation is ACKED 204 and dropped before
+    // any dispatch. Recorded BEFORE processing: the 204 is already
+    // promised, so a racing replay of the same id must lose.
+    if (messageType === "notification" || messageType === "revocation") {
+      if (isSeenMessageId(messageId)) {
+        respond(res, 204);
+        return;
+      }
+      rememberMessageId(messageId);
+    }
+
     if (messageType === "webhook_callback_verification") {
       const challenge = payload?.challenge;
       if (typeof challenge !== "string" || !challenge) {
@@ -309,5 +357,6 @@ module.exports = {
   dispatchEventsubNotification,
   handleRevocation,
   handleTwitchEventsub,
+  _resetSeenMessageIdsForTests,
   _resetCallbackWarningsForTests,
 };

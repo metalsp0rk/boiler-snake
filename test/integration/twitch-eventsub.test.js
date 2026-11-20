@@ -1,4 +1,4 @@
-const { describe, it, before, after } = require("node:test");
+const { describe, it, before, after, beforeEach } = require("node:test");
 const assert = require("node:assert/strict");
 const crypto = require("node:crypto");
 const { createIntegrationEnv } = require("../helpers/harness");
@@ -24,8 +24,14 @@ function fakeSupervisor(client) {
   };
 }
 
-/** Minimal IncomingMessage stand-in (headers + drained rawBody bytes). */
-function makeReq(messageType, payloadObj, { secret = SECRET, messageId = "msg-1", timestamp, signature } = {}) {
+let reqSeq = 0;
+
+/** Minimal IncomingMessage stand-in (headers + drained rawBody bytes).
+ *  #836: message ids DEFAULT unique per delivery — that is Twitch's real
+ *  contract (and what the B1-7 replay nonce keys on). Tests that want the
+ *  SAME id (a replay) say so explicitly; tests that exercise the CLAIM-level
+ *  dedup must NOT collide with the nonce on an incidental shared id. */
+function makeReq(messageType, payloadObj, { secret = SECRET, messageId = `msg-${++reqSeq}`, timestamp, signature } = {}) {
   const body = JSON.stringify(payloadObj);
   const ts = timestamp || new Date().toISOString();
   const sig =
@@ -113,6 +119,13 @@ describe("integration: twitch-eventsub", () => {
     process.env.PUBLIC_BASE_URL = "https://bot.example.com";
     delete process.env.TWITCH_EVENTSUB_CALLBACK_URL;
     delete process.env.TWITCH_EVENTSUB_MAX_CHANNELS;
+  });
+
+  // #836 (B1-7): the replay nonce store is module state; makeReq defaults
+  // to ONE message id across tests — without this reset every later
+  // notification would dedup against an earlier test's delivery.
+  beforeEach(() => {
+    require("../../src/features/twitch/eventsub/callback")._resetSeenMessageIdsForTests();
   });
 
   it("config: enable matrix, callback derivation, cap", () => {
@@ -385,6 +398,65 @@ describe("integration: twitch-eventsub", () => {
     assert.equal(res400.statusCode, 400);
   });
 
+  it("#836 B1-7: a signed replay of the SAME message id never re-processes; challenge retries are exempt", async () => {
+    let dispatched = 0;
+    const deps = {
+      onNotification: async () => {
+        dispatched += 1;
+      },
+    };
+    const settle = async () => {
+      for (let i = 0; i < 8; i += 1) await new Promise((r) => setImmediate(r));
+    };
+
+    const body = { subscription: { id: "sub-x" }, event: { broadcaster_user_id: "7770091" } };
+
+    // First delivery: processed.
+    const req = makeReq("notification", body, { messageId: "replay-1" });
+    const r1 = fakeRes();
+    await handleTwitchEventsub(req, r1, deps);
+    assert.equal(r1.statusCode, 204);
+    await settle();
+    assert.equal(dispatched, 1);
+
+    // BYTE-IDENTICAL replay inside the age window (valid HMAC — the
+    // signature proves the sender, not freshness): ACKED, never dispatched.
+    const r2 = fakeRes();
+    await handleTwitchEventsub(makeReq("notification", body, { messageId: "replay-1" }), r2, deps);
+    assert.equal(r2.statusCode, 204, "a replay is silently ACKED (204), not 4xx — Twitch stops retrying");
+    await settle();
+    assert.equal(dispatched, 1, "the replay never reaches dispatch");
+
+    // A DIFFERENT message id processes normally (the store is per-id).
+    await handleTwitchEventsub(makeReq("notification", body, { messageId: "replay-2" }), fakeRes(), deps);
+    await settle();
+    assert.equal(dispatched, 2, "next id rides free");
+
+    // CHALLENGE RETRY exemption: the same id must answer the challenge
+    // EVERY time — Twitch retries when the first response is lost, and a
+    // deduped 204 there strands the subscription verification.
+    for (const attempt of [1, 2]) {
+      const chal = fakeRes();
+      await handleTwitchEventsub(
+        makeReq("webhook_callback_verification", { challenge: "retry-me" }, { messageId: "chal-dup" }),
+        chal,
+        deps,
+      );
+      assert.equal(chal.statusCode, 200, `challenge attempt ${attempt} re-answers`);
+      assert.equal(chal.body, "retry-me");
+    }
+
+    // 403s never poison the store: a bad-signature delivery of an id the
+    // attacker invented must not block the REAL delivery of that id later.
+    const poisoned = makeReq("notification", body, { messageId: "poison-1", signature: "sha256=nope" });
+    const rp = fakeRes();
+    await handleTwitchEventsub(poisoned, rp, deps);
+    assert.equal(rp.statusCode, 403);
+    await handleTwitchEventsub(makeReq("notification", body, { messageId: "poison-1" }), fakeRes(), deps);
+    await settle();
+    assert.equal(dispatched, 3, "the legitimate delivery of the same id still processes");
+  });
+
   it("E2E: stream.online notification announces once, dedups redelivery + poller", async () => {
     env.db.addTwitchChannel(env.communityId, "7770001", "fastguy", "FastGuy", null);
     env.channels.notify.sent.length = 0;
@@ -425,9 +497,11 @@ describe("integration: twitch-eventsub", () => {
     assert.equal(row.is_live, 1);
     assert.equal(row.last_stream_id, "stream-abc");
 
-    // Twitch redelivery (same message id/body) must not double-announce.
+    // Twitch redelivery (same body, FRESH message id — the shape that
+    // survives a bot restart, when the #836 in-memory nonce store is
+    // empty) must not double-announce: the CLAIM ledger is the deep layer.
     const res2 = fakeRes();
-    await handleTwitchEventsub(makeReq("notification", payload), res2, {
+    await handleTwitchEventsub(makeReq("notification", payload, { messageId: "e2e-redelivery" }), res2, {
       getClient: () => env.client,
       fetchStreams: async () => [stream],
     });

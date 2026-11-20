@@ -191,7 +191,7 @@ describe("eventReminders service helpers", () => {
     });
     assert.equal(payload.content, "<@&role99>");
     assert.equal(payload.embeds.length, 1);
-    assert.deepEqual(payload.allowedMentions, { roles: ["role99"] });
+    assert.deepEqual(payload.allowedMentions, { parse: [], roles: ["role99"] });
     const data =
       typeof payload.embeds[0].toJSON === "function"
         ? payload.embeds[0].toJSON()

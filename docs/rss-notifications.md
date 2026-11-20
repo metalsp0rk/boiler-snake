@@ -8,7 +8,7 @@ Subscribe to any number of RSS/Atom feeds per community and have **new entries**
 - **Any number of feeds per community** — the same URL in several communities is fine; default cap **20 per community** (`RSS_MAX_FEEDS_PER_COMMUNITY` override)
 - **Its own routing**: per-community `rss_notification_channel_id`, independent of the YouTube/Twitch channel and role pairs — no cross-feature fallback
 - **Strict role ping**: only the role configured with `/setrss role`, never `@everyone`, never a fallback
-- **Polling**: a fixed 5-minute aligned scheduler tick, gated per community on `rss_polling_interval_minutes` (1–60, default **15**) — see [Poll behavior](#poll-behavior)
+- **Polling**: a fixed 5-minute aligned scheduler tick, gated per community on `rss_polling_interval_minutes` (5–60, default **15**; the floor is the tick, #836) — see [Poll behavior](#poll-behavior)
 - **Polite + cheap**: conditional GET (`ETag` / `Last-Modified`) makes an unchanged feed a free `304` poll; failing feeds back off exponentially (cap 6 h)
 - **SSRF-guarded**: only public web addresses are ever fetched — validated at `/rss add` **and** on every single poll (see [Fetch security](#fetch-security-ssrf-posture))
 
@@ -163,13 +163,13 @@ Replies `RSS notifications will mention <@NewsAlerts>.` / `RSS notifications wil
 
 ### `/setrss interval`
 
-Per-community polling interval, 1–60 minutes (Discord clamps the picker; the handler re-checks):
+Per-community polling interval, 5–60 minutes (Discord clamps the picker; the handler re-checks):
 
 ```bash
 /setrss interval minutes:15
 ```
 
-Replies `RSS polling interval set to **15** minute(s).`; an out-of-range value (reachable on non-picker surfaces) answers `Polling interval must be between 1 and 60 minutes.` Lower = faster alerts and more requests to the feed hosts.
+Replies `RSS polling interval set to **15** minute(s).`; an out-of-range value (reachable on non-picker surfaces) answers `Polling interval must be between 5 and 60 minutes — the poller runs every 5 minutes.` (Floor 5 #836: the poller TICKS every 5 minutes, so 1–4 was a cadence the engine could not honor.) Lower = faster alerts and more requests to the feed hosts.
 
 ### `/setrss settings`
 
@@ -206,7 +206,7 @@ An entry with **neither a title nor a permalink** has no headline and is not ann
 
 Strict allow-list (#272), the same posture as event reminders and Twitch go-lives:
 
-- Role configured → the send pins `allowedMentions` to exactly `{ roles: [that id] }`
+- Role configured → the send pins `allowedMentions` to exactly `{ parse: [], roles: [that id] }` (the #836 belt: `parse: []` disables every implicit mention class — an omitted `parse` rides Discord's full defaults — and `roles` then allows exactly the configured role)
 - Not configured (or a stored value that isn't a bare snowflake) → `{ parse: [] }`: **nothing** in the message can mention anyone
 - `@everyone` / `@here` parsing is never enabled on any send path — not on the tick, not on `/rss test`
 
@@ -240,7 +240,7 @@ Feed URLs are staff-supplied but resolve wherever DNS says, so the guard treats 
 |------|-------|---------------|
 | Feeds per community | `RSS_MAX_FEEDS_PER_COMMUNITY`, default **20** | `/rss add` only (rows already above the cap keep polling) |
 | Scheduler cadence | **5 minutes**, aligned | fixed job (`rss`) |
-| Per-community interval | **15** min (1–60) | `/setrss interval` |
+| Per-community interval | **15** min (5–60; floor = the 5-min tick, #836) | `/setrss interval` |
 | First-poll backfill window | last **60 minutes** | fixed |
 | Flood cap | **≤5 posts per feed per tick** (overflow seen, not posted) | fixed |
 | Backoff | interval × 2^failures, capped at **6 h**, reset on success | automatic (`failure_count`) |

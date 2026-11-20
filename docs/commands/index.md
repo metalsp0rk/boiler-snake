@@ -817,7 +817,7 @@ Only the configured role is ever mentioned (strict `allowedMentions`); no `@ever
 
 #### Subcommand: `interval` - Configure Polling Frequency
 
-Set how often this community's feeds are checked (1–60 minutes, default **15**).
+Set how often this community's feeds are checked (5–60 minutes, default **15**; floor 5 matches the poller's 5-minute tick, #836).
 
 ```bash
 /setrss interval minutes:15

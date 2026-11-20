@@ -57,15 +57,21 @@
  *    `now` is a decision input, but stamping an embed with a fabricated
  *    publish time would lie about when the post happened.
  *
- * MENTION-DEFENSE POSTURE (#272 + bridge/mentions.js): feed text is attacker-
- * controlled, so pings ride ONLY the payload — `allowedMentions` is the
- * STRICT form `{ roles: [id] }` (live Discord docs make `parse` mutually
- * exclusive with the id lists; the strict arm pins the ping to exactly the
- * configured role) else `{ parse: [] }`. A stored role id that is not a
- * bare snowflake (e.g. a hand-poisoned "@everyone") is treated as unset, so
- * no non-numeric value ever reaches a payload. Defense in depth for the
- * BODY (the bridge lesson: defaults can change and other transports may
- * ignore the payload, so the text rewrite is load-bearing too): every feed-
+ * MENTION-DEFENSE POSTURE (#272, shape corrected by #836 B1-8, with the
+ * bridge/mentions.js lesson): feed text is attacker-controlled, so pings
+ * ride ONLY the payload — `allowedMentions` is the BELT form
+ * `{ parse: [], roles: [id] }` else `{ parse: [] }`. The old comment here
+ * claimed `parse` was mutually exclusive with the id lists; that is FALSE
+ * against the installed discord.js (MessagePayload passes allowedMentions
+ * through untransformed) and against the API: the arms are ADDITIVE and an
+ * omitted `parse` defaults to the server's full implicit list — the bare
+ * `{ roles: [id] }` arm was ping-safe only because the body rewrite
+ * neutralized smuggled tokens. `parse: []` now kills the implicit classes
+ * outright and `roles: [id]` allows exactly the configured role. A stored
+ * role id that is not a bare snowflake (e.g. a hand-poisoned "@everyone")
+ * is treated as unset, so no non-numeric value ever reaches a payload.
+ * Defense in depth for the BODY (defaults can change and other transports
+ * may ignore the payload, so the text rewrite is load-bearing too): every feed-
  * derived string passes neutralizeRichText — HTML stripped, entities decoded
  * EXACTLY ONCE, Discord mention tokens `<@id>` `<@!id>` `<@&id>` `<#id>`
  * stripped (post-decode, so single-encoded smuggling like
@@ -450,18 +456,21 @@ function resolveNotifyRoleId(settings) {
 }
 
 /**
- * The #272 strict allow-list (mirrors twitch ticker `sendGoLiveNotification`
- * and eventReminders `buildReminderDelivery`): `{ roles: [id] }` pins the
- * ping to exactly the configured role — `parse` is MUTUALLY EXCLUSIVE with
- * the id lists on the live Discord API, so the two arms are never merged.
+ * The #272 role allow-list in its #836 BELT form (mirrors twitch ticker
+ * `sendGoLiveNotification`, the github/youtube tickers, and eventReminders
+ * `buildReminderDelivery`): `{ parse: [], roles: [id] }` — `parse: []`
+ * disables every implicit mention class, `roles: [id]` explicitly allows
+ * exactly the configured role. (The old bare `{ roles: [id] }` arm relied
+ * on a "parse is mutually exclusive" reading that the installed
+ * discord.js and the API both refute — see the module header.)
  * Unset/invalid → `{ parse: [] }`: nothing in the message can mention.
  *
  * @param {{notifyRoleId?: unknown}|null} settings
- * @returns {{roles: [string]}|{parse: []}}
+ * @returns {{parse: [], roles: [string]}|{parse: []}}
  */
 function toAllowedMentions(settings) {
   const roleId = resolveNotifyRoleId(settings);
-  return roleId ? { roles: [roleId] } : { parse: [] };
+  return roleId ? { parse: [], roles: [roleId] } : { parse: [] };
 }
 
 /**
@@ -531,7 +540,7 @@ function escapeFeedMarkdown(text) {
  * @returns {{
  *   content: string,
  *   embeds: Array<object>,          // exactly one plain-JSON embed
- *   allowedMentions: {roles: [string]}|{parse: []},
+ *   allowedMentions: {parse: [], roles: [string]}|{parse: []},
  * } | null} null when the entry has no headline (no title AND no entry
  *   permalink — see the documented HEADLINE RULE); the poller counts those
  *   as skipped, it never sends an empty announcement.

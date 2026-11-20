@@ -386,7 +386,9 @@ function buildReminderDelivery(opts) {
   return {
     content: `<@&${opts.roleId}>`,
     embeds: [embed],
-    allowedMentions: { roles: [opts.roleId] },
+    // #272 role allow-list in its #836 BELT form (B1-8): parse:[] kills
+    // the implicit mention classes; roles:[id] allows exactly this one.
+    allowedMentions: { parse: [], roles: [opts.roleId] },
   };
 }
 
