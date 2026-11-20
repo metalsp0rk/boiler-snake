@@ -119,6 +119,15 @@ function makeWorld({ guards = {}, withManageGuildSeam = true } = {}) {
   // The belt-skip posture needs the seam ABSENT (and no client) — the
   // service then logs the gap and defers to the staff_roles+hierarchy law.
   if (!withManageGuildSeam) delete seamSet.fetchMemberHasManageGuild;
+  // #835 (A2-10): the bot's own Ban-Members belt is TRI-STATE — injected
+  // only when scripted (absent + no client = NOT VISIBLE = proceeds; the
+  // happy-path order pins below prove the silent-proceed shape).
+  if (guards.botCanBan !== undefined) {
+    seamSet.fetchBotHasBanMembers = async () => {
+      calls.push({ op: "guard:botCanBan" });
+      return guards.botCanBan;
+    };
+  }
 
   const { lines, log } = makeLog();
   return { calls, ob, seamSet, lines, log };
@@ -357,6 +366,35 @@ test("hierarchy law: subject top role NOT below the bot's is refused naming both
   assert.match(res.error, /position 10/);
   assert.match(res.error, /not below the bot's highest role/);
   assert.match(res.error, /Nothing was banned\./);
+});
+
+test("#835 A2-10: the bot missing its own Ban Members grant is refused BEFORE the DM - issue #835", async () => {
+  const cid = freshCid();
+  const w = makeWorld({ guards: { botCanBan: false } });
+  const res = await banService.banUser(banOpts(cid, w));
+  assert.equal(res.ok, false);
+  assert.match(res.error, /missing \*\*Ban Members\*\*/);
+  assert.match(res.error, /Missing Access 50013/);
+  assert.match(res.error, /Nothing was banned\./);
+  // The DM-first law made a doomed ban actively dishonest: the subject got
+  // a "you are banned" DM while the guild stayed untouched. Zero side
+  // effects now — the belt fires after the hierarchy law, BEFORE the DM.
+  const seen = ops(w.calls);
+  assert.ok(!seen.includes("sendDm") && !seen.includes("banMember"), `no DM, no ban: ${seen}`);
+  assert.equal(db.findActiveBanRecord(cid, SUB), null, "no record either");
+  assert.ok(
+    seen.indexOf("guard:botCanBan") > seen.indexOf("guard:botTop"),
+    "the belt runs AFTER the hierarchy law (positions first): " + seen.join(","),
+  );
+});
+
+test("#835: a VISIBLE Ban Members grant passes the belt — the ban runs untouched", async () => {
+  const cid = freshCid();
+  const w = makeWorld({ guards: { botCanBan: true } });
+  const res = await banService.banUser(banOpts(cid, w));
+  assert.equal(res.ok, true, JSON.stringify(res));
+  assert.ok(ops(w.calls).includes("guard:botCanBan"));
+  assert.ok(ops(w.calls).includes("banMember"));
 });
 
 test("UNRESOLVABLE hierarchy read FAILS CLOSED: refusal, no ban, no DM", async () => {

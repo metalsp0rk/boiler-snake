@@ -13,7 +13,7 @@
  *   decision-wins, the loser gets { ok:true, won:false } + the LIVE row and
  *   mutates NOTHING (byte-identical row assertions);
  * - cursors are a PAIR per direction or nothing (half a cursor is a resume-
- *   time lie), last-write-wins, per-direction isolation;
+ *   time lie), monotonic advance (#835), per-direction isolation;
  * - ferry pause is relay-only state with NO status coupling, in either
  *   direction (pausing never decides; deciding never locks the knob);
  * - every community-scoped export runs assertCommunityId (throw = programmer
@@ -718,7 +718,7 @@ describe("banAppeals.reopenAppealAfterFailedExecution — #821 compensation CAS 
   });
 });
 
-describe("banAppeals cursors — pair law, per-direction isolation, last-write-wins", () => {
+describe("banAppeals cursors — pair law, per-direction isolation, monotonic advance (#835)", () => {
   const CID = communityKey("773-repo-cursor");
 
   it("never-saved reads {ok:true, cursor:null} (boot catch-up starts clean)", () => {
@@ -786,15 +786,52 @@ describe("banAppeals cursors — pair law, per-direction isolation, last-write-w
     assert.deepEqual(db.loadAppealCursor(appeal.id, "user"), { ok: true, cursor: null });
   });
 
-  it("saves are LAST-WRITE-WINS (single-flow per direction — CAS would only add a wedge)", () => {
+  it("saves are MONOTONIC (#835 A2-12): forward writes land; a stale write can never regress the cursor", () => {
     const appeal = openOk(CID, mkBan(CID).id);
     db.saveAppealCursor(appeal.id, "ticket", { messageId: "old", timestampMs: T0 });
-    const res = db.saveAppealCursor(appeal.id, "ticket", { messageId: "newer", timestampMs: T0 + MIN });
-    assert.equal(res.won, true, "an existing row always accepts the newest pair");
+    const res = db.saveAppealCursor(appeal.id, "ticket", {
+      messageId: "newer",
+      timestampMs: T0 + MIN,
+    });
+    assert.equal(res.won, true, "a forward write lands (the historical flow shape)");
     assert.deepEqual(db.loadAppealCursor(appeal.id, "ticket").cursor, {
       messageId: "newer",
       timestampMs: T0 + MIN,
     });
+
+    // The racing-writer wreck the blind write allowed: a slow path still
+    // carrying the OLD position used to STOMP the advanced cursor, and the
+    // next poll re-relayed the (old, newer] window into the staff ticket.
+    const stale = db.saveAppealCursor(appeal.id, "ticket", {
+      messageId: "old",
+      timestampMs: T0,
+    });
+    assert.equal(
+      stale.ok,
+      true,
+      "a refused stale write is NOT an error — the position is already at least as far",
+    );
+    assert.equal(stale.won, false, "the monotonic CAS refused to regress");
+    assert.deepEqual(
+      db.loadAppealCursor(appeal.id, "ticket").cursor,
+      { messageId: "newer", timestampMs: T0 + MIN },
+      "the advanced cursor stands",
+    );
+
+    // Strictly monotonic: an equal timestamp re-writes nothing.
+    const tied = db.saveAppealCursor(appeal.id, "ticket", {
+      messageId: "tied",
+      timestampMs: T0 + MIN,
+    });
+    assert.equal(tied.won, false, "strict <: an equal ts changes nothing");
+
+    // Per-direction independence: the untouched `user` cursor is NULL, and
+    // NULL admits the first write whatever the ticket direction holds.
+    assert.equal(
+      db.saveAppealCursor(appeal.id, "user", { messageId: "u1", timestampMs: T0 }).won,
+      true,
+      "monotonicity is per-direction (NULL always admits the first write)",
+    );
   });
 
   it("unknown directions are named refusals on BOTH sides (user|ticket is a closed set)", () => {

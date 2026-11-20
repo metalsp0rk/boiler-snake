@@ -9,7 +9,7 @@ Discord bans have no native duration. This feature adds the bot-side **lifecycle
 ```
 Staff: /ban <member> [reason] [duration]   or   right-click → Apps → Ban member
         → admin gate (Manage Guild) → shared Reason/Duration modal when a field is missing
-        → guards: duplicate active ban · self-ban · staff-subject (#729) · role hierarchy
+        → guards: duplicate active ban · self-ban · staff-subject (#729) · role hierarchy · bot's own Ban Members belt (#835)
         → ban DM FIRST (while the shared-guild DM path still exists; a DM failure
           never blocks the ban — logged with ids and surfaced staff-side)
         → Discord ban executes → record row B-n (expires_at NULL = permanent)
@@ -104,6 +104,7 @@ Every refusal is specific and says **"Nothing was banned."** — no generic fail
 | Self-ban | Moderator and target are the same member → refused |
 | Staff subject (#729) | Holders of any `staff_roles` role — and any holder of the **Manage Guild** permission — are never banned: "Bans never execute against guild staff" |
 | Role hierarchy | Subject's top role ≥ bot's highest role → refused naming both positions ("move the bot's role up"). Unresolvable hierarchy REFUSES — never a silent pass |
+| Bot's own **Ban Members** belt (#835) | When the bot's guild grant is readable and lacks **Ban Members**, the ban is refused BEFORE the ban DM ("…would refuse this ban (Missing Access 50013) after the ban DM goes out…") — the old order made a doomed ban dishonest (the subject got a ban DM while the guild stayed untouched). NOT readable (no client / no cached bot member / no permission bits) is NOT a refusal: the real `banMember` call stays the truth-source and its translated 50013 copy already names the fix |
 | Discord API causes | Translated specifically, e.g. **Missing Access 50013** → checklist: bot holds **Ban Members**, bot role above the target, no higher role protecting them |
 
 ## Ban-time DM (before the ban executes)

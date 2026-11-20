@@ -23,9 +23,12 @@
  *
  * Cursor law: one persisted (message id, timestamp) pair PER DIRECTION
  * (`user` = last relayed user→ticket message, `ticket` = last relayed
- * ticket→user message). Saves are last-write-wins (the relay is single-flow
- * per direction — CAS there would only add a wedge); a save always writes
- * the pair, never half of it. Pause is ferry-only state with NO status
+ * ticket→user message). Saves are MONOTONIC (#835 A2-12 — the old
+ * "single-flow, last-write-wins" premise was false: boot catch-up over the
+ * backfill and live DMs are two writers per direction, and the blind write
+ * let the smaller land last, REGRESSING the cursor and re-relaying the
+ * window); a save always writes the pair, never half of it. Pause is
+ * ferry-only state with NO status
  * coupling: silencing the relay never decides anything, deciding always
  * stops the relay (via the status guard in the feature).
  */
@@ -572,12 +575,20 @@ function closeAppealOnBanEnd(appealId, { reason = null, nowMs } = {}) {
 }
 
 /**
- * Persist the relay cursor for ONE direction (last-write-wins — the relay
- * is single-flow per direction; see the header law). Always writes the PAIR
+ * Persist the relay cursor for ONE direction. Always writes the PAIR
  * (message id + timestamp): half a cursor is a resume-time lie.
  *
- * `won` here reports row EXISTENCE (the row was updated), not a claim:
- * `won:false` means the appeal is gone and the save silently no-op'd.
+ * #835 (A2-12): the write is MONOTONIC — `WHERE … ts < new` (NULL always
+ * admits the first write). Two relay paths (boot catch-up over the 24h
+ * backfill racing live DMs) can read the same cursor and advance
+ * independently; the historical blind write let the SMALLER write land
+ * last and REGRESS the cursor, re-relaying the (old, new] window into
+ * the staff ticket. A refused older write is a SUCCESS, not an error:
+ * the position is already at least as far.
+ *
+ * `won` reports the write landed; `won:false` now means the appeal is
+ * gone OR a newer cursor beat this write — both are correct outcomes,
+ * and callers (ferry) only inspect `ok`.
  *
  * @param {number} appealId
  * @param {string} direction 'user' | 'ticket'
@@ -609,9 +620,9 @@ function saveAppealCursor(appealId, direction, cursor = {}) {
       .prepare(
         `UPDATE ban_appeals
             SET ${cols.msgColumn}=?, ${cols.tsColumn}=?, updated_at=?
-          WHERE id=?`,
+          WHERE id=? AND (${cols.tsColumn} IS NULL OR ${cols.tsColumn} < ?)`,
       )
-      .run(messageId, Math.floor(ts), now(), id);
+      .run(messageId, Math.floor(ts), now(), id, Math.floor(ts));
     return { ok: true, won: res.changes === 1, appeal: getAppealById(id) };
   } catch (err) {
     return { ok: false, error: `Could not save the ferry cursor: ${err?.message || err}` };
