@@ -76,3 +76,59 @@ describe("core/outbound — the single supervisor resolver (#462)", () => {
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// #837 (B2-6): createSingleClientSupervisor — the ONLY legal forgery of the
+// supervisor shape for web-mounted webhook paths (Twitch EventSub). The
+// non-supervisor guard used to be satisfied by any hand-built object with
+// the key; the factory keeps the contract honest instead.
+// ---------------------------------------------------------------------------
+describe("core/outbound — createSingleClientSupervisor (#837 B2-6)", () => {
+  const { createSingleClientSupervisor } = require("../src/core/outbound");
+
+  it("exposes the live client as .discord and tolerates a resolve with a real communityId", () => {
+    // Stub the lazily-required platform module: the factory must route
+    // through getDiscordOutbound WITHOUT this test loading the real
+    // Discord/db stack (this file is db-free by contract).
+    const modId = require.resolve("../src/platform/discord/outbound");
+    const marker = { __stubOutbound: true };
+    const real = require.cache[modId];
+    require.cache[modId] = {
+      id: modId,
+      filename: modId,
+      loaded: true,
+      exports: { getDiscordOutbound: (client) => (client.__seen = marker, marker) },
+    };
+    try {
+      const client = { __fake: true };
+      const supervisor = createSingleClientSupervisor(client);
+      assert.equal(supervisor.discord, client, ".discord IS the live client (resolveDiscordClient leg)");
+      assert.equal(supervisor.clientForCommunity(42), marker, "a real communityId resolves the outbound");
+      assert.equal(resolveOutbound(supervisor, 42), marker, "the factory satisfies resolveOutbound end-to-end");
+      assert.equal(resolveOutbound(supervisor, 99), marker, "single client serves every community BY CONSTRUCTION (documented single-app contract)");
+    } finally {
+      if (real) require.cache[modId] = real;
+      else delete require.cache[modId];
+    }
+  });
+
+  it("ASSERTS a real communityId — an argument-less resolve is the routing bug the guard exists to catch", () => {
+    const supervisor = createSingleClientSupervisor({ __fake: true });
+    for (const bad of [undefined, null, ""]) {
+      assert.throws(
+        () => supervisor.clientForCommunity(bad),
+        (err) =>
+          /clientForCommunity requires a real communityId/.test(err.message) &&
+          /routing bug/.test(err.message),
+        `communityId=${JSON.stringify(bad)} must throw, never silently resolve`,
+      );
+    }
+  });
+
+  it("the factory's output trips the non-supervisor guard's THROW for stale raw-client callers (shape parity)", () => {
+    // resolveDiscordClient on the factory sees supervisor.discord — the
+    // webhook path gets the SAME client back it handed in.
+    const client = { __fake: true };
+    assert.equal(resolveDiscordClient(createSingleClientSupervisor(client)), client);
+  });
+});

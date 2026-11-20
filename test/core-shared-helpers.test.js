@@ -82,6 +82,12 @@ describe("core/env envNonNegInt (#837 B2-2: gork's images.js copy, homed)", () =
     assert.equal(envNonNegInt("__T470N", 4, { __T470N: "-1" }), 4, "negative is not non-negative");
     assert.equal(envNonNegInt("__T470N", 4, { __T470N: "2.9" }), 2, "floors like its positive twin");
     assert.equal(envNonNegInt("__T470N", 4, {}), 4, "unset falls back");
+    assert.equal(
+      envPositiveInt("__T470N", 4, null),
+      4,
+      "null env source: knobNumber's null guard — reads nothing, falls back, never throws",
+    );
+    assert.equal(envNonNegInt("__T470N", 4, undefined), 4, "undefined env source likewise");
   });
 });
 
@@ -149,9 +155,17 @@ describe("core/timing sleep", () => {
   });
 
   it("#837 B2-3: {unref:true} still resolves (the relay's drain posture)", async () => {
+    // The anchor timer is deliberate: an unref'd wait as the ONLY pending
+    // work drains the event loop around it — on Node 22 that drains the
+    // TEST RUNNER too ("Promise resolution is still pending but the event
+    // loop has already resolved" kills the whole file). Same drain
+    // semantics that make unref correct for the relay's SIGTERM path:
+    // keep a ref'd hold while asserting the unref'd wait still waited.
+    const anchor = setTimeout(() => {}, 50);
     const t0 = Date.now();
     await sleep(10, { unref: true });
     assert.ok(Date.now() - t0 >= 5, "an unref'd wait still waits — unref only lifts the keep-alive claim");
+    clearTimeout(anchor);
   });
 });
 
