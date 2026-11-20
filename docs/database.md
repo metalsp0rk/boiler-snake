@@ -593,18 +593,20 @@ See [GitHub Release Notifications](github-releases.md).
 
 ### 8d. `twitch_eventsub_subs`
 
-EventSub webhook subscription ledger (migration `032_twitch_eventsub_media`): one row per **(subscription type, broadcaster)** — the EventSub uniqueness constraint — not per guild: one `stream.online` / `stream.offline` subscription per broadcaster serves every guild tracking that channel. Rows are reconciler bookkeeping: `subscription_id` is Twitch's UUID (`NULL` until created), `status` mirrors the Twitch/local state (`pending` / `enabled` / `verification_pending` / `revoked:<reason>` / `error`), `last_error` carries the last create/delete failure for triage. Primary writer: `src/db/repositories/twitchEventsub.js` (driven by the Twitch feature's EventSub reconciler).
+EventSub webhook subscription ledger (migration `032_twitch_eventsub_media`): one row per **(subscription type, broadcaster)** — the EventSub uniqueness constraint — not per guild: one `stream.online` / `stream.offline` subscription per broadcaster serves every guild tracking that channel. Rows are reconciler bookkeeping: `subscription_id` is Twitch's UUID (`NULL` until created), `status` mirrors the Twitch/local state (`pending` / `enabled` / `verification_pending` / `revoked[:<reason>]` / `verification_failed` / `notification_failures_exceeded` / `error`), `last_error` carries the last create/delete failure for triage. `callback_url` + `secret_fingerprint` (#824, migration `079_twitch_eventsub_binding`) record what the subscription was created with — the sha256 of the HMAC secret (never the secret itself) — so the reconciler can detect a secret/callback rotation and rebind instead of leaving a dead sub marked `enabled`. Primary writer: `src/db/repositories/twitchEventsub.js` (driven by the Twitch feature's EventSub reconciler).
 
 ```sql
 -- Live DDL (migrated schema, from sqlite_master)
 CREATE TABLE twitch_eventsub_subs (
-    type            TEXT NOT NULL,
-    broadcaster_id  TEXT NOT NULL,
-    subscription_id TEXT,
-    status          TEXT NOT NULL DEFAULT 'pending',
-    last_error      TEXT,
-    created_at      INTEGER NOT NULL,
-    updated_at      INTEGER NOT NULL,
+    type              TEXT NOT NULL,
+    broadcaster_id    TEXT NOT NULL,
+    subscription_id   TEXT,
+    status            TEXT NOT NULL DEFAULT 'pending',
+    last_error        TEXT,
+    created_at        INTEGER NOT NULL,
+    updated_at        INTEGER NOT NULL,
+    callback_url      TEXT,              -- #824: callback this sub was created with
+    secret_fingerprint TEXT,             -- #824: sha256 of the HMAC secret, never the secret
     PRIMARY KEY (type, broadcaster_id)
   );
 CREATE INDEX idx_twitch_eventsub_subs_broadcaster
@@ -1638,7 +1640,7 @@ CREATE TABLE bridge_ends (
 
 #### `bridge_outbox`
 
-The durable outbound relay queue: one row per pending operation (create / edit / delete of a source message, per direction) with a delivery state machine (`pending | sending | done | failed`), attempt counter, and `last_error`. `payload_json` carries only metadata + attachment descriptors — no CDN URLs, no tokens, no credentials. Survives restarts by design; the supervisor drains it through the repository. Primary writer: `src/db/repositories/bridges.js` (enqueue paths).
+The durable outbound relay queue: one row per pending operation (create / edit / delete of a source message, per direction) with a delivery state machine (`pending | sending | done | failed`), attempt counter, and `last_error`. `payload_json` carries only metadata + attachment descriptors — no CDN URLs, no tokens, no credentials. `payload_seq` (#831, migration `080_bridge_payload_seq`) numbers the payload generations: an edit that replaces a pending edit row's payload in place bumps it, and the async media-spool write-back CASes on it, so a stale generation can never stomp a newer edit. Survives restarts by design; the supervisor drains it through the repository. Primary writer: `src/db/repositories/bridges.js` (enqueue paths).
 
 ```sql
 -- Live DDL (migrated schema, from sqlite_master)
@@ -1654,6 +1656,7 @@ CREATE TABLE bridge_outbox (
   attempts INTEGER NOT NULL DEFAULT 0,
   payload_json TEXT NOT NULL,       -- metadata + attachment descriptors; no CDN URLs,
                                     -- no tokens, no credential
+  payload_seq INTEGER NOT NULL DEFAULT 0,  -- #831: payload generation; spool write-back CASes on it
   dest_message_id TEXT,             -- first destination execute only; full set in links
   last_error TEXT,
   UNIQUE (bridge_id, direction, src_message_id, kind)
@@ -2128,6 +2131,8 @@ Concretely this means:
 | `076_ban_identity` | Ban identity (#809): `ban_records.ban_identity_reason` TEXT — the live ban reason captured (via `fetchBan`) at ban-issue time, the record's fingerprint of the ban it owns (NULL = never captured → historical fallback; the v10 Ban payload carries NO id/date/moderator); the rebuild widens the status CHECK with the terminal `expired_held` — term lapsed but the live ban is NOT this record's: auto-unban HELD, no welcome DM, staff owns whatever is live. Pure EXTENSION, same 075 rebuild law |
 | `077_expiry_quarantine` | Expiry quarantine + reconcile rotation (#810): `ban_records.expiry_attempts` INTEGER (counts REAL winner-side attempts; a lease loser never counts) and the terminal `expiry_failed` CHECK widening (rebuild, same 075/076 law) — a permanently-failing expiry (dead community, MissingAccess, 50013) LEAVES the `active` domain after the ceiling instead of owning the oldest-first `LIMIT` slice forever (loud embed + audit row at quarantine time); `ban_reconcile_state` (PK `community_id`, `last_reconciled_at`) — the reconcile rotation cursor so boot reconcile stops storming the same communities |
 | `078_notify_retry_valves` | Notifier retry valves (#827, pure-additive `addColumnIfMissing` pair): `youtube_channels.notify_failures` + `github_watches.notify_failures` INTEGER `NOT NULL DEFAULT 0` — per-row CONSECUTIVE delivery-failure counts (any success resets). At the ceiling (10) the ticker SKIPS the poison head item (watermark/pointer advance past it, named warning + `*.notify_poison_skip` audit row) so one permanently rejected item can't block every newer one; gone destinations (10003/10004) skip the budget entirely and clear the notify-channel config (`*.notify_channel_cleared`) with the watermark KEPT for reconfigure |
+| `079_twitch_eventsub_binding` | EventSub binding proof (#824, pure-additive pair on `twitch_eventsub_subs`): `callback_url` + `secret_fingerprint` (sha256 hex of the HMAC secret, never the secret) record what each subscription was created with; the reconciler recreates (delete-old → create-new) when the live secret/callback differs or the row carries NO proof (pre-#824 rows rebind exactly once) — a secret/callback rotation self-heals instead of stranding dead subs as `enabled` |
+| `080_bridge_payload_seq` | Bridge outbox payload generations (#831, pure-additive): `bridge_outbox.payload_seq` INTEGER `NOT NULL DEFAULT 0` — INSERT starts at 1, an in-place edit-payload replacement BUMBS it; the async media-spool write-back CASes on `id + state='pending' + payload_seq`, so a superseded edit's late spool write lands on 0 changes (newer payload stands) and the shared per-message spool dir is left to the newer generation's owner |
 
 Public API remains available via `require("./db")` (facade over repositories).
 

@@ -903,6 +903,53 @@ describe("bridge repo (PR 2)", () => {
       assert.match(api.getLatestOutboxPayloadJson(b.id, "a_to_b", "3973", "create"), /"v":2/);
     });
 
+    it("#831 payload_seq: INSERT = gen 1, in-place edit replacement BUMPS, stale generations CAS to 0", () => {
+      const b = mkBridge();
+      const edit = api.enqueueBridgeOutbox(b.id, {
+        direction: "a_to_b",
+        kind: "edit",
+        srcMessageId: "3973r",
+        payload: { text: "E1" },
+      });
+      assert.equal(edit.payload_seq, 1, "every enqueue starts its row at generation 1");
+
+      const replaced = api.enqueueBridgeOutbox(b.id, {
+        direction: "a_to_b",
+        kind: "edit",
+        srcMessageId: "3973r",
+        payload: { text: "E2" },
+      });
+      assert.equal(replaced.id, edit.id, "one-pending-edit rule: same slot");
+      assert.equal(replaced.payload_seq, 2, "the phase-1 replacement BUMBS the generation");
+      assert.match(replaced.payload_json, /"text":"E2"/);
+
+      // E1's late phase-2 (its generation is 1): CAS matches NOTHING, and
+      // E2's payload survives — the stomping #831 exists to stop.
+      assert.equal(
+        api.updateOutboxPayloadIfPending(edit.id, JSON.stringify({ text: "E1-with-parts" }), 1),
+        0,
+        "a superseded generation may NEVER write the payload",
+      );
+      assert.match(
+        api.getBridgeOutboxById(edit.id).payload_json,
+        /"text":"E2"/,
+        "the NEWER edit stands",
+      );
+
+      // E2's own phase-2 (generation 2) still lands — the CAS is not a ban.
+      assert.equal(
+        api.updateOutboxPayloadIfPending(edit.id, JSON.stringify({ text: "E2", attachments: [1] }), 2),
+        1,
+      );
+      assert.equal(api.getBridgeOutboxById(edit.id).payload_seq, 2, "a phase-2 write keeps the generation");
+
+      // Legacy seq-less calls keep the historical state-only guard.
+      assert.equal(api.updateOutboxPayloadIfPending(edit.id, JSON.stringify({ v: 9 })), 1);
+      api.db.prepare(`UPDATE bridge_outbox SET state = 'sending' WHERE id = ?`).run(edit.id);
+      assert.equal(api.updateOutboxPayloadIfPending(edit.id, JSON.stringify({ v: 10 }), 2), 0,
+        "state still wins over everything: a claimed row takes no writes");
+    });
+
     it("annotateOutboxError annotates — state and attempts untouched (recordOutboxFailure's job)", () => {
       const b = mkBridge();
       const row = api.enqueueBridgeOutbox(b.id, {
