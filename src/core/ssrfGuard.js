@@ -365,8 +365,18 @@ function pinnedCoreFetch(url, init = {}, addresses = [], seams = {}) {
       path: parsed.pathname + parsed.search || "/",
       method: "GET",
       headers,
-      // SNI + cert verification stay on the ORIGINAL name (https only).
-      ...(secure ? { servername: hostname } : {}),
+      // SNI + cert verification stay on the ORIGINAL name (https only) —
+      // but ONLY for names: Node throws ERR_INVALID_ARG_VALUE the moment
+      // servername carries an IP literal (verified on Node 26), and today
+      // both callers deliberately pass NO addresses for IP-literal hosts,
+      // so shipping the literal here was fail-closed only by accident.
+      // #837 (B2-10): IP-literal hostnames ship WITHOUT servername (no
+      // SNI is possible by protocol; cert verification still runs against
+      // the IP via IP SANs) — the "pin the literal too" hardening now
+      // actually works instead of silently breaking every IP-literal
+      // https download. INVARIANT: callers may pass [] for IP-literal
+      // hosts, and pinnedCoreFetch tolerates BOTH shapes.
+      ...(secure && !net.isIP(hostname) ? { servername: hostname } : {}),
     };
 
     const signal = init && init.signal;

@@ -24,8 +24,8 @@ const path = require("node:path");
 const SRC = path.join(__dirname, "..", "src");
 
 const { describeError } = require("../src/core/errors");
-const { envPositiveInt } = require("../src/core/env");
-const { toPlainEmbed } = require("../src/core/embeds");
+const { envPositiveInt, envNonNegInt } = require("../src/core/env");
+const { toPlainEmbed, assertEmbedBudget } = require("../src/core/embeds");
 const { hideToken } = require("../src/core/secrets");
 const { sleep } = require("../src/core/timing");
 const { snippet } = require("../src/core/text");
@@ -60,6 +60,29 @@ describe("core/env envPositiveInt", () => {
     delete process.env.__T470;
     assert.equal(envPositiveInt("__T470", 3), 3, "unset falls back");
   });
+
+  it("#837 B2-2: blank is UNSET, never a sneaky zero; the env source is injectable", () => {
+    process.env.__T470 = "   ";
+    assert.equal(envPositiveInt("__T470", 3), 3, 'blank ("   ") is unset — Number(" ")===0 must not win');
+    assert.equal(
+      envPositiveInt("__T_KNOB", 9, { __T_KNOB: "12.7" }),
+      12,
+      "injectable env (the gork deadline math test seam gork's positiveIntIn copy used to own)",
+    );
+    assert.equal(envPositiveInt("__T_KNOB", 9, {}), 9, "injectable env: unset there does NOT consult process.env");
+    delete process.env.__T470;
+  });
+});
+
+describe("core/env envNonNegInt (#837 B2-2: gork's images.js copy, homed)", () => {
+  it("0 is a real value, blank is unset, garbage falls back", () => {
+    assert.equal(envNonNegInt("__T470N", 4, { __T470N: "0" }), 0, "0 disables vision — a MEANINGFUL value");
+    assert.equal(envNonNegInt("__T470N", 4, { __T470N: "" }), 4, "FOO= is unset, not 'vision off' (the copy's bug)");
+    assert.equal(envNonNegInt("__T470N", 4, { __T470N: "  " }), 4, "blank is unset");
+    assert.equal(envNonNegInt("__T470N", 4, { __T470N: "-1" }), 4, "negative is not non-negative");
+    assert.equal(envNonNegInt("__T470N", 4, { __T470N: "2.9" }), 2, "floors like its positive twin");
+    assert.equal(envNonNegInt("__T470N", 4, {}), 4, "unset falls back");
+  });
 });
 
 describe("core/embeds toPlainEmbed", () => {
@@ -68,6 +91,42 @@ describe("core/embeds toPlainEmbed", () => {
     const plain = { description: "x" };
     assert.equal(toPlainEmbed(plain), plain);
     assert.equal(toPlainEmbed(null), null);
+  });
+});
+
+describe("core/embeds assertEmbedBudget (#837 B2-7: the caps that lived nowhere)", () => {
+  it("a compliant embed passes and reports its counted chars", () => {
+    const res = assertEmbedBudget({ title: "T", description: "D".repeat(100), footer: { text: "f" } });
+    assert.equal(res.ok, true, JSON.stringify(res));
+    assert.equal(res.totalChars, 102);
+  });
+
+  it("the ACROSS-EMBED total is the real cap (two legal embeds, one illegal message)", () => {
+    const big = { description: "d".repeat(4096) };
+    const res = assertEmbedBudget([big, { ...big }]);
+    assert.equal(res.ok, false, "4096+4096 = 8192 > the 6000 TOTAL cap even though EACH embed is legal");
+    assert.match(res.error, /6000 TOTAL/);
+    assert.equal(assertEmbedBudget([{ description: "d".repeat(3000) }, { description: "d".repeat(2900) }]).ok, true, "5900 total rides");
+  });
+
+  it("per-field caps, the 25-field cap and the 10-embed cap all answer { ok:false, error }", () => {
+    assert.match(assertEmbedBudget({ description: "d".repeat(4097) }).error, /description is 4097 chars \(cap 4096\)/);
+    assert.match(assertEmbedBudget({ title: "t".repeat(257) }).error, /title is 257/);
+    assert.match(
+      assertEmbedBudget({ fields: Array.from({ length: 26 }, (_, i) => ({ name: `f${i}`, value: "v" })) }).error,
+      /26 fields \(cap 25\)/,
+    );
+    assert.match(
+      assertEmbedBudget({ fields: [{ name: "n".repeat(252), value: "v".repeat(1025) }] }).error,
+      /field 1: name is 252.*field 1: value is 1025/,
+    );
+    assert.match(assertEmbedBudget(Array.from({ length: 11 }, () => ({ description: "x" }))).error, /11 embeds exceeds/);
+  });
+
+  it("never throws on junk: EmbedBuilder-style toJSON carriers ride through, garbage counts as zero", () => {
+    const carrier = { toJSON: () => ({ title: "built", description: "by the builder" }) };
+    assert.equal(assertEmbedBudget([carrier, null, "junk", 7]).ok, true, "carriers serialize, non-objects drop");
+    assert.equal(assertEmbedBudget(undefined).ok, true, "no embeds = no violations (a bare content send is fine)");
   });
 });
 
@@ -87,6 +146,12 @@ describe("core/timing sleep", () => {
     const t0 = Date.now();
     await sleep(15);
     assert.ok(Date.now() - t0 >= 10);
+  });
+
+  it("#837 B2-3: {unref:true} still resolves (the relay's drain posture)", async () => {
+    const t0 = Date.now();
+    await sleep(10, { unref: true });
+    assert.ok(Date.now() - t0 >= 5, "an unref'd wait still waits — unref only lifts the keep-alive claim");
   });
 });
 
@@ -130,50 +195,68 @@ describe("drift scan: promoted helpers keep ONE home", () => {
     return out;
   }
 
-  it("src/features declares none of the promoted names locally", () => {
+  // #837 (B2-3/B2-4): the scan used to walk ONLY src/features and only
+  // match `^function NAME(`. web/ grew two `snippet` twins under exactly
+  // that blind spot, and auditLog's inline `new Promise((r) => setTimeout(
+  // ...))` sleeps were invisible to ANY name scan. The law now covers all of
+  // src/, every function-valued declaration shape, and inline sleeps.
+  const HOMES = {
+    toPlainEmbed: ["core/embeds.js"],
+    envPositiveInt: ["core/env.js"],
+    envNonNegInt: ["core/env.js"],
+    hideToken: ["core/secrets.js"],
+    snippet: ["core/text.js"],
+    platformLabel: ["platform/community.js"],
+    isCommunityRow: ["platform/community.js"],
+    // #829: permsAllow's two gork copies gated the SAME ViewChannel parity
+    // law and diverged on exactly the line that matters — unified
+    // fail-closed in core/permissions; a local copy is a DRIFT OFFENDER,
+    // not a "deliberate divergence".
+    permsAllow: ["core/permissions.js"],
+    // #815: splitChunks promoted to core/text for the automod read-back.
+    splitChunks: ["core/text.js"],
+    // #837: sleep homed in core/timing (the relay's unref'd local copy died
+    // when {unref:true} became expressible). describeError keeps TWO
+    // documented homes by design — core/errors (display one-liner) and
+    // core/lifecycle (stack logger, different contract). Anything else
+    // declaring either is drift.
+    sleep: ["core/timing.js"],
+    describeError: ["core/errors.js", "core/lifecycle.js"],
+  };
+
+  /** Function-valued declarations only: `function NAME(` or NAME bound to a
+   * function/arrow/object-literal RHS. Local VARIABLES holding text
+   * (`const snippet = buildSnippet(entry)`) are not helper copies. */
+  const declares = (src, name) =>
+    new RegExp(
+      `\\bfunction\\s+${name}\\s*\\(|\\b(?:const|let)\\s+${name}\\s*=\\s*(?:async\\s*)?(?:function\\b|\\(|\\{)`
+    ).test(src);
+
+  it("all of src/ declares the promoted names ONLY in their homes (B2-4)", () => {
     const offenders = [];
-    for (const file of jsFiles(path.join(SRC, "features"))) {
+    for (const file of jsFiles(SRC)) {
+      const rel = path.relative(SRC, file).split(path.sep).join("/");
       const src = fs.readFileSync(file, "utf8");
-      for (const name of [
-        "toPlainEmbed",
-        "envPositiveInt",
-        "hideToken",
-        "snippet",
-        "platformLabel",
-        "isCommunityRow",
-        // #829: permsAllow's two gork copies (fail-closed readDiscord,
-        // fail-OPEN summarizeRange) gated the SAME ViewChannel parity law
-        // and diverged on exactly the line that matters. Unified
-        // fail-closed in core/permissions; a re-declared local copy is now
-        // a DRIFT OFFENDER, not a "deliberate divergence".
-        "permsAllow",
-        // #815: splitChunks promoted to core/text so the automod rules
-        // read-back does not have to import across features.
-        "splitChunks",
-      ]) {
-        if (new RegExp(`^function ${name}\\(`, "m").test(src)) {
-          offenders.push(`${path.relative(SRC, file)} re-declares ${name}`);
-        }
+      for (const [name, homes] of Object.entries(HOMES)) {
+        if (homes.includes(rel)) continue;
+        if (declares(src, name)) offenders.push(`${rel} re-declares ${name}`);
       }
     }
     assert.deepEqual(offenders, []);
   });
 
-  it("describeError/sleep stay single-purpose per home", () => {
-    // describeError exists in core (display, THIS module) AND core/lifecycle
-    // (stack logger, different contract by design). Feature copies must die.
-    const featureCopies = jsFiles(path.join(SRC, "features")).filter((f) =>
-      /^function (describeError|sleep)\(/m.test(fs.readFileSync(f, "utf8"))
-    );
-    assert.deepEqual(
-      featureCopies.map((f) => path.relative(SRC, f)),
-      // #829 retired the last "deliberate divergence" excuse: gork's two
-      // permsAllow copies (one fail-closed, one fail-OPEN, gating the SAME
-      // parity law) are now ONE core/permissions helper, scan-listed above.
-      // describeError/sleep always had zero semantic divergence — no feature
-      // may keep a copy of anything.
-      [],
-      "identical clusters were promoted; a new local copy needs a reason"
-    );
+  it("no inline sleep copies anywhere outside core/timing (B2-3)", () => {
+    const offenders = [];
+    for (const file of jsFiles(SRC)) {
+      const rel = path.relative(SRC, file).split(path.sep).join("/");
+      if (rel === "core/timing.js") continue;
+      const src = fs.readFileSync(file, "utf8");
+      // the one-liner shape AND the relay's multi-line unref twin — both are
+      // `sleep` wearing no name, which is why every name scan missed them
+      if (/new Promise\(\s*\((?:r|resolve)\)\s*=>\s*\{?\s*(?:const t = )?setTimeout\(/.test(src)) {
+        offenders.push(`${rel} hand-rolls a sleep instead of core/timing`);
+      }
+    }
+    assert.deepEqual(offenders, []);
   });
 });

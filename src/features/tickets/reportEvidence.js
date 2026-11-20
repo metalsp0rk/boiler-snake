@@ -66,6 +66,7 @@ const { buildMessageJumpUrl } = require("../../core/jumpUrl");
 const { Color, tsFull, truncateDescription, truncateField } = require("../../core/theme");
 const { joinCapped, safeCutIndex, sliceSafe, splitChunks } = require("../../core/text");
 const { downloadGuarded } = require("../../core/ssrfGuard");
+const { assertEmbedBudget } = require("../../core/embeds"); // #837 B2-7: the total-cap gate
 const { sanitizeFilename, mediaKind } = require("./assets");
 
 /** Default per-file copy budget for evidence re-upload (10 MiB). */
@@ -764,6 +765,19 @@ async function buildEvidence(snapshot, opts) {
     }
     return embed;
   });
+
+  // #837 (B2-7): the section math above hand-traced Discord's limits for a
+  // reason (over-budget content takes the .txt routes); this is the BELT —
+  // the shared gate counts what actually ships, the way Discord counts it.
+  // If the two models ever drift, the build fails HERE with the specific
+  // rule-6 cause instead of the send dying in a transport 400.
+  const budget = assertEmbedBudget(embeds);
+  if (!budget.ok) {
+    return {
+      ok: false,
+      error: `Evidence embeds exceeded Discord's embed budget — ${budget.error} — nothing was posted`,
+    };
+  }
 
   return { ok: true, embeds, files, warnings };
 }

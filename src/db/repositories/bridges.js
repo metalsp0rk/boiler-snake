@@ -100,7 +100,7 @@ function isBridgeHandle(raw) {
 }
 
 /**
- * Mint a one-time connect credential (shared engine): 128 random bits →
+ * Mint a one-time connect credential (shared engine): a 128-bit RNG read →
  * Crockford base32 → the canonical 22-char form, its display form ("BRG-"
  * grouped), and the at-rest SHA-256 digest (32 bytes). The raw code exists
  * only in create's delivery; only the digest is ever stored.

@@ -26,6 +26,32 @@
  * @param {unknown} href
  * @returns {string|null} the href when renderable, else null
  */
+/**
+ * #837 (B2-9): WHATWG URL resolution percent-decodes each path segment
+ * BEFORE dot-segment removal — `/assets/%2e%2e/x` climbs toward the origin
+ * root even though no segment LITERALLY reads `..` (verified). So the dot
+ * check runs on BOTH spellings: a segment is refused when it is `.`/`..`
+ * as stored OR as decoded. A segment whose percent-escapes are invalid
+ * (`%zz`) refuses too: decodeURIComponent throwing means no honest
+ * resolution exists, and no legitimate renderer needs one.
+ *
+ * @param {string} pathLike
+ * @returns {boolean} true when no segment traverses in stored OR decoded form
+ */
+function segmentsAreDotFree(pathLike) {
+  for (const raw of pathLike.split("/")) {
+    if (raw === "." || raw === "..") return false;
+    let decoded;
+    try {
+      decoded = decodeURIComponent(raw);
+    } catch {
+      return false;
+    }
+    if (decoded === "." || decoded === "..") return false;
+  }
+  return true;
+}
+
 function safeHref(href) {
   if (typeof href !== "string") return null;
   const trimmed = href.trim();
@@ -36,12 +62,10 @@ function safeHref(href) {
   // segments (a stored traversal is at best a 404 and at worst an
   // audit-liar — the renderers never need one).
   if (/^\/(?!\/)[A-Za-z0-9._~+@!$&'()*,;=:/%-]+$/.test(trimmed)) {
-    return trimmed.split("/").some((seg) => seg === ".." || seg === ".")
-      ? null
-      : trimmed;
+    return segmentsAreDotFree(trimmed) ? trimmed : null;
   }
   if (/^assets\/[A-Za-z0-9._~+@!$&'()*,;=:/%-]+$/.test(trimmed)) {
-    return trimmed.split("/").includes("..") ? null : trimmed;
+    return segmentsAreDotFree(trimmed) ? trimmed : null;
   }
   return null;
 }

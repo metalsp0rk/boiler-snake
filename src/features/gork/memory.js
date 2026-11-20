@@ -45,6 +45,7 @@
 
 const { getAiConfig, chatCompletion } = require("../../core/ai");
 const { normalizeTitle, sliceSafe } = require("../../core/text");
+const { envPositiveInt } = require("../../core/env"); // #837 (B2-2): shared knob reader
 const { logGorkMemory } = require("./audit");
 
 /** Default standalone memory-block budget in chars (§7.16.2, decision 27). */
@@ -434,14 +435,14 @@ function memoryTurnConfig() {
  * GORK_MEMORY_TURN_TIMEOUT_MS overrides MEMORY_TURN_TIMEOUT_MS. Thinking
  * extraction models (AI_SMALL_MODEL unset → full-size AI_MODEL) routinely
  * need more than the 20s default; unset/invalid env keeps the default.
- * (Parsed locally rather than importing trigger.js's envPositiveInt —
- * trigger requires this module, so the dependency must stay one-way.)
+ * (#837 B2-2: the old "trigger requires this module so the dependency must
+ * stay one-way" excuse died with #470 — core/env requires NOTHING, and the
+ * inline parse was just a fourth copy of the knob rules.)
  *
  * @returns {number} timeout in ms (≥ 1)
  */
 function memoryTurnTimeoutMs() {
-  const n = Number(process.env.GORK_MEMORY_TURN_TIMEOUT_MS);
-  return Number.isFinite(n) && n > 0 ? Math.floor(n) : MEMORY_TURN_TIMEOUT_MS;
+  return envPositiveInt("GORK_MEMORY_TURN_TIMEOUT_MS", MEMORY_TURN_TIMEOUT_MS);
 }
 
 /** Empty load result (memory OFF, nobody involved, or any failure). */

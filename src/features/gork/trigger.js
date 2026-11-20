@@ -36,7 +36,6 @@
 const { PermissionFlagsBits } = require("discord.js");
 const { envPositiveInt } = require("../../core/env"); // #470 (H1-7): shared copy
 const {
-  positiveIntIn,
   TOOL_ROUNDS_DEFAULT,
   TOOL_TIMEOUT_BASE_MS,
   resolveMaxToolRounds,
@@ -234,13 +233,13 @@ function llmParams(settings = null, env = process.env) {
   const maxToolRounds = resolveMaxToolRounds(settings?.gork_max_tool_rounds, env);
   return {
     temperature: LLM_TEMPERATURE,
-    maxTokens: positiveIntIn(env, "GORK_LLM_MAX_TOKENS", DEFAULT_LLM_MAX_TOKENS),
+    maxTokens: envPositiveInt("GORK_LLM_MAX_TOKENS", DEFAULT_LLM_MAX_TOKENS, env),
     timeoutMs: deriveToolTimeoutMs(maxToolRounds, env),
     maxToolRounds,
-    thinkingTokenBudget: positiveIntIn(
-      env,
+    thinkingTokenBudget: envPositiveInt(
       "GORK_LLM_THINKING_TOKEN_BUDGET",
       0,
+      env,
     ),
   };
 }

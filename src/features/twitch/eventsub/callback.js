@@ -28,7 +28,7 @@ const db = require("../../../db");
 const { parseTwitchTimestamp, fetchStreams } = require("../helix");
 const { getEventsubConfig } = require("./config");
 const { processSubscription } = require("../ticker");
-const { getDiscordOutbound } = require("../../../platform/discord/outbound");
+const { createSingleClientSupervisor } = require("../../../core/outbound"); // #837 B2-6
 
 const MESSAGE_ID_HEADER = "twitch-eventsub-message-id";
 const MESSAGE_TIMESTAMP_HEADER = "twitch-eventsub-message-timestamp";
@@ -183,12 +183,11 @@ async function dispatchEventsubNotification(client, payload, deps = {}) {
 
   // #462 (H1-3): ticker's resolveOutbound speaks supervisor only. The
   // webhook path holds the live client (web mounts this route with
-  // getClient, never the boot supervisor) — adapt EXPLICITLY here instead
-  // of keeping a duck-typed raw-client leg inside every ticker.
-  const supervisor = {
-    discord: client,
-    clientForCommunity: () => getDiscordOutbound(client),
-  };
+  // getClient, never the boot supervisor) — the adapter is the SANCTIONED
+  // factory (#837 B2-6): a hand-forged shape used to satisfy the
+  // non-supervisor guard silently; now it names the single-client contract
+  // and asserts the communityId the real supervisor would route on.
+  const supervisor = createSingleClientSupervisor(client);
 
   const subs = db.getTwitchSubsByBroadcaster(broadcasterId);
   for (const sub of subs) {

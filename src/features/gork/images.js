@@ -36,25 +36,13 @@
  */
 
 const { downloadSignedUrl } = require("../bridge/media");
-const { envPositiveInt } = require("../../core/env"); // #470 (H1-7): shared copy
+const { envPositiveInt, envNonNegInt } = require("../../core/env"); // #470 (H1-7) + #837 (B2-2): shared copies
 
 // ---------------------------------------------------------------------------
 // Bounded constants (env-overridable; re-read per job by the trigger)
 // ---------------------------------------------------------------------------
 
 
-/**
- * Non-negative-integer env knob (0 is a valid, meaningful value —
- * `GORK_VISION_MAX_IMAGES=0` turns vision off).
- *
- * @param {string} name env var name
- * @param {number} fallback default for unset/invalid values
- * @returns {number}
- */
-function envNonNegInt(name, fallback) {
-  const n = Number(process.env[name]);
-  return Number.isFinite(n) && n >= 0 ? Math.floor(n) : fallback;
-}
 
 /**
  * LOCKED (issue #227 hard requirement): max output edge, in pixels. An

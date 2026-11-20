@@ -45,11 +45,10 @@ function formatWhen(ms) {
   return `${iso} UTC · ${rel}`;
 }
 
-function snippet(text) {
-  const s = String(text || "").replace(/\s+/g, " ").trim();
-  if (s.length <= SNIPPET_LEN) return s || "—";
-  return `${s.slice(0, SNIPPET_LEN - 1)}…`;
-}
+// #837 (B2-4): second web twin of core/text's snippet (same undocumented
+// empty→"—" fork). Adopted: the ONE core helper truncates; the em-dash is
+// the view's convention, spelled at the call sites.
+const { snippet } = require("../../../core/text");
 
 /**
  * "showing X–Y of Z" + next link for a 10-row page.
@@ -112,7 +111,7 @@ function warningsSection(profile, baseHref, communityId, names = null) {
               <td>${formatWhen(w.created_at)}</td>
               <td>${w.expires_at ? formatWhen(w.expires_at) : "never"}</td>
               <td>${w.voided_at != null ? raw("voided") : raw("active")}</td>
-              <td class="reason-cell">${snippet(w.reason)}</td>
+              <td class="reason-cell">${snippet(w.reason, SNIPPET_LEN) || "—"}</td>
             </tr>`)}
         </tbody>
       </table>
@@ -134,7 +133,7 @@ function notesSection(profile, baseHref, communityId, names = null) {
         ${rows.map((n) => html`
           <li class="row-note">
             <strong>${formatNoteRef(n.note_number)}</strong> · by ${userRef(communityId, n.author_id, names)} · ${formatWhen(n.created_at)}
-            <blockquote class="note-content">${snippet(n.content)}</blockquote>
+            <blockquote class="note-content">${snippet(n.content, SNIPPET_LEN) || "—"}</blockquote>
           </li>`)}
       </ul>
       ${pagerAppend(baseHref, "n_off", { offset, total, shown: rows.length })}`
@@ -161,7 +160,7 @@ function ticketsSection(profile, baseHref) {
               <td>${t.is_creator ? raw("creator") : raw("member/staff")}</td>
               <td>${t.status}</td>
               <td>${formatWhen(t.created_at)}</td>
-              <td class="reason-cell">${snippet(t.reason)}</td>
+              <td class="reason-cell">${snippet(t.reason, SNIPPET_LEN) || "—"}</td>
             </tr>`)}
         </tbody>
       </table>
