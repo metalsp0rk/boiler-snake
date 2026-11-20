@@ -96,6 +96,7 @@ Staff get the same data on the [Web Admin](web-admin.md) calendar: month view, d
 ## Limits & gotchas
 
 - Max **10** signup options per event (every path enforces it: create spec, `options add`, presets).
+- Once **anyone has signed up**, the option list cannot be wholesale-replaced — any full-list swap (edit flow or preset apply, even with the same number of options) is refused so no RSVP is ever destroyed. Change the list one option at a time with `/eventsignup options add|edit|remove`, which respects existing takers (#839).
 - Drafts that are never posted are cleaned up after 24 h — both abandoned `/event create` previews and duplicate/adopt/series drafts. A draft with a **post time set** is yours to keep; it is never swept. Posted events auto-archive (default 120 min after end, configurable, opt-in for the *auto* part).
 - Command registration is per-guild (`npm run register`) — re-run it after the bot joins this guild; set `DEV_GUILD_ID` while testing to touch only the dev guild.
 - Message edits use Discord timestamps; there is no per-viewer setting for 12/24 h — the client decides.

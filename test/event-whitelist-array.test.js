@@ -56,18 +56,33 @@ describe("event role_whitelist array contract (#344)", () => {
     assert.equal(rawWhitelist(ev.id), "[]", "an empty ARRAY is the honest clear");
   });
 
-  it("a pre-stringified whitelist still flattens to [] — WHY the handlers must pass arrays", () => {
-    // This is the repo's documented normalizer contract (toJsonArray maps
-    // non-arrays to "[]"): the bug was never here, it was callers sending
-    // strings. Pinned so nobody "fixes" the repo by accepting strings and
-    // re-opens the silent-gate class from the other side.
+  it("#839 (D1-8): the boundary PARSES stored-form strings and THROWS on everything else — nothing collapses silently", () => {
+    // Old contract: non-arrays became "[]" — the #344 silent-gate class one
+    // caller mistake away forever. The r2 law: parse the shapes that are
+    // unambiguous (a JSON array string IS the stored column form), throw
+    // TypeError on the rest so a bad caller fails LOUD instead of writing
+    // an empty gate with a success reply.
     const ev = seedEvent("String Contract");
     api.updateEvent(ev.id, { role_whitelist: JSON.stringify(["111222333444555666"]) });
     assert.equal(
       rawWhitelist(ev.id),
-      "[]",
-      "toJsonArray refuses to guess — strings carry NO roles, exactly what flattened #344's gate",
+      JSON.stringify(["111222333444555666"]),
+      "a JSON array string round-trips — the stored form is accepted, not flattened",
     );
+
+    for (const junk of ["not json", "5", '{"a":1}', 42, {}, true]) {
+      const probe = seedEvent(`Junk ${typeof junk}`);
+      // updateEvent's service-convention wrapper turns the boundary
+      // TypeError into a LOUD, cause-named refusal — never a silent "[]".
+      const refused = api.updateEvent(probe.id, { role_whitelist: junk });
+      assert.equal(refused.ok, false, `${JSON.stringify(junk)} must be refused, not stored`);
+      assert.match(refused.error, /toJsonArray/, "the refusal names the boundary that threw");
+      assert.equal(
+        rawWhitelist(probe.id),
+        "[]",
+        "the refused write stored nothing",
+      );
+    }
   });
 
   it("option-level whitelist round-trips arrays through create + update", () => {

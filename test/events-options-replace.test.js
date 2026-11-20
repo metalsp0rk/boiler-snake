@@ -71,12 +71,14 @@ describe("event option replacement atomicity (#400/B2-8)", () => {
     assert.ok(signup?.ok !== false, `signup seed failed: ${signup?.error}`);
     assert.ok(api.listEventSignups(ev.id, {}).length >= 1, "signup seeded");
 
-    // Number(Symbol) throws at the SECOND insert — after the deletes ran
-    // (inside the txn now, invisible until commit).
+    // #839 (D1-7): the FEATURE path now refuses any swap while signups
+    // exist, so the atomicity law is pinned at the repo boundary the
+    // feature wraps. Number(Symbol) throws at the SECOND insert — after
+    // the deletes ran (inside the txn, invisible until commit).
     const boom = { label: "boom", capacity: Symbol("no-coercion") };
-    const res = options.replaceOptions(ev.id, [{ label: "Fresh" }, boom]);
-    assert.equal(res.ok, false, "the swap honestly reports failure");
-    assert.match(String(res.error), /database error|Could not replace/);
+    const failed = api.replaceEventOptions(ev.id, [{ label: "Fresh" }, boom]);
+    assert.equal(failed.ok, false, "the failed swap honestly reports the cause");
+    assert.match(String(failed.error), /database error/);
 
     const after = api.listEventOptions(ev.id);
     assert.deepEqual(
@@ -107,6 +109,37 @@ describe("event option replacement atomicity (#400/B2-8)", () => {
     assert.equal(res.ok, false);
     assert.match(res.error, /one at a time/);
     assert.equal(api.listEventOptions(ev.id).length, 2, "gate refusal changed nothing");
+  });
+
+  it("#839 (D1-7): an EQUAL-count swap with signups is refused too — the old exemption deleted every RSVP", () => {
+    const ev = seedEvent(["A", "B"]);
+    const [a] = api.listEventOptions(ev.id);
+    api.applyEventSignupChoice({ eventId: ev.id, optionId: a.id, userId: "u-eq" });
+
+    // Exactly the preset-apply shape: same number of options, different
+    // labels. Pre-fix this slipped the guard and the delete+reinsert
+    // cascade took the signup with it.
+    const res = options.replaceOptions(ev.id, [{ label: "X" }, { label: "Y" }]);
+    assert.equal(res.ok, false, "equal counts no longer bless the swap");
+    assert.match(res.error, /one at a time/);
+    assert.deepEqual(
+      api.listEventOptions(ev.id).map((o) => o.label),
+      ["A", "B"],
+      "the options survived…",
+    );
+    assert.ok(
+      api.listEventSignups(ev.id, {}).some((r) => r.user_id === "u-eq"),
+      "…and so did the RSVP — refusal means ZERO writes",
+    );
+  });
+
+  it("feature wrap still reports the repo cause when a swap FAILS mid-way (no signups involved)", () => {
+    const ev = seedEvent(["A"]);
+    const boom = { label: "boom", capacity: Symbol("no-coercion") };
+    const res = options.replaceOptions(ev.id, [{ label: "Fresh" }, boom]);
+    assert.equal(res.ok, false);
+    assert.match(res.error, /database error/, "the specific cause rides the reply (facade-wrapped throw)");
+    assert.deepEqual(api.listEventOptions(ev.id).map((o) => o.label), ["A"]);
   });
 
   it("repo cap: replaceEventOptions alone refuses >MAX with zero writes", () => {
