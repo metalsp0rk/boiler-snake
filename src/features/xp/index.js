@@ -651,9 +651,9 @@ async function handleGrantXp(commandCtx, featureCtx) {
     actor: commandCtx.user,
     changes: [
       `Target: <@${target.id}> (\`${target.id}\`)`,
-      `Amount: **+${amount.toLocaleString()}** XP`,
-      `XP: **${beforeXp.toLocaleString()}** → **${newXp.toLocaleString()}**`,
-      `Level: **${levelText}**`,
+      `**Amount:** +${amount.toLocaleString()} XP`,
+      `**XP:** ${beforeXp.toLocaleString()} → ${newXp.toLocaleString()}`,
+      `**Level:** ${levelText}`,
       reasonText ? `Reason: ${reasonText}` : null,
     ].filter(Boolean),
   }).catch((err) =>

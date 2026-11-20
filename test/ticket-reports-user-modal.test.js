@@ -198,13 +198,15 @@ function makeHarness(overrides = {}) {
 
 /** Seed a user-variant snapshot and return its modal token. */
 function putUserReport(env, overrides = {}) {
-  return pendingReports.putReport({
+  const res = pendingReports.putReport({
     kind: "user",
     guildId: env.guildId,
     reporterUserId: env.reporter.id,
     subjectUserId: env.subject.id,
     ...overrides,
   });
+  assert.equal(res.ok, true, `seed put failed: ${res?.error}`); // #840 D2-5 shape
+  return res.key;
 }
 
 /** Modal submit carrying the tk:rep:u:<token> customId + context field. */
@@ -276,7 +278,7 @@ describe("report user submit — token lifecycle (decision 3)", () => {
       messageId: "999",
       channelId: env.sourceChannel.id,
       subjectUserId: env.subject.id,
-    });
+    }).key;
 
     const interaction = makeSubmit({ env, token });
     await report.handleReportUserModal(interaction, RUN_CTX(env), { deps: h.deps });

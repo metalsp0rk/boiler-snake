@@ -593,7 +593,7 @@ function registerModerationRoutes(app, options = {}) {
         command: "/warn add",
         changes: [
           `${ref} on <@${userId}>`,
-          `Active count: **${activeCount}**`,
+          `**Active count:** ${activeCount}`,
           snippetWarn(warn.reason, 120),
           warn.expires_at != null
             ? `Expires: ${tsFull(warn.expires_at)}`
@@ -710,7 +710,7 @@ function registerModerationRoutes(app, options = {}) {
         command: "/warn void",
         changes: [
           `${ref} on <@${warn.user_id}>`,
-          `Remaining active: **${activeCount}**`,
+          `**Remaining active:** ${activeCount}`,
           snippetWarn(warn.void_reason, 120),
         ],
       },

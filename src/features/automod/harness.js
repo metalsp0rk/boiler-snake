@@ -923,7 +923,7 @@ async function commitRunIntents({ d, cid, gid, caseRow, referrerUserId, dispatch
       if (pre?.notes instanceof Map) notes = pre.notes;
     } catch (err) {
       logFail("note pre-pass", ids, err);
-      const line = `- note pre-pass: **failed** — ${sliceSafe(err?.message || String(err), 200)}`;
+      const line = `- **note pre-pass:** failed — ${sliceSafe(err?.message || String(err), 200)}`;
       lines.push(line);
       extraLines.push(line);
     }
@@ -999,7 +999,7 @@ async function commitRunIntents({ d, cid, gid, caseRow, referrerUserId, dispatch
       if (Array.isArray(extra?.noteResults)) noteResults.push(...extra.noteResults);
     } catch (err) {
       logFail("note reconciliation", ids, err);
-      const line = `- note reconciliation: **failed** — ${sliceSafe(err?.message || String(err), 200)}`;
+      const line = `- **note reconciliation:** failed — ${sliceSafe(err?.message || String(err), 200)}`;
       lines.push(line);
       extraLines.push(line);
     }
@@ -1061,16 +1061,24 @@ async function runCaseInner({ communityId, guildId, caseId, deps, nowMs }) {
   }
   ids.caseId = caseIdNum;
 
+  // #840 (D2-3): the staff-facing line carries the CAUSE (Error rule 3 —
+  // SQLITE_BUSY, a corrupt row and a lost connection must not read
+  // identically). The log keeps the stack; the reply keeps the action.
+  let caseLoadError = null;
   const loaded = (() => {
     try {
       return d.getCase(caseIdNum);
     } catch (err) {
       logFail("case load", ids, err);
+      caseLoadError = err?.message || String(err);
       return undefined;
     }
   })();
   if (loaded === undefined) {
-    return refuseRun(ids, `Could not read the case row (database error) — nothing was run.`);
+    return refuseRun(
+      ids,
+      `Could not read the case row (database error): ${caseLoadError} — nothing was run.`,
+    );
   }
   if (!loaded) {
     return refuseRun(ids, `No auto-mod case row #${caseIdNum} — there is nothing to run.`);
@@ -1092,16 +1100,21 @@ async function runCaseInner({ communityId, guildId, caseId, deps, nowMs }) {
   const automodChannelId = settings.settings.channelId;
 
   // ── budget PRE-GATE (before any mutation; day-rollover retry stays open) ─
+  let budgetReadError = null;
   const budget = (() => {
     try {
       return d.getBudget(cid, t0);
     } catch (err) {
       logFail("budget read", ids, err);
+      budgetReadError = err?.message || String(err);
       return null;
     }
   })();
   if (!budget) {
-    return refuseRun(ids, "Could not read the daily case budget (database error) — refusing to run unaccountably.");
+    return refuseRun(
+      ids,
+      `Could not read the daily case budget (database error): ${budgetReadError} — refusing to run unaccountably.`,
+    );
   }
   if (budget.remaining === -1 || budget.limit <= -1) {
     return refuseRun(ids, "**Daily budget:** blocked (`-1`) — no case can run until an admin opens the budget with `/automodconfig budget`.");

@@ -171,7 +171,12 @@ function attachStaffNoteFromTicket(opts) {
       return { ok: false, error: err.message };
     }
     console.error("[tickets] staff note from close failed:", err);
-    return { ok: false, error: "Failed to save staff note (database error)." };
+    // #840 (D2-3) opportunistic H2-13-era twin: name the cause, not just
+    // the category (legacy "(database error)" copy was AGENTS-banned).
+    return {
+      ok: false,
+      error: `Failed to save staff note (database error): ${err?.message || err}`,
+    };
   }
 }
 

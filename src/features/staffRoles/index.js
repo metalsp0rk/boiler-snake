@@ -238,8 +238,8 @@ async function handleRoleAdd(commandCtx, featureCtx) {
     changes: [
       `Role: <@&${role.id}> (\`${role.id}\`)`,
       existing
-        ? `Level: **${levelLabel(existing.level)}** → **${level}**`
-        : `Level: **${level}**`,
+        ? `**Level:** ${levelLabel(existing.level)} → ${level}`
+        : `**Level:** ${level}`,
     ],
   }).catch(() => {});
 
@@ -363,7 +363,7 @@ async function handleRoleSetLevel(commandCtx, featureCtx) {
     actor: commandCtx.user,
     changes: [
       `Role: <@&${role.id}> (\`${role.id}\`)`,
-      `Level: **${levelLabel(existing.level)}** → **${level}**`,
+      `**Level:** ${levelLabel(existing.level)} → ${level}`,
     ],
   }).catch(() => {});
 

@@ -409,9 +409,9 @@ function registerXpActionsRoutes(app, options = {}) {
         command: "/grantxp",
         changes: [
           `Target: <@${userId}> (\`${userId}\`)`,
-          `Amount: **+${amount}** XP`,
-          `XP: **${beforeXp}** → **${newXp}**`,
-          `Level: **${levelText}**`,
+          `**Amount:** +${amount} XP`,
+          `**XP:** ${beforeXp} → ${newXp}`,
+          `**Level:** ${levelText}`,
           reason ? `Reason: ${reason}` : null,
         ].filter(Boolean),
       },

@@ -304,7 +304,7 @@ async function handleRss(commandCtx, featureCtx) {
       title: "RSS feed subscribed",
       command: "/rss add",
       actor: commandCtx.user,
-      changes: [`Feed: **${label}**`, `URL: <${feed.url}>`],
+      changes: [`**Feed:** ${label}`, `URL: <${feed.url}>`],
     }).catch(() => {});
 
     const lines = [
@@ -346,7 +346,7 @@ async function handleRss(commandCtx, featureCtx) {
       title: "RSS feed unsubscribed",
       command: "/rss remove",
       actor: commandCtx.user,
-      changes: [`Feed: **${label}**`, `URL: <${res.feed.url}>`],
+      changes: [`**Feed:** ${label}`, `URL: <${res.feed.url}>`],
     }).catch(() => {});
     await commandCtx.reply({
       content: `Unsubscribed from **${label}**.`,

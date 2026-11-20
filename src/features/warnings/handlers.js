@@ -190,7 +190,7 @@ async function handleAdd(commandCtx, featureCtx) {
     actor: commandCtx.user,
     changes: [
       `${ref} on <@${target.id}>`,
-      `Active count: **${activeCount}**`,
+      `**Active count:** ${activeCount}`,
       snippet(warn.reason, 120),
       warn.expires_at != null
         ? `Expires: ${fullTs(warn.expires_at)}`
@@ -513,7 +513,7 @@ async function handleVoid(commandCtx, featureCtx) {
     actor: commandCtx.user,
     changes: [
       `${ref} on <@${warn.user_id}>`,
-      `Remaining active: **${activeCount}**`,
+      `**Remaining active:** ${activeCount}`,
       snippet(warn.void_reason, 120),
     ],
   }).catch(() => {});
