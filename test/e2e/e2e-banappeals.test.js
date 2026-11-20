@@ -73,9 +73,9 @@ describe(
         appealStatement: "I take responsibility and would like to return.",
       });
       assert.equal(filed.ok, true, `appeal seed failed: ${filed.error}`);
-      const attach = env.dbmod.attachAppealTicketChannel(filed.appeal.id, ticket());
+      const attach = env.dbmod.attachAppealTicketChannel(filed.appeal.community_id, filed.appeal.id, ticket());
       assert.equal(attach.ok, true, `ticket attach failed: ${attach.error}`);
-      const opened = env.dbmod.openAppeal(filed.appeal.id);
+      const opened = env.dbmod.openAppeal(filed.appeal.community_id, filed.appeal.id);
       assert.equal(opened.ok, true, `appeal open failed: ${opened.error}`);
       assert.equal(opened.appeal.status, "open");
       return filed.appeal;

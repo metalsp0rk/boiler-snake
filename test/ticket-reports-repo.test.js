@@ -131,6 +131,7 @@ describe("ticket_reports repository (migration 066, #745)", () => {
       const ticket = seedTicket();
       const t0 = Date.now();
       const res = api.insertTicketReport({
+        communityId: ticket.community_id,
         ticketId: ticket.id,
         kind: "message",
         subjectUserId: "123456789012345678",
@@ -161,6 +162,7 @@ describe("ticket_reports repository (migration 066, #745)", () => {
     it("user report defaults: absent message ids, message_deleted 0, note null", () => {
       const ticket = seedTicket();
       const res = api.insertTicketReport({
+        communityId: ticket.community_id,
         ticketId: ticket.id,
         kind: "user",
         subjectUserId: "u-subject",
@@ -194,13 +196,13 @@ describe("ticket_reports repository (migration 066, #745)", () => {
         ["ticketId negative", { ticketId: -5, kind: "user", subjectUserId: "u-1" }],
         ["ticketId fractional", { ticketId: 1.5, kind: "user", subjectUserId: "u-1" }],
         ["ticketId not a number", { ticketId: "abc", kind: "user", subjectUserId: "u-1" }],
-        ["kind outside the CHECK", { ticketId: ticket.id, kind: "spam", subjectUserId: "u-1" }],
-        ["kind missing", { ticketId: ticket.id, subjectUserId: "u-1" }],
-        ["subjectUserId missing", { ticketId: ticket.id, kind: "user" }],
-        ["subjectUserId blank", { ticketId: ticket.id, kind: "user", subjectUserId: "   " }],
-        ["message kind without a message id", { ticketId: ticket.id, kind: "message", subjectUserId: "u-1" }],
-        ["message id blank after trim", { ticketId: ticket.id, kind: "message", subjectUserId: "u-1", reportedMessageId: "   " }],
-        ["ticket does not exist", { ticketId: 999999, kind: "user", subjectUserId: "u-1" }],
+        ["kind outside the CHECK", { communityId: ticket.community_id, ticketId: ticket.id, kind: "spam", subjectUserId: "u-1" }],
+        ["kind missing", { communityId: ticket.community_id, ticketId: ticket.id, subjectUserId: "u-1" }],
+        ["subjectUserId missing", { communityId: ticket.community_id, ticketId: ticket.id, kind: "user" }],
+        ["subjectUserId blank", { communityId: ticket.community_id, ticketId: ticket.id, kind: "user", subjectUserId: "   " }],
+        ["message kind without a message id", { communityId: ticket.community_id, ticketId: ticket.id, kind: "message", subjectUserId: "u-1" }],
+        ["message id blank after trim", { communityId: ticket.community_id, ticketId: ticket.id, kind: "message", subjectUserId: "u-1", reportedMessageId: "   " }],
+        ["ticket does not exist", { communityId: commA, ticketId: 999999, kind: "user", subjectUserId: "u-1" }],
       ];
       for (const [label, input] of bad) {
         const res = api.insertTicketReport(input);
@@ -216,11 +218,12 @@ describe("ticket_reports repository (migration 066, #745)", () => {
     it("a second report for the same ticket is refused as { ok:false } (PK = one report per ticket)", () => {
       const ticket = seedTicket();
       assert.equal(
-        api.insertTicketReport({ ticketId: ticket.id, kind: "user", subjectUserId: "u-1" })
+        api.insertTicketReport({ communityId: ticket.community_id, ticketId: ticket.id, kind: "user", subjectUserId: "u-1" })
           .ok,
         true,
       );
       const second = api.insertTicketReport({
+        communityId: ticket.community_id,
         ticketId: ticket.id,
         kind: "message",
         subjectUserId: "u-2",
@@ -240,6 +243,7 @@ describe("ticket_reports repository (migration 066, #745)", () => {
       const ticket = seedTicket();
       assert.equal(
         api.insertTicketReport({
+          communityId: ticket.community_id,
           ticketId: ticket.id,
           kind: "user",
           subjectUserId: "u-sub",
@@ -261,6 +265,7 @@ describe("ticket_reports repository (migration 066, #745)", () => {
       const ticket = seedTicket();
       assert.equal(
         api.insertTicketReport({
+          communityId: ticket.community_id,
           ticketId: ticket.id,
           kind: "message",
           subjectUserId: "u-sub",
@@ -283,6 +288,7 @@ describe("ticket_reports repository (migration 066, #745)", () => {
       const closedFirst = seedTicket();
       assert.equal(
         api.insertTicketReport({
+          communityId: closedFirst.community_id,
           ticketId: closedFirst.id,
           kind: "message",
           subjectUserId: "u-sub",
@@ -300,6 +306,7 @@ describe("ticket_reports repository (migration 066, #745)", () => {
       const open = seedTicket();
       assert.equal(
         api.insertTicketReport({
+          communityId: open.community_id,
           ticketId: open.id,
           kind: "message",
           subjectUserId: "u-sub",
@@ -326,6 +333,7 @@ describe("ticket_reports repository (migration 066, #745)", () => {
       const tb = seedTicket(commB);
       assert.equal(
         api.insertTicketReport({
+          communityId: ta.community_id,
           ticketId: ta.id,
           kind: "message",
           subjectUserId: "u-a",
@@ -335,6 +343,7 @@ describe("ticket_reports repository (migration 066, #745)", () => {
       );
       assert.equal(
         api.insertTicketReport({
+          communityId: tb.community_id,
           ticketId: tb.id,
           kind: "message",
           subjectUserId: "u-b",
@@ -359,6 +368,7 @@ describe("ticket_reports repository (migration 066, #745)", () => {
       const second = seedTicket();
       assert.equal(
         api.insertTicketReport({
+          communityId: first.community_id,
           ticketId: first.id,
           kind: "message",
           subjectUserId: "u-sub",
@@ -368,6 +378,7 @@ describe("ticket_reports repository (migration 066, #745)", () => {
       );
       assert.equal(
         api.insertTicketReport({
+          communityId: second.community_id,
           ticketId: second.id,
           kind: "message",
           subjectUserId: "u-sub",
@@ -386,6 +397,7 @@ describe("ticket_reports repository (migration 066, #745)", () => {
       const ticket = seedTicket();
       assert.equal(
         api.insertTicketReport({
+          communityId: ticket.community_id,
           ticketId: ticket.id,
           kind: "user",
           subjectUserId: "u-quiet",

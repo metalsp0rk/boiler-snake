@@ -799,6 +799,7 @@ async function handleReportUserModal(interaction, ctx, opts = {}) {
     //    the row keeps its structured fields.
     const problems = [];
     const inserted = deps.insertTicketReport({
+      communityId, // #838 (C2-6): the insert verifies ticket ownership now
       ticketId: ticket.id,
       kind: "user",
       subjectUserId: subjectId,
@@ -1248,6 +1249,7 @@ async function handleReportMessageModal(interaction, ctx, opts = {}) {
     const recordNote =
       [echoNote, ...problems].filter(Boolean).join(" · ") || null;
     const inserted = deps.insertTicketReport({
+      communityId, // #838 (C2-6): the insert verifies ticket ownership now
       ticketId: ticket.id,
       kind: "message",
       subjectUserId: subjectId,

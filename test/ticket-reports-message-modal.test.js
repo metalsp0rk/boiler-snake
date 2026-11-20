@@ -871,6 +871,7 @@ describe("report message submit — duplicate nudge (decision 12: still creates,
       openedByStaffId: env.reporter.id,
     });
     const seeded = api.insertTicketReport({
+      communityId: first.community_id,
       ticketId: first.id,
       kind: "message",
       subjectUserId: env.subject.id,

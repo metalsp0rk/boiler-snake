@@ -125,8 +125,8 @@ function mkOpenAppeal(communityId, { channel = nextChannel(), expiresAt = null }
     createdAt: T0,
   });
   assert.equal(filed.ok, true, `appeal seed failed: ${filed.error}`);
-  assert.equal(db.attachAppealTicketChannel(filed.appeal.id, channel).ok, true);
-  assert.equal(db.openAppeal(filed.appeal.id).won, true);
+  assert.equal(db.attachAppealTicketChannel(filed.appeal.community_id, filed.appeal.id, channel).ok, true);
+  assert.equal(db.openAppeal(filed.appeal.community_id, filed.appeal.id).won, true);
   return { record, channel, appeal: db.getAppealById(filed.appeal.id) };
 }
 
@@ -389,7 +389,7 @@ describe("outcomes.welcome suppression — exactly ONE DM per clemency", () => {
 
   it("settled-row race (event won the record): spend rides the domain CAS, NEVER unbans against a settled row", async () => {
     const { record, appeal } = mkOpenAppeal(CID);
-    assert.equal(db.markUnbannedManual(record.id, "GuildBanRemove").won, true, "the event settles FIRST");
+    assert.equal(db.markUnbannedManual(record.community_id, record.id, "GuildBanRemove").won, true, "the event settles FIRST");
 
     const D = makeDeps();
     const res = await outcomes.grantClemency({ appealId: appeal.id, staffUserId: MOD_ID, deps: D.deps });
@@ -412,7 +412,7 @@ describe("outcomes.welcome suppression — exactly ONE DM per clemency", () => {
 
   it("pre-spent welcome (ticker already delivered): via `already`, clemency still grants, DM still lands", async () => {
     const { record, appeal } = mkOpenAppeal(CID);
-    assert.equal(db.markUnbannedManual(record.id, "expiry ticker").won, true);
+    assert.equal(db.markUnbannedManual(record.community_id, record.id, "expiry ticker").won, true);
     assert.equal(db.claimWelcome(record.id).won, true, "the ticker claims its welcome");
     assert.equal(db.claimWelcome(record.id).won, false, "single-winner belt (repo law) — the engine will read this");
 

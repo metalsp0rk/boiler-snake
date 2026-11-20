@@ -616,12 +616,15 @@ function spendWelcomeClaim(recordId, deps, log, ids) {
 }
 
 /* ── Record settle (clemency only) — CAS truth, never a forced write ──────── */
-function settleRecordClemency(recordId, deps, log, ids) {
+function settleRecordClemency(communityId, recordId, deps, log, ids) {
   const fn =
     deps.finalizeUnban ||
-    ((id, status, reason, opts) => dbApi().finalizeUnban(id, status, reason, opts));
+    ((cid, id, status, reason, opts) =>
+      dbApi().finalizeUnban(cid, id, status, reason, opts));
   try {
-    const res = fn(recordId, "clemency_granted", CLEMENCY_UNBAN_REASON, {
+    // #838 (C2-6): the caller's community leads — a record outside it is
+    // answered as absent by the repository belt.
+    const res = fn(communityId, recordId, "clemency_granted", CLEMENCY_UNBAN_REASON, {
       nowMs: deps.nowMs,
     });
     if (!res || res.ok !== true) {
@@ -875,8 +878,8 @@ async function grantClemency({ appealId, staffUserId = null, deps = {} } = {}) {
     // ── 1. THE CLAIM (first decision wins; a loser mutates NOTHING) ────────
     const claimFn =
       d.claimAppealOutcome ||
-      ((id, opts) => dbApi().claimAppealOutcome(id, opts));
-    const claim = await claimFn(appeal.id, {
+      ((cid, id, opts) => dbApi().claimAppealOutcome(cid, id, opts));
+    const claim = await claimFn(communityId, appeal.id, {
       status: "granted",
       decidedBy: optionalText(staffUserId),
       nowMs: d.nowMs,
@@ -1002,10 +1005,10 @@ async function grantClemency({ appealId, staffUserId = null, deps = {} } = {}) {
 
       const reopenFn =
         d.reopenAppealAfterFailedExecution ||
-        ((id, opts) => dbApi().reopenAppealAfterFailedExecution(id, opts));
+        ((cid, id, opts) => dbApi().reopenAppealAfterFailedExecution(cid, id, opts));
       let reopen = null;
       try {
-        reopen = await reopenFn(appeal.id, { nowMs: d.nowMs });
+        reopen = await reopenFn(communityId, appeal.id, { nowMs: d.nowMs });
       } catch (err) {
         reopen = { ok: false, error: err?.message || String(err) };
       }
@@ -1109,7 +1112,7 @@ async function grantClemency({ appealId, staffUserId = null, deps = {} } = {}) {
     // ── 4. record settle (CAS; the live row wins a race and is REPORTED) ───
     let recordSettled = { attempted: false, won: false, status: record.status, error: null };
     if (recordActive) {
-      recordSettled = settleRecordClemency(record.id, d, log, ids);
+      recordSettled = settleRecordClemency(communityId, record.id, d, log, ids);
       if (recordSettled.error) {
         warnings.push(`Record settle failed: ${recordSettled.error}`);
       } else if (recordSettled.won !== true) {
@@ -1313,8 +1316,8 @@ async function deny({
     // ── THE CLAIM (first decision wins) ────────────────────────────────────
     const claimFn =
       d.claimAppealOutcome ||
-      ((id, opts) => dbApi().claimAppealOutcome(id, opts));
-    const claim = await claimFn(appeal.id, {
+      ((cid, id, opts) => dbApi().claimAppealOutcome(cid, id, opts));
+    const claim = await claimFn(communityId, appeal.id, {
       status: "denied",
       decidedBy: optionalText(staffUserId),
       denialReason: note,
@@ -1509,8 +1512,8 @@ async function plainClose({
     // ── THE CLAIM (races the decision buttons; first-wins via the SAME CAS) ─
     const claimFn =
       d.claimAppealOutcome ||
-      ((id, opts) => dbApi().claimAppealOutcome(id, opts));
-    const claim = await claimFn(appeal.id, {
+      ((cid, id, opts) => dbApi().claimAppealOutcome(cid, id, opts));
+    const claim = await claimFn(communityId, appeal.id, {
       status: "closed",
       decidedBy: optionalText(staffUserId), // null on the event path (repo law)
       nowMs: d.nowMs,

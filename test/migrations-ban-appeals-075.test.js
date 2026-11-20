@@ -209,6 +209,12 @@ describe(`${id075} — rebuilds a TRUE pre-075 DB (rows, ids, belts, toggle all 
       insertPreBan(fixture.db, { id: 105, cid: cidB, n: 1, userId: "075-y-active" }),
       insertPreBan(fixture.db, { id: 106, cid: cidA, n: 6, userId: "075-x-welcome", status: "welcomed" }),
     ].forEach((insertedId, i) => assert.equal(insertedId, 100 + i, "explicit ids land as given"));
+    // #838 (C2-8b) gap in the counter: an id beyond every survivor, then
+    // deleted — exactly the state a rolled-back INSERT leaves (seq > max),
+    // which a re-derived sequence would rewind and REUSE.
+    const ghost = insertPreBan(fixture.db, { id: 500, cid: cidB, n: 90, userId: "075-ghost" });
+    assert.equal(ghost, 500, "the ghost id lands before it is deleted");
+    fixture.db.prepare(`DELETE FROM ban_records WHERE id=500`).run();
     // Pre-repair snapshot for the byte-equality assertion (041-suite idiom).
     preRows = allBans(fixture.db);
   });
@@ -266,6 +272,25 @@ describe(`${id075} — rebuilds a TRUE pre-075 DB (rows, ids, belts, toggle all 
     assert.equal(expired.unban_claimed_at, T0, "epoch columns survive as integers");
     assert.equal(expired.unban_reason, "expired");
     assert.equal(after.find((r) => r.id === 104).welcome_dm_sent, 1);
+  });
+
+  it("#838 (C2-8b): the AUTOINCREMENT counter rides the rebuild — id 500 can never return", () => {
+    const seq = fixture.db.prepare(`SELECT seq FROM sqlite_sequence WHERE name='ban_records'`).get();
+    assert.ok(seq, "the rebuilt AUTOINCREMENT table keeps its sqlite_sequence entry");
+    assert.equal(
+      Number(seq.seq),
+      500,
+      "the counter was CARRIED across DROP/RENAME, not re-derived from max(id)=106",
+    );
+    // The contract in practice: the next auto id lands ABOVE the dead zone
+    // any old `appeal:<banRecordId>` audit string might cite.
+    const nextId = fixture.db
+      .prepare(
+        `INSERT INTO ban_records (community_id, ban_number, user_id, source, reason, banned_at, status)
+         VALUES (?, 60, '075-seq-next', 'staff', 'probe', ?, 'welcomed')`,
+      )
+      .run(cidB, T0).lastInsertRowid;
+    assert.ok(Number(nextId) > 500, `auto ids continue past the carried counter (got ${nextId})`);
   });
 
   it("the widened domain: clemency_granted ACCEPTED post-rebuild, garbage still REFUSED", () => {

@@ -82,8 +82,8 @@ function fileOk(
 /** File → attach → open. The claim domain starts at `open`. */
 function openOk(communityId, banRecordId, channel = uid("chan")) {
   const appeal = fileOk(communityId, banRecordId);
-  assert.equal(db.attachAppealTicketChannel(appeal.id, channel).won, true);
-  assert.equal(db.openAppeal(appeal.id).won, true, "seed must reach the claim domain");
+  assert.equal(db.attachAppealTicketChannel(appeal.community_id, appeal.id, channel).won, true);
+  assert.equal(db.openAppeal(appeal.community_id, appeal.id).won, true, "seed must reach the claim domain");
   return db.getAppealById(appeal.id);
 }
 
@@ -278,7 +278,7 @@ describe("banAppeals.fileAppeal — intake round-trip + validation battery", () 
 
   it("storage law only: a CLOSED ban cycle is filable (record-active is feature policy, not schema)", () => {
     const rec = mkBan(CID);
-    assert.equal(db.finalizeUnban(rec.id, "expired_unbanned", null, { nowMs: T0 + MIN }).won, true);
+    assert.equal(db.finalizeUnban(rec.community_id, rec.id, "expired_unbanned", null, { nowMs: T0 + MIN }).won, true);
     assert.equal(
       db.fileAppeal({ communityId: CID, banRecordId: rec.id, appealStatement: "late appeal" }).ok,
       true,
@@ -343,7 +343,7 @@ describe("banAppeals — ONE appeal per ban cycle (the 075 UNIQUE belt)", () => 
   it("a NEW ban cycle gets a NEW appeal (the belt is per-cycle, not per-user)", () => {
     const first = mkBan(CID, { userId: "992000000000000001" });
     fileOk(CID, first.id);
-    assert.equal(db.finalizeUnban(first.id, "expired_unbanned", null, { nowMs: T0 + MIN }).won, true);
+    assert.equal(db.finalizeUnban(first.community_id, first.id, "expired_unbanned", null, { nowMs: T0 + MIN }).won, true);
     const second = db.createBanRecord({
       communityId: CID,
       userId: "992000000000000001",
@@ -382,12 +382,12 @@ describe("banAppeals.getAppealById / getAppealByTicketChannel", () => {
 
   it("attach → lookup by channel; a same-channel neighbor community reads its OWN row", () => {
     const mine = fileOk(CID, mkBan(CID).id);
-    assert.equal(db.attachAppealTicketChannel(mine.id, "shared-channel").won, true);
+    assert.equal(db.attachAppealTicketChannel(mine.community_id, mine.id, "shared-channel").won, true);
     assert.equal(db.getAppealByTicketChannel(CID, "shared-channel").id, mine.id);
 
     const neighbor = communityKey("773-repo-read-b");
     const theirs = fileOk(neighbor, mkBan(neighbor).id);
-    assert.equal(db.attachAppealTicketChannel(theirs.id, "shared-channel").won, true);
+    assert.equal(db.attachAppealTicketChannel(theirs.community_id, theirs.id, "shared-channel").won, true);
     assert.equal(db.getAppealByTicketChannel(neighbor, "shared-channel").id, theirs.id);
     assert.equal(db.getAppealByTicketChannel(CID, "shared-channel").id, mine.id, "no cross-community bleed");
   });
@@ -395,8 +395,8 @@ describe("banAppeals.getAppealById / getAppealByTicketChannel", () => {
   it("two appeals sharing one channel resolve to the HIGHEST id (ORDER BY id DESC LIMIT 1)", () => {
     const older = fileOk(CID, mkBan(CID).id);
     const newer = fileOk(CID, mkBan(CID).id);
-    assert.equal(db.attachAppealTicketChannel(older.id, "double-booked").won, true);
-    assert.equal(db.attachAppealTicketChannel(newer.id, "double-booked").won, true);
+    assert.equal(db.attachAppealTicketChannel(older.community_id, older.id, "double-booked").won, true);
+    assert.equal(db.attachAppealTicketChannel(newer.community_id, newer.id, "double-booked").won, true);
     assert.ok(newer.id > older.id);
     assert.equal(db.getAppealByTicketChannel(CID, "double-booked").id, newer.id);
   });
@@ -418,7 +418,7 @@ describe("banAppeals.attachAppealTicketChannel — first attach wins", () => {
 
   it("winner stamps the channel; the racing loser gets won:false + the LIVE row and mutates NOTHING", () => {
     const appeal = fileOk(CID, mkBan(CID).id);
-    const first = db.attachAppealTicketChannel(appeal.id, "chan-A");
+    const first = db.attachAppealTicketChannel(appeal.community_id, appeal.id, "chan-A");
     assert.equal(first.ok, true);
     assert.equal(first.won, true);
     assert.equal(first.appeal.ticket_channel_id, "chan-A");
@@ -426,20 +426,20 @@ describe("banAppeals.attachAppealTicketChannel — first attach wins", () => {
     assert.equal(first.appeal.status, "filed", "attaching is status-free");
 
     const snapshot = appealRow(appeal.id);
-    const second = db.attachAppealTicketChannel(appeal.id, "chan-B");
+    const second = db.attachAppealTicketChannel(appeal.community_id, appeal.id, "chan-B");
     assert.equal(second.won, false, "one ticket per appeal is claim-row law");
     assert.equal(second.appeal.ticket_channel_id, "chan-A", "the loser reads the channel actually on record");
     assert.deepEqual(appealRow(appeal.id), snapshot, "the losing attach wrote NOTHING — chan-B never landed");
   });
 
   it("missing appeal answers {ok:true, won:false, appeal:null}; malformed ids the {ok:false} answer", () => {
-    assert.deepEqual(db.attachAppealTicketChannel(9_999_999, "chan"), {
+    assert.deepEqual(db.attachAppealTicketChannel(CID, 9_999_999, "chan"), {
       ok: true,
       won: false,
       appeal: null,
     });
     for (const bad of GARBAGE_APPEAL_IDS) {
-      const res = db.attachAppealTicketChannel(bad, "chan");
+      const res = db.attachAppealTicketChannel(CID, bad, "chan");
       assert.equal(res.ok, false, `${JSON.stringify(bad) ?? String(bad)} must be refused`);
       assert.equal(res.error, "No such ban appeal.");
     }
@@ -448,7 +448,7 @@ describe("banAppeals.attachAppealTicketChannel — first attach wins", () => {
   it("blank channel ids are a NAMED runtime refusal (a ticket needs its channel)", () => {
     const appeal = fileOk(CID, mkBan(CID).id);
     for (const blank of ["", "   ", null]) {
-      const res = db.attachAppealTicketChannel(appeal.id, blank);
+      const res = db.attachAppealTicketChannel(appeal.community_id, appeal.id, blank);
       assert.equal(res.ok, false);
       assert.match(res.error, /needs the ticket channel id/);
     }
@@ -461,7 +461,7 @@ describe("banAppeals.openAppeal — the filed→open transition is legal ONLY fr
 
   it("filed → open (CAS); the second opener loses to the LIVE open row", () => {
     const appeal = fileOk(CID, mkBan(CID).id);
-    const first = db.openAppeal(appeal.id);
+    const first = db.openAppeal(appeal.community_id, appeal.id);
     assert.equal(first.ok, true);
     assert.equal(first.won, true);
     assert.equal(first.appeal.status, "open");
@@ -472,7 +472,7 @@ describe("banAppeals.openAppeal — the filed→open transition is legal ONLY fr
     assert.equal(first.appeal.decided_at, null, "opening decides nothing");
 
     const snapshot = appealRow(appeal.id);
-    const second = db.openAppeal(appeal.id);
+    const second = db.openAppeal(appeal.community_id, appeal.id);
     assert.equal(second.won, false);
     assert.equal(second.appeal.status, "open");
     assert.deepEqual(appealRow(appeal.id), snapshot, "the loser mutates nothing");
@@ -480,8 +480,8 @@ describe("banAppeals.openAppeal — the filed→open transition is legal ONLY fr
 
   it("attach-then-open is the normal path (attachment never unlocked the CAS)", () => {
     const appeal = fileOk(CID, mkBan(CID).id);
-    db.attachAppealTicketChannel(appeal.id, "chan-open");
-    assert.equal(db.openAppeal(appeal.id).won, true);
+    db.attachAppealTicketChannel(appeal.community_id, appeal.id, "chan-open");
+    assert.equal(db.openAppeal(appeal.community_id, appeal.id).won, true);
     assert.equal(appealRow(appeal.id).status, "open");
     assert.equal(appealRow(appeal.id).ticket_channel_id, "chan-open");
   });
@@ -490,25 +490,25 @@ describe("banAppeals.openAppeal — the filed→open transition is legal ONLY fr
     for (const outcome of db.APPEAL_OUTCOMES) {
       const appeal = openOk(CID, mkBan(CID).id);
       assert.equal(
-        db.claimAppealOutcome(appeal.id, { status: outcome, decidedBy: "700000000000000001", nowMs: T0 }).won,
+        db.claimAppealOutcome(appeal.community_id, appeal.id, { status: outcome, decidedBy: "700000000000000001", nowMs: T0 }).won,
         true,
         `seed claim ${outcome}`,
       );
-      const reopen = db.openAppeal(appeal.id);
+      const reopen = db.openAppeal(appeal.community_id, appeal.id);
       assert.equal(reopen.won, false, `${outcome} is terminal`);
       assert.equal(reopen.appeal.status, outcome, "the loser reads the decided truth");
     }
   });
 
   it("missing appeal → {ok:true, won:false, appeal:null}; garbage ids → {ok:false}", () => {
-    assert.deepEqual(db.openAppeal(9_999_999), { ok: true, won: false, appeal: null });
+    assert.deepEqual(db.openAppeal(CID, 9_999_999), { ok: true, won: false, appeal: null });
     for (const bad of GARBAGE_APPEAL_IDS) {
-      const res = db.openAppeal(bad);
+      const res = db.openAppeal(CID, bad);
       assert.equal(res.ok, false);
       assert.equal(res.error, "No such ban appeal.");
     }
     const appeal = fileOk(CID, mkBan(CID).id);
-    assert.equal(db.openAppeal(String(appeal.id)).won, true, "numeric-string id wins the real row");
+    assert.equal(db.openAppeal(CID, String(appeal.id)).won, true, "numeric-string id wins the real row");
   });
 });
 
@@ -518,7 +518,7 @@ describe("banAppeals.claimAppealOutcome — first-decision-wins (claimUnban law)
   it("two racing claimers → exactly one won; the loser reads the LIVE row and mutates NOTHING", () => {
     const appeal = openOk(CID, mkBan(CID).id);
 
-    const winner = db.claimAppealOutcome(appeal.id, {
+    const winner = db.claimAppealOutcome(appeal.community_id, appeal.id, {
       status: "granted",
       decidedBy: "  700000000000000009  ",
       nowMs: T0 + MIN,
@@ -532,7 +532,7 @@ describe("banAppeals.claimAppealOutcome — first-decision-wins (claimUnban law)
     assert.equal(winner.appeal.denial_reason, null, "clemency carries no denial reason");
 
     const snapshot = appealRow(appeal.id);
-    const loser = db.claimAppealOutcome(appeal.id, {
+    const loser = db.claimAppealOutcome(appeal.community_id, appeal.id, {
       status: "denied",
       decidedBy: "700000000000000010",
       denialReason: "the other button pressed a ms later",
@@ -548,7 +548,7 @@ describe("banAppeals.claimAppealOutcome — first-decision-wins (claimUnban law)
 
   it("all three outcomes land their full decide-record (denied keeps the reason, closed needs no attribution)", () => {
     const denied = openOk(CID, mkBan(CID).id);
-    const d = db.claimAppealOutcome(denied.id, {
+    const d = db.claimAppealOutcome(denied.community_id, denied.id, {
       status: "denied",
       decidedBy: "700000000000000011",
       denialReason: "  repeated raids  ",
@@ -560,20 +560,20 @@ describe("banAppeals.claimAppealOutcome — first-decision-wins (claimUnban law)
     assert.equal(d.appeal.decided_at, T0 + MIN);
 
     const plain = openOk(CID, mkBan(CID).id);
-    const c = db.claimAppealOutcome(plain.id, { status: "closed", nowMs: T0 + MIN });
+    const c = db.claimAppealOutcome(plain.community_id, plain.id, { status: "closed", nowMs: T0 + MIN });
     assert.equal(c.won, true);
     assert.equal(c.appeal.status, "closed");
     assert.equal(c.appeal.decided_by, null, "the neutral-notice close is attribution-free by design");
     assert.equal(c.appeal.decided_at, T0 + MIN);
 
     const granted = openOk(CID, mkBan(CID).id);
-    assert.equal(db.claimAppealOutcome(granted.id, { status: "granted", nowMs: T0 + MIN }).won, true);
+    assert.equal(db.claimAppealOutcome(granted.community_id, granted.id, { status: "granted", nowMs: T0 + MIN }).won, true);
     assert.equal(appealRow(granted.id).denial_reason, null, "granting clears nothing retroactively");
   });
 
   it("claims ONLY from open — a filed appeal is not yet decidable (it must pass through open)", () => {
     const filed = fileOk(CID, mkBan(CID).id);
-    const res = db.claimAppealOutcome(filed.id, { status: "granted", decidedBy: "700000000000000012" });
+    const res = db.claimAppealOutcome(filed.community_id, filed.id, { status: "granted", decidedBy: "700000000000000012" });
     assert.equal(res.ok, true);
     assert.equal(res.won, false);
     assert.equal(res.appeal.status, "filed", "the claimer reads the un-decided truth");
@@ -583,7 +583,7 @@ describe("banAppeals.claimAppealOutcome — first-decision-wins (claimUnban law)
   it("the outcome domain is CLOSED to the three decided endings — everything else is a named refusal", () => {
     const appeal = openOk(CID, mkBan(CID).id);
     for (const status of ["filed", "open", "ACTIVE", "clemency_granted", "", null, undefined]) {
-      const res = db.claimAppealOutcome(appeal.id, { status, nowMs: T0 });
+      const res = db.claimAppealOutcome(appeal.community_id, appeal.id, { status, nowMs: T0 });
       assert.equal(res.ok, false, `${JSON.stringify(status)} must be refused`);
       assert.match(res.error, /Unknown appeal outcome/);
       assert.match(res.error, /granted, denied, closed/, "the message teaches the domain");
@@ -593,7 +593,7 @@ describe("banAppeals.claimAppealOutcome — first-decision-wins (claimUnban law)
 
   it("denial_reason re-checks the 1000-char cap and refuses BEFORE deciding", () => {
     const appeal = openOk(CID, mkBan(CID).id);
-    const tooLong = db.claimAppealOutcome(appeal.id, {
+    const tooLong = db.claimAppealOutcome(appeal.community_id, appeal.id, {
       status: "denied",
       denialReason: "x".repeat(db.MAX_DENIAL_REASON + 1),
     });
@@ -602,7 +602,7 @@ describe("banAppeals.claimAppealOutcome — first-decision-wins (claimUnban law)
     assert.equal(appealRow(appeal.id).status, "open", "an over-cap reason cannot smuggle a decision");
     // Boundary: exactly at cap decides fine.
     assert.equal(
-      db.claimAppealOutcome(appeal.id, {
+      db.claimAppealOutcome(appeal.community_id, appeal.id, {
         status: "denied",
         denialReason: "y".repeat(db.MAX_DENIAL_REASON),
         nowMs: T0 + MIN,
@@ -614,7 +614,7 @@ describe("banAppeals.claimAppealOutcome — first-decision-wins (claimUnban law)
   it("blank decidedBy/denialReason normalize to ABSENT, never empty strings", () => {
     const appeal = openOk(CID, mkBan(CID).id);
     assert.equal(
-      db.claimAppealOutcome(appeal.id, {
+      db.claimAppealOutcome(appeal.community_id, appeal.id, {
         status: "denied",
         decidedBy: "   ",
         denialReason: "",
@@ -628,19 +628,19 @@ describe("banAppeals.claimAppealOutcome — first-decision-wins (claimUnban law)
   });
 
   it("missing appeal answers {ok:true, won:false, appeal:null}; garbage ids the {ok:false} answer", () => {
-    assert.deepEqual(db.claimAppealOutcome(9_999_999, { status: "granted" }), {
+    assert.deepEqual(db.claimAppealOutcome(CID, 9_999_999, { status: "granted" }), {
       ok: true,
       won: false,
       appeal: null,
     });
     for (const bad of GARBAGE_APPEAL_IDS) {
-      const res = db.claimAppealOutcome(bad, { status: "granted" });
+      const res = db.claimAppealOutcome(CID, bad, { status: "granted" });
       assert.equal(res.ok, false, `${JSON.stringify(bad) ?? String(bad)} must be refused`);
       assert.equal(res.error, "No such ban appeal.");
     }
     const appeal = openOk(CID, mkBan(CID).id);
     assert.equal(
-      db.claimAppealOutcome(String(appeal.id), { status: "closed", nowMs: T0 }).won,
+      db.claimAppealOutcome(CID, String(appeal.id), { status: "closed", nowMs: T0 }).won,
       true,
       "numeric-string id wins the real row",
     );
@@ -652,14 +652,14 @@ describe("banAppeals.reopenAppealAfterFailedExecution — #821 compensation CAS 
 
   it("granted → open: decision columns clear to NULL, the injected clock stamps, the row RE-DECIDES", () => {
     const appeal = openOk(CID, mkBan(CID).id);
-    const decided = db.claimAppealOutcome(appeal.id, {
+    const decided = db.claimAppealOutcome(appeal.community_id, appeal.id, {
       status: "granted",
       decidedBy: "700000000000000011",
       nowMs: T0 + MIN,
     });
     assert.equal(decided.won, true);
 
-    const res = db.reopenAppealAfterFailedExecution(appeal.id, { nowMs: T0 + 2 * MIN });
+    const res = db.reopenAppealAfterFailedExecution(appeal.community_id, appeal.id, { nowMs: T0 + 2 * MIN });
     assert.deepEqual({ ok: res.ok, won: res.won }, { ok: true, won: true });
 
     const row = appealRow(appeal.id);
@@ -675,7 +675,7 @@ describe("banAppeals.reopenAppealAfterFailedExecution — #821 compensation CAS 
     assert.equal(row.created_at, T0, "history does not rewrite itself");
 
     assert.equal(
-      db.claimAppealOutcome(appeal.id, {
+      db.claimAppealOutcome(appeal.community_id, appeal.id, {
         status: "granted",
         decidedBy: "700000000000000012",
         nowMs: T0 + 3 * MIN,
@@ -687,31 +687,31 @@ describe("banAppeals.reopenAppealAfterFailedExecution — #821 compensation CAS 
 
   it("ONLY 'granted' reopens — open/filed/denied rows are read back untouched", () => {
     const fresh = openOk(CID, mkBan(CID).id);
-    const noop = db.reopenAppealAfterFailedExecution(fresh.id, { nowMs: T0 + MIN });
+    const noop = db.reopenAppealAfterFailedExecution(fresh.community_id, fresh.id, { nowMs: T0 + MIN });
     assert.equal(noop.won, false, "an OPEN row is not a compensation target");
     assert.equal(noop.appeal.status, "open");
 
     const denied = openOk(CID, mkBan(CID).id);
-    db.claimAppealOutcome(denied.id, {
+    db.claimAppealOutcome(denied.community_id, denied.id, {
       status: "denied",
       decidedBy: "700000000000000013",
       denialReason: "no",
       nowMs: T0 + MIN,
     });
-    const denyNoop = db.reopenAppealAfterFailedExecution(denied.id, { nowMs: T0 + 2 * MIN });
+    const denyNoop = db.reopenAppealAfterFailedExecution(denied.community_id, denied.id, { nowMs: T0 + 2 * MIN });
     assert.equal(denyNoop.won, false, "a DENIED decision is nobody's to undo here");
     assert.equal(appealRow(denied.id).status, "denied");
     assert.equal(appealRow(denied.id).denial_reason, "no", "the CAS touched NOTHING — not even the clock");
   });
 
   it("missing appeal answers {ok:true, won:false, appeal:null}; garbage ids the {ok:false} answer", () => {
-    assert.deepEqual(db.reopenAppealAfterFailedExecution(9_999_999), {
+    assert.deepEqual(db.reopenAppealAfterFailedExecution(CID, 9_999_999), {
       ok: true,
       won: false,
       appeal: null,
     });
     for (const bad of GARBAGE_APPEAL_IDS) {
-      const res = db.reopenAppealAfterFailedExecution(bad);
+      const res = db.reopenAppealAfterFailedExecution(CID, bad);
       assert.equal(res.ok, false);
       assert.equal(res.error, "No such ban appeal.");
     }
@@ -902,7 +902,7 @@ describe("banAppeals.setAppealFerryPaused — relay-only, NO status coupling", (
 
   it("deciding never locks the knob: a decided appeal still toggles (the relay's quiet-time switch is status-free)", () => {
     const appeal = openOk(CID, mkBan(CID).id);
-    assert.equal(db.claimAppealOutcome(appeal.id, { status: "granted", decidedBy: "700000000000000013", nowMs: T0 + MIN }).won, true);
+    assert.equal(db.claimAppealOutcome(appeal.community_id, appeal.id, { status: "granted", decidedBy: "700000000000000013", nowMs: T0 + MIN }).won, true);
     assert.equal(db.setAppealFerryPaused(appeal.id, "on").won, true);
     const row = appealRow(appeal.id);
     assert.equal(row.ferry_paused, 1, "storage answers the knob (the FEATURE stops the relay via the status guard)");
@@ -930,7 +930,7 @@ describe("banAppeals — the community OWNS the appeal (FK cascade seen through 
     assert.equal(db.getBanRecord(rec.id), null, "…and its ban record");
     // Mutators honestly no-op on the gone row instead of resurrecting it.
     assert.equal(db.saveAppealCursor(appeal.id, "user", { messageId: "7001", timestampMs: T0 }).won, false);
-    assert.equal(db.claimAppealOutcome(appeal.id, { status: "closed" }).won, false);
+    assert.equal(db.claimAppealOutcome(appeal.community_id, appeal.id, { status: "closed" }).won, false);
     assert.equal(db.setAppealFerryPaused(appeal.id, true).won, false);
     assert.deepEqual(db.loadAppealCursor(appeal.id, "user"), { ok: true, cursor: null });
   });
@@ -943,15 +943,15 @@ describe("banAppeals — the appeal machine, end to end (injected clock througho
     const filed = fileOk(cid, rec.id, "The ban was for a joke that was not funny", T0);
     assert.equal(filed.status, "filed");
 
-    assert.equal(db.attachAppealTicketChannel(filed.id, "appeal-ticket-1").won, true);
-    assert.equal(db.openAppeal(filed.id).won, true);
+    assert.equal(db.attachAppealTicketChannel(filed.community_id, filed.id, "appeal-ticket-1").won, true);
+    assert.equal(db.openAppeal(filed.community_id, filed.id).won, true);
 
     // Ferry resumes from persisted pairs, per direction.
     assert.equal(db.saveAppealCursor(filed.id, "user", { messageId: "8001", timestampMs: T0 + 5 * MIN }).won, true);
     assert.equal(db.saveAppealCursor(filed.id, "ticket", { messageId: "8002", timestampMs: T0 + 6 * MIN }).won, true);
     assert.equal(db.setAppealFerryPaused(filed.id, true).won, true, "staff takes quiet time");
 
-    const claim = db.claimAppealOutcome(filed.id, {
+    const claim = db.claimAppealOutcome(filed.community_id, filed.id, {
       status: "denied",
       decidedBy: "700000000000000021",
       denialReason: "pattern of raids — appeal refused",
@@ -972,8 +972,8 @@ describe("banAppeals — the appeal machine, end to end (injected clock througho
     });
 
     // Settled out of every queue: no re-open, no second decision.
-    assert.equal(db.openAppeal(row.id).won, false);
-    assert.equal(db.claimAppealOutcome(row.id, { status: "granted" }).won, false);
+    assert.equal(db.openAppeal(row.community_id, row.id).won, false);
+    assert.equal(db.claimAppealOutcome(row.community_id, row.id, { status: "granted" }).won, false);
     assert.equal(appealRow(row.id).status, "denied", "one decision per appeal, ever");
   });
 
@@ -981,7 +981,7 @@ describe("banAppeals — the appeal machine, end to end (injected clock througho
     const cid = communityKey("773-repo-walk-grant");
     const appeal = openOk(cid, mkBan(cid).id);
     assert.equal(
-      db.claimAppealOutcome(appeal.id, { status: "granted", decidedBy: "700000000000000022", nowMs: T0 + MIN }).won,
+      db.claimAppealOutcome(appeal.community_id, appeal.id, { status: "granted", decidedBy: "700000000000000022", nowMs: T0 + MIN }).won,
       true,
     );
     assert.equal(db.setAppealFerryPaused(appeal.id, "on").won, true);
@@ -1029,9 +1029,9 @@ describe("banAppeals.closeAppealOnBanEnd — CAS over BOTH pending shapes (#811)
 
   it("decided/closed rows are UNTOUCHED (won:false + the live row, byte-stable)", () => {
     for (const [status, how] of [
-      ["granted", (id) => db.claimAppealOutcome(id, { status: "granted", decidedBy: uid("mod"), nowMs: T0 + MIN })],
-      ["denied", (id) => db.claimAppealOutcome(id, { status: "denied", decidedBy: uid("mod"), nowMs: T0 + MIN })],
-      ["closed", (id) => db.claimAppealOutcome(id, { status: "closed", decidedBy: uid("mod"), nowMs: T0 + MIN })],
+      ["granted", (id) => db.claimAppealOutcome(CID, id, { status: "granted", decidedBy: uid("mod"), nowMs: T0 + MIN })],
+      ["denied", (id) => db.claimAppealOutcome(CID, id, { status: "denied", decidedBy: uid("mod"), nowMs: T0 + MIN })],
+      ["closed", (id) => db.claimAppealOutcome(CID, id, { status: "closed", decidedBy: uid("mod"), nowMs: T0 + MIN })],
     ]) {
       const appeal = openOk(CID, mkBan(CID).id);
       assert.equal(how(appeal.id).won, true, `seed reaches ${status}`);
@@ -1050,7 +1050,7 @@ describe("banAppeals.closeAppealOnBanEnd — CAS over BOTH pending shapes (#811)
     // Staff deny claims first; the ban-ended pass reads later and lands on a
     // decided row — exactly the race the design promises the staff wins.
     assert.equal(
-      db.claimAppealOutcome(appeal.id, { status: "denied", decidedBy: "mod-1", nowMs: T0 + MIN }).won,
+      db.claimAppealOutcome(appeal.community_id, appeal.id, { status: "denied", decidedBy: "mod-1", nowMs: T0 + MIN }).won,
       true
     );
     const res = db.closeAppealOnBanEnd(appeal.id, { reason: "ban expired", nowMs: T0 + 2 * MIN });

@@ -1044,7 +1044,7 @@ test("#823 the boot sweep settles action rows a dead run left claimed", () => {
     params: { reason: "raid second wave" },
   });
   assert.equal(sug.ok, true, sug.error);
-  const claimed = actions.claimAutomodSuggestion(sug.row.id, "staff", {});
+  const claimed = actions.claimAutomodSuggestion(sug.row.community_id, sug.row.id, "staff", {});
   assert.equal(claimed.ok, true, claimed.error && JSON.stringify(claimed));
 
   const cap = captureConsole();
@@ -1650,6 +1650,7 @@ test("ticket suggest: the card quotes the member-visible opening; Approve opens 
   // Approve (the card's executor call, with the case referrer threaded):
   const approveSeams = ticketSeams();
   const approved = await executor.approveSuggestion({
+    communityId: rows[0].community_id,
     actionRowId: rows[0].id,
     claimant: REF,
     referrerUserId: REF,
@@ -1685,7 +1686,7 @@ test("ticket suggest: the card quotes the member-visible opening; Approve opens 
   });
   assert.equal(res2.ok, true, res2.error);
   const [row2] = actionRows(second.cid, second.caseRow.id);
-  const dismissed = await executor.dismissSuggestion({ actionRowId: row2.id, claimant: REF });
+  const dismissed = await executor.dismissSuggestion({ communityId: row2.community_id, actionRowId: row2.id, claimant: REF });
   assert.equal(dismissed.ok, true, dismissed.error);
   assert.equal(dismissSeams.calls.open.length, 0, "Dismiss never opens a ticket — nothing runs");
   assert.equal(dismissSeams.calls.claim.length, 0, "…not even a rate-slot claim");

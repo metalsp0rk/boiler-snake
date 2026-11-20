@@ -134,6 +134,16 @@ function optionalText(value) {
 }
 
 /** Positive-integer record id guard (programmer-shape, not user input). */
+/**
+ * #838 (C2-6): community-visible read behind every claim/finalize belt — a
+ * record owned by ANOTHER community answers exactly like a missing one
+ * (null), so a cross-tenant probe never learns the row exists.
+ */
+function visibleRecord(recordId, cid) {
+  const row = getBanRecord(recordId);
+  return row && Number(row.community_id) === cid ? row : null;
+}
+
 function recordIdOrError(recordId) {
   const id = Number(recordId);
   if (!Number.isInteger(id) || id < 1) {
@@ -365,11 +375,18 @@ function listReconcilableActiveBans(communityId) {
  * finalizeUnban/markUnbannedManual are CAS'd on status, so the loser of
  * THAT race reports what actually happened instead of overwriting it.
  *
+ * @param {number} communityId the CALLER's community (from context, never
+ *   from the row) — #838 (C2-6): these id-keyed claim/finalize primitives
+ *   bound `WHERE id=?` alone; cross-tenant safety lived ONLY in handler
+ *   belts. The DB binds `AND community_id=?` now, and a foreign row
+ *   answers as absent (won:false + record:null) without leaking existence.
  * @param {number} recordId
  * @param {number} [atMs] ms epoch (injectable clock, lease math)
  * @returns {{ ok: true, won: boolean, record: object|null } | { ok: false, error: string }}
  */
-function claimUnban(recordId, atMs = now()) {
+function claimUnban(communityId, recordId, atMs = now()) {
+  assertCommunityId(communityId);
+  const cid = Number(communityId);
   const { id, error } = recordIdOrError(recordId);
   if (!id) return { ok: false, error };
   const ts = timestampOr(atMs, now());
@@ -377,11 +394,11 @@ function claimUnban(recordId, atMs = now()) {
     const res = db
       .prepare(
         `UPDATE ban_records SET unban_claimed_at=?
-          WHERE id=? AND status='active'
+          WHERE id=? AND community_id=? AND status='active'
             AND (unban_claimed_at IS NULL OR unban_claimed_at <= ?)`
       )
-      .run(ts, id, ts - UNBAN_CLAIM_LEASE_MS);
-    return { ok: true, won: res.changes === 1, record: getBanRecord(id) };
+      .run(ts, id, cid, ts - UNBAN_CLAIM_LEASE_MS);
+    return { ok: true, won: res.changes === 1, record: visibleRecord(id, cid) };
   } catch (err) {
     return { ok: false, error: `Could not claim the ban unban: ${err?.message || err}` };
   }
@@ -395,6 +412,7 @@ function claimUnban(recordId, atMs = now()) {
  * it ("events keep the record truthful"). Stamps `unban_claimed_at` when the
  * actor never claimed (the manual/event path).
  *
+ * @param {number} communityId the CALLER's community (#838 C2-6 belt — see claimUnban)
  * @param {number} recordId
  * @param {string} status 'expired_unbanned' | 'unbanned_manual' |
  *   'clemency_granted' (#773 appeal outcome — see UNBAN_OUTCOMES)
@@ -402,7 +420,9 @@ function claimUnban(recordId, atMs = now()) {
  * @param {{ nowMs?: number }} [opts]
  * @returns {{ ok: true, won: boolean, record: object|null } | { ok: false, error: string }}
  */
-function finalizeUnban(recordId, status, unbanReason = null, { nowMs } = {}) {
+function finalizeUnban(communityId, recordId, status, unbanReason = null, { nowMs } = {}) {
+  assertCommunityId(communityId);
+  const cid = Number(communityId);
   const { id, error } = recordIdOrError(recordId);
   if (!id) return { ok: false, error };
   if (!UNBAN_OUTCOMES.includes(status)) {
@@ -419,10 +439,10 @@ function finalizeUnban(recordId, status, unbanReason = null, { nowMs } = {}) {
             SET status=?,
                 unban_reason=COALESCE(?, unban_reason),
                 unban_claimed_at=COALESCE(unban_claimed_at, ?)
-          WHERE id=? AND status='active'`
+          WHERE id=? AND community_id=? AND status='active'`
       )
-      .run(status, optionalText(unbanReason), ts, id);
-    return { ok: true, won: res.changes === 1, record: getBanRecord(id) };
+      .run(status, optionalText(unbanReason), ts, id, cid);
+    return { ok: true, won: res.changes === 1, record: visibleRecord(id, cid) };
   } catch (err) {
     return { ok: false, error: `Could not finalize the ban unban: ${err?.message || err}` };
   }
@@ -434,12 +454,13 @@ function finalizeUnban(recordId, status, unbanReason = null, { nowMs } = {}) {
  * the ticker's own in-flight expiry flow (already ACTIVE-finalized) is never
  * overwritten, and two events for one unban settle exactly once.
  *
+ * @param {number} communityId the CALLER's community (#838 C2-6 belt — see claimUnban)
  * @param {number} recordId
  * @param {string|null} [unbanReason]
  * @returns {{ ok: true, won: boolean, record: object|null } | { ok: false, error: string }}
  */
-function markUnbannedManual(recordId, unbanReason = null) {
-  return finalizeUnban(recordId, "unbanned_manual", unbanReason);
+function markUnbannedManual(communityId, recordId, unbanReason = null) {
+  return finalizeUnban(communityId, recordId, "unbanned_manual", unbanReason);
 }
 
 /**
@@ -451,12 +472,15 @@ function markUnbannedManual(recordId, unbanReason = null) {
  * own CAS instead of riding finalizeUnban. Same single-winner law: a
  * concurrent manual settle wins and the caller reports the live truth.
  *
+ * @param {number} communityId the CALLER's community (#838 C2-6 belt — see claimUnban)
  * @param {number} recordId
  * @param {string|null} [reason] what was observed (audit + unban_reason column)
  * @param {{ nowMs?: number }} [opts]
  * @returns {{ ok: true, won: boolean, record: object|null } | { ok: false, error: string }}
  */
-function markExpiryHeld(recordId, reason = null, { nowMs } = {}) {
+function markExpiryHeld(communityId, recordId, reason = null, { nowMs } = {}) {
+  assertCommunityId(communityId);
+  const cid = Number(communityId);
   const { id, error } = recordIdOrError(recordId);
   if (!id) return { ok: false, error };
   const ts = timestampOr(nowMs, now());
@@ -467,10 +491,10 @@ function markExpiryHeld(recordId, reason = null, { nowMs } = {}) {
             SET status='expired_held',
                 unban_reason=COALESCE(?, unban_reason),
                 unban_claimed_at=COALESCE(unban_claimed_at, ?)
-          WHERE id=? AND status='active'`
+          WHERE id=? AND community_id=? AND status='active'`
       )
-      .run(optionalText(reason), ts, id);
-    return { ok: true, won: res.changes === 1, record: getBanRecord(id) };
+      .run(optionalText(reason), ts, id, cid);
+    return { ok: true, won: res.changes === 1, record: visibleRecord(id, cid) };
   } catch (err) {
     return { ok: false, error: `Could not record the held ban expiry: ${err?.message || err}` };
   }
@@ -497,6 +521,7 @@ function markExpiryHeld(recordId, reason = null, { nowMs } = {}) {
  * post-increment value; `quarantined` reports whether THIS pass landed the
  * terminal settle.
  *
+ * @param {number} communityId the CALLER's community (#838 C2-6 belt — see claimUnban)
  * @param {number} recordId
  * @param {{ maxAttempts?: number, reason?: string|null, nowMs?: number }} [opts]
  *   ceiling (default the module's EXPIRY_MAX_ATTEMPTS), the human cause to
@@ -504,7 +529,9 @@ function markExpiryHeld(recordId, reason = null, { nowMs } = {}) {
  * @returns {{ ok: true, won: boolean, record: object|null, attempts: number,
  *   quarantined: boolean } | { ok: false, error: string }}
  */
-function noteExpiryAttempt(recordId, { maxAttempts = EXPIRY_MAX_ATTEMPTS, reason = null, nowMs } = {}) {
+function noteExpiryAttempt(communityId, recordId, { maxAttempts = EXPIRY_MAX_ATTEMPTS, reason = null, nowMs } = {}) {
+  assertCommunityId(communityId);
+  const cid = Number(communityId);
   const { id, error } = recordIdOrError(recordId);
   if (!id) return { ok: false, error };
   const ts = timestampOr(nowMs, now());
@@ -513,10 +540,10 @@ function noteExpiryAttempt(recordId, { maxAttempts = EXPIRY_MAX_ATTEMPTS, reason
     const res = db
       .prepare(
         `UPDATE ban_records SET expiry_attempts = expiry_attempts + 1
-          WHERE id=? AND status='active'`,
+          WHERE id=? AND community_id=? AND status='active'`,
       )
-      .run(id);
-    const record = getBanRecord(id);
+      .run(id, cid);
+    const record = visibleRecord(id, cid);
     if (res.changes === 0) {
       // The row left ACTIVE (another settle won — report its truth; the
       // count froze with it). Nothing to quarantine, nothing was counted.
@@ -534,7 +561,7 @@ function noteExpiryAttempt(recordId, { maxAttempts = EXPIRY_MAX_ATTEMPTS, reason
     }
     // AT/OVER the ceiling: settle terminal (CAS active — one winner; an
     // over-ceiling ACTIVE row is crash residue and heals right here).
-    const settled = markExpiryFailed(id, reason, { nowMs: ts });
+    const settled = markExpiryFailed(cid, id, reason, { nowMs: ts });
     return {
       ok: true,
       won: true,
@@ -554,12 +581,15 @@ function noteExpiryAttempt(recordId, { maxAttempts = EXPIRY_MAX_ATTEMPTS, reason
  * lifted) — its own CAS like markExpiryHeld. A concurrent settle wins; this
  * returns won:false + live.
  *
+ * @param {number} communityId the CALLER's community (#838 C2-6 belt — see claimUnban)
  * @param {number} recordId
  * @param {string|null} [reason] human cause (audit copy + unban_reason)
  * @param {{ nowMs?: number }} [opts]
  * @returns {{ ok: true, won: boolean, record: object|null } | { ok: false, error: string }}
  */
-function markExpiryFailed(recordId, reason = null, { nowMs } = {}) {
+function markExpiryFailed(communityId, recordId, reason = null, { nowMs } = {}) {
+  assertCommunityId(communityId);
+  const cid = Number(communityId);
   const { id, error } = recordIdOrError(recordId);
   if (!id) return { ok: false, error };
   const ts = timestampOr(nowMs, now());
@@ -570,10 +600,10 @@ function markExpiryFailed(recordId, reason = null, { nowMs } = {}) {
             SET status='expiry_failed',
                 unban_reason=COALESCE(?, unban_reason),
                 unban_claimed_at=COALESCE(unban_claimed_at, ?)
-          WHERE id=? AND status='active'`,
+          WHERE id=? AND community_id=? AND status='active'`,
       )
-      .run(optionalText(reason), ts, id);
-    return { ok: true, won: res.changes === 1, record: getBanRecord(id) };
+      .run(optionalText(reason), ts, id, cid);
+    return { ok: true, won: res.changes === 1, record: visibleRecord(id, cid) };
   } catch (err) {
     return { ok: false, error: `Could not quarantine the ban expiry: ${err?.message || err}` };
   }

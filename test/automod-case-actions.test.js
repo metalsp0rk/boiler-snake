@@ -196,40 +196,40 @@ describe("automod case-action repo — claim / dismiss / finalize transitions", 
   it("claim flips suggested→approved exactly once; losers get the row back", () => {
     const cid = freshCommunity();
     const sug = repo.insertAutomodActionSuggestion(baseIntent({ communityId: cid, mode: "suggest" }));
-    const won = repo.claimAutomodSuggestion(sug.row.id, "staff-1", { nowMs: 222 });
+    const won = repo.claimAutomodSuggestion(sug.row.community_id, sug.row.id, "staff-1", { nowMs: 222 });
     assert.equal(won.ok, true);
     assert.equal(won.row.state, "approved");
     assert.equal(won.row.claimed_by, "staff-1");
     assert.equal(won.row.claimed_at, 222);
 
-    const lost = repo.claimAutomodSuggestion(sug.row.id, "staff-2", { nowMs: 333 });
+    const lost = repo.claimAutomodSuggestion(sug.row.community_id, sug.row.id, "staff-2", { nowMs: 333 });
     assert.equal(lost.ok, false);
     assert.equal(lost.deduped, true);
     assert.equal(lost.row.claimed_by, "staff-1", "the winner's claim survives");
     assert.equal(lost.row.claimed_at, 222);
 
-    assert.match(repo.claimAutomodSuggestion(999999, "staff").error, /No auto-mod action row/);
-    assert.match(repo.claimAutomodSuggestion("x", "staff").error, /positive integer/);
+    assert.match(repo.claimAutomodSuggestion(cid, 999999, "staff").error, /No auto-mod action row/);
+    assert.match(repo.claimAutomodSuggestion(cid, "x", "staff").error, /positive integer/);
   });
 
   it("dismiss records the decline under the same single-winner gate", () => {
     const cid = freshCommunity();
     const sug = repo.insertAutomodActionSuggestion(baseIntent({ communityId: cid, mode: "suggest" }));
-    const gone = repo.dismissAutomodSuggestion(sug.row.id, "staff-9", { note: "false positive", nowMs: 444 });
+    const gone = repo.dismissAutomodSuggestion(sug.row.community_id, sug.row.id, "staff-9", { note: "false positive", nowMs: 444 });
     assert.equal(gone.ok, true);
     assert.equal(gone.row.state, "dismissed");
     assert.equal(gone.row.result_text, "false positive");
     assert.equal(gone.row.claimed_by, "staff-9");
 
-    const again = repo.dismissAutomodSuggestion(sug.row.id, "staff-9b");
+    const again = repo.dismissAutomodSuggestion(sug.row.community_id, sug.row.id, "staff-9b");
     assert.equal(again.deduped, true);
     assert.equal(again.row.state, "dismissed");
     assert.equal(again.row.result_text, "false positive", "second click changes nothing");
 
     // Dismiss AFTER claim: the claimer owns the row — dismiss loses.
     const other = repo.insertAutomodActionSuggestion(baseIntent({ communityId: cid, action: "ban", mode: "suggest" }));
-    repo.claimAutomodSuggestion(other.row.id, "staff-a");
-    const refused = repo.dismissAutomodSuggestion(other.row.id, "staff-b");
+    repo.claimAutomodSuggestion(other.row.community_id, other.row.id, "staff-a");
+    const refused = repo.dismissAutomodSuggestion(other.row.community_id, other.row.id, "staff-b");
     assert.equal(refused.deduped, true);
     assert.equal(refused.row.state, "approved");
   });
@@ -237,7 +237,7 @@ describe("automod case-action repo — claim / dismiss / finalize transitions", 
   it("default dismiss note + finalize rules", () => {
     const cid = freshCommunity();
     const sug = repo.insertAutomodActionSuggestion(baseIntent({ communityId: cid, mode: "suggest" }));
-    const gone = repo.dismissAutomodSuggestion(sug.row.id, "staff");
+    const gone = repo.dismissAutomodSuggestion(sug.row.community_id, sug.row.id, "staff");
     assert.match(gone.row.result_text, /Dismissed by staff — the suggested action was not run\./);
   });
 
@@ -246,14 +246,13 @@ describe("automod case-action repo — claim / dismiss / finalize transitions", 
     const sug = repo.insertAutomodActionSuggestion(baseIntent({ communityId: cid, mode: "suggest" }));
 
     // Not claimed yet → no finalize (claim first, record second).
-    const early = repo.recordAutomodActionResult(sug.row.id, { state: "executed", resultText: "x" });
+    const early = repo.recordAutomodActionResult(sug.row.community_id, sug.row.id, { state: "executed", resultText: "x" });
     assert.equal(early.ok, false);
     assert.equal(early.deduped, true);
     assert.equal(early.row.state, "suggested");
 
-    repo.claimAutomodSuggestion(sug.row.id, "staff-1");
-    const done = repo.recordAutomodActionResult(
-      sug.row.id,
+    repo.claimAutomodSuggestion(sug.row.community_id, sug.row.id, "staff-1");
+    const done = repo.recordAutomodActionResult(sug.row.community_id, sug.row.id,
       { state: "executed", resultText: "Kicked <@u-subject>.", params: { durationSeconds: 60, clamped: true } },
       { nowMs: 555 },
     );
@@ -264,17 +263,17 @@ describe("automod case-action repo — claim / dismiss / finalize transitions", 
     assert.ok(done.row.updated_at >= 555);
 
     // Second finalize loses — the first outcome stands.
-    const twice = repo.recordAutomodActionResult(sug.row.id, { state: "failed", errorText: "late" });
+    const twice = repo.recordAutomodActionResult(sug.row.community_id, sug.row.id, { state: "failed", errorText: "late" });
     assert.equal(twice.deduped, true);
     assert.equal(twice.row.state, "executed");
     assert.equal(twice.row.error_text, null);
 
-    assert.match(repo.recordAutomodActionResult(sug.row.id, { state: "suggested" }).error, /Invalid auto-mod action outcome/);
+    assert.match(repo.recordAutomodActionResult(sug.row.community_id, sug.row.id, { state: "suggested" }).error, /Invalid auto-mod action outcome/);
 
     // error/params omitted ⇒ prior columns preserved (COALESCE posture).
     const other = repo.insertAutomodActionSuggestion(baseIntent({ communityId: cid, action: "timeout", mode: "suggest" }));
-    repo.claimAutomodSuggestion(other.row.id, "staff-1");
-    repo.recordAutomodActionResult(other.row.id, { state: "refused", errorText: "guard said no" });
+    repo.claimAutomodSuggestion(other.row.community_id, other.row.id, "staff-1");
+    repo.recordAutomodActionResult(other.row.community_id, other.row.id, { state: "refused", errorText: "guard said no" });
     const keep = repo.getAutomodAction(other.row.id);
     assert.equal(keep.error_text, "guard said no");
     assert.equal(keep.params_json, JSON.stringify({ reason: "repeat spam" }), "omitted params keep the recorded intent");
@@ -361,7 +360,7 @@ describe("#823 settleInterruptedAutomodActions — no wedge survives a restart",
       baseIntent({ communityId: cid, action: "ban", mode: "suggest", subjectUserId: "u-click", caseId: 102, }),
     );
     assert.equal(suggested.ok, true);
-    const claimed = repo.claimAutomodSuggestion(suggested.row.id, "staff", {});
+    const claimed = repo.claimAutomodSuggestion(suggested.row.community_id, suggested.row.id, "staff", {});
     assert.equal(claimed.ok, true, "precondition: the click won the claim");
 
     // The sweep is GLOBAL by doctrine (a boot sweep knows no community
@@ -396,24 +395,28 @@ describe("#823 settleInterruptedAutomodActions — no wedge survives a restart",
     untouched.dismissed = repo.insertAutomodActionSuggestion(
       baseIntent({ communityId: cid, subjectUserId: "u2", action: "warn", caseId: 202 }),
     ).row;
-    repo.dismissAutomodSuggestion(untouched.dismissed.id, "staff", { note: "not mine" });
+    repo.dismissAutomodSuggestion(untouched.dismissed.community_id, untouched.dismissed.id, "staff", { note: "not mine" });
     const doneSuggested = repo.insertAutomodActionSuggestion(
       baseIntent({ communityId: cid, subjectUserId: "u3", action: "warn", caseId: 203 }),
     ).row;
-    repo.claimAutomodSuggestion(doneSuggested.id, "staff", {});
+    repo.claimAutomodSuggestion(doneSuggested.community_id, doneSuggested.id, "staff", {});
     untouched.executed = repo
-      .recordAutomodActionResult(doneSuggested.id, { state: "executed", resultText: "warned" }, {})
+      .recordAutomodActionResult(doneSuggested.community_id, doneSuggested.id, { state: "executed", resultText: "warned" }, {})
       .row;
     const refusedSuggested = repo.insertAutomodActionSuggestion(
       baseIntent({ communityId: cid, subjectUserId: "u4", action: "kick", caseId: 204 }),
     ).row;
-    repo.claimAutomodSuggestion(refusedSuggested.id, "staff", {});
+    repo.claimAutomodSuggestion(refusedSuggested.community_id, refusedSuggested.id, "staff", {});
     untouched.refused = repo
-      .recordAutomodActionResult(refusedSuggested.id, { state: "refused", errorText: "hierarchy" }, {})
+      .recordAutomodActionResult(refusedSuggested.community_id, refusedSuggested.id, { state: "refused", errorText: "hierarchy" }, {})
       .row;
+    const failSlot = repo.claimAutomodActionSlot(
+      baseIntent({ communityId: cid, subjectUserId: "u5", action: "kick", caseId: 205 }),
+    ).row;
     untouched.failed = repo
       .recordAutomodActionResult(
-        repo.claimAutomodActionSlot(baseIntent({ communityId: cid, subjectUserId: "u5", action: "kick", caseId: 205 })).row.id,
+        cid,
+        failSlot.id,
         { state: "failed", errorText: "boom" },
         {},
       ).row;

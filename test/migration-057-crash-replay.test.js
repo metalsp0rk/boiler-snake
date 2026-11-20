@@ -119,6 +119,34 @@ describe("migration 057 crash-window replay (#813)", () => {
     assert.deepEqual(gsRows().length, 1);
   });
 
+  it("#838 (C2-8): guild_settings orphans are quarantined BEFORE the FK copy can abort", () => {
+    legacyFixture();
+    // A settings row whose community was removed out-of-band: unreachable
+    // (every reader keys on a live community) and, pre-fix, the copy-time FK
+    // abort made it a boot loop with manual SQL as the only repair.
+    db
+      .prepare("INSERT INTO guild_settings (community_id, xp_per_message, cooldown_seconds) VALUES (?, 1, 1)")
+      .run(999_999);
+    // A stranded drop-state row beside it (DB-10 class) — same named-count doctrine.
+    db
+      .prepare(`INSERT INTO role_drop_state (community_id, user_id, role_id, below_since, updated_at) VALUES (?, 'ghost', ?, 1, 1)`)
+      .run(999_999, ROLE);
+
+    up(db, { tableExists });
+
+    assert.deepEqual(
+      gsRows(),
+      [{ community_id: CID, xp_per_message: 9, cooldown_seconds: 30 }],
+      "the owned settings row survives; the orphan was swept, not carried",
+    );
+    assert.match(dds("guild_settings"), /REFERENCES\s+communities/i,
+      "the rebuild ran on a DB whose copy would have aborted pre-C2-8");
+    assert.equal(rdsRows().length, 1, "the drop-state sweep keeps its own class");
+
+    up(db, { tableExists }); // replay stays inert
+    assert.equal(gsRows().length, 1);
+  });
+
   it("RDS REPLAY after a crash between INSERT and DROP: stale staging dropped, rebuild completes", () => {
     legacyFixture();
     db.exec(STAGED_RDS); // crashed pass left the staged copy…
@@ -194,17 +222,22 @@ describe("migration 057 crash-window replay (#813)", () => {
       "the completed table is untouched");
   });
 
-  it("the loud-abort doctrine SURVIVES the transaction: an orphan settings row still kills the copy", () => {
+  it("#838 (C2-8): the loudness MOVED from boot-abort to runtime FK — after the rebuild a NEW orphan cannot be written", () => {
+    // Pre-C2-8 this test asserted the opposite: an unregistered settings row
+    // aborted the copy (041 doctrine). C2-8 showed the only repair for that
+    // abort was manual SQL at boot-loop frequency — the sweep now quarantines
+    // the unreachable rows FIRST, and what stays loud is the INSTALLED FK:
+    // the same write that once poisoned boot is refused at runtime.
     legacyFixture();
-    db.prepare("INSERT INTO guild_settings (community_id) VALUES (424242)").run(); // unregistered
+    up(db, { tableExists });
+    assert.match(dds("guild_settings"), /REFERENCES\s+communities/i, "belt installed");
 
-    assert.throws(() => up(db, { tableExists }), /FOREIGN KEY/i,
-      "the copy runs under FK enforcement — orphan settings rows abort LOUDLY (041 doctrine)");
-    // The transaction rolled back: legacy tables stand untouched (no boot-loop residue).
-    assert.equal(tableExists("guild_settings__057"), false, "the rolled-back pass leaves NOTHING behind");
-    assert.match(dds("guild_settings"), /CREATE TABLE/i);
-    assert.deepEqual(gsRows().map((r) => r.community_id).sort(), [CID, 424242].sort(),
-      "no partial copy persisted");
+    assert.throws(
+      () => db.prepare("INSERT INTO guild_settings (community_id) VALUES (424242)").run(),
+      /FOREIGN KEY/i,
+      "post-rebuild FK enforcement refuses new orphans — the invariant is a DB law now",
+    );
+    assert.equal(gsRows().length, 1, "the refused write left nothing behind");
   });
 
   it("impossible GS shape (live gone, only the placeholder staged) aborts with the honest cause", () => {

@@ -72,8 +72,10 @@ function createPrefixRe(table) {
 /**
  * Widen the ban_records status CHECK with `clemency_granted` via the
  * 040-style DDL-derived rebuild. Preserves rows (explicit column copy),
- * ids, the AUTOINCREMENT sequence, and BOTH named UNIQUE belts plus the two
- * plain indexes (captured from sqlite_master, re-issued after the rename).
+ * ids, the AUTOINCREMENT sequence (carried explicitly across the DROP —
+ * #838 C2-8b; a re-derived max(rowid) would let rolled-back-INSERT ids be
+ * reused), and BOTH named UNIQUE belts plus the two plain indexes (captured
+ * from sqlite_master, re-issued after the rename).
  *
  * @param {import("better-sqlite3").Database} db
  * @returns {"already-extended" | "rebuilt"}
@@ -128,6 +130,17 @@ function extendBanRecordsStatusCheck(db) {
     .all()
     .map((c) => c.name);
 
+  // #838 (C2-8b): capture the AUTOINCREMENT counter BEFORE the DROP. The
+  // DROP deletes sqlite_sequence['ban_records']; the renamed staging table
+  // re-derives it from max(copied rowid) — but a rolled-back INSERT advances
+  // an AUTOINCREMENT counter past every surviving row (that is literally its
+  // anti-reuse job), so max(copied) can sit BELOW the original counter and
+  // later ids would REUSE values old `appeal:<banRecordId>` audit strings
+  // already cited. Carry the counter across the rebuild.
+  const seqBefore = db
+    .prepare("SELECT seq FROM sqlite_sequence WHERE name='ban_records'")
+    .get()?.seq ?? null;
+
   db.exec(injected);
   db.prepare(
     `INSERT INTO ${staging} (${columns.map(quoteIdent).join(", ")})
@@ -136,6 +149,17 @@ function extendBanRecordsStatusCheck(db) {
   db.exec("DROP TABLE ban_records");
   db.exec(`ALTER TABLE ${staging} RENAME TO ban_records`);
   for (const idx of indexes) db.exec(idx.sql);
+
+  if (seqBefore !== null) {
+    const liveSeq = db
+      .prepare("SELECT seq FROM sqlite_sequence WHERE name='ban_records'")
+      .get();
+    if (!liveSeq) {
+      db.prepare("INSERT INTO sqlite_sequence (name, seq) VALUES ('ban_records', ?)").run(seqBefore);
+    } else if (Number(liveSeq.seq) < Number(seqBefore)) {
+      db.prepare("UPDATE sqlite_sequence SET seq=? WHERE name='ban_records'").run(seqBefore);
+    }
+  }
 
   // Belt-and-braces: the STORED DDL must carry the widened CHECK.
   const after = db

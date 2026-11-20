@@ -297,9 +297,22 @@ function setAutomodCaseStatus(communityId, caseNumber, status) {
     };
   }
   try {
-    db.prepare(
-      `UPDATE automod_cases SET status=?, updated_at=? WHERE id=?`,
-    ).run(next, now(), row.id);
+    // #838 (C2-8c): this used to be an unguarded check-then-act — the read
+    // and the blind `WHERE id=?` UPDATE could interleave with any other
+    // vocabulary move (e.g. a harness complete→recorded) and silently
+    // clobber it. Single-winner CAS now: the UPDATE carries the community
+    // AND the state this caller read; a lost race reports honestly instead
+    // of lying about the write.
+    const res = db.prepare(
+      `UPDATE automod_cases SET status=?, updated_at=?
+       WHERE id=? AND community_id=? AND status=?`,
+    ).run(next, now(), row.id, Number(communityId), row.status);
+    if (res.changes === 0) {
+      return {
+        ok: false,
+        error: `Case A-${caseNumber} changed before the status write — re-read and retry.`,
+      };
+    }
     return { ok: true, case: getAutomodCaseById(row.id) };
   } catch (err) {
     return {
@@ -314,19 +327,24 @@ function setAutomodCaseStatus(communityId, caseNumber, status) {
  * "**What happened:**" line). NULL-safe: null clears. Written only by the
  * harness metadata writer; the card only READS it.
  *
+ * @param {number} communityId the CALLER's community — #838 (C2-6): id-only
+ *   mutators are cross-tenant foot-guns; the DB binds `AND community_id=?`
+ *   so the belt does not live only in handler code.
  * @param {number} caseId
  * @param {string|null} text
  * @returns {{ ok: true } | { ok: false, error: string }}
  */
-function setAutomodCaseIncidentSummary(caseId, text) {
+function setAutomodCaseIncidentSummary(communityId, caseId, text) {
+  assertCommunityId(communityId);
+  const cid = Number(communityId);
   const id = Number(caseId);
   if (!Number.isInteger(id) || id < 1) {
     return { ok: false, error: "No such auto-mod case row." };
   }
   try {
     const res = db
-      .prepare(`UPDATE automod_cases SET incident_summary=? WHERE id=?`)
-      .run(optionalText(text), id);
+      .prepare(`UPDATE automod_cases SET incident_summary=? WHERE id=? AND community_id=?`)
+      .run(optionalText(text), id, cid);
     if (res.changes === 0) return { ok: false, error: `No auto-mod case row #${id}.` };
     return { ok: true };
   } catch (err) {
@@ -338,6 +356,7 @@ function setAutomodCaseIncidentSummary(caseId, text) {
  * Reveal the reporter on ONE case (#771 §3) — single-winner by shape:
  * `WHERE revealed_at IS NULL` makes the FIRST staff press the only writer.
  *
+ * @param {number} communityId the CALLER's community (#838 C2-6 belt — see setAutomodCaseIncidentSummary)
  * @param {number} caseId
  * @param {string} staffUserId the revealing staff member
  * @param {{ nowMs?: number }} [opts]
@@ -348,7 +367,9 @@ function setAutomodCaseIncidentSummary(caseId, text) {
  *   caller audits nothing new, #771: "re-press on a revealed card notes
  *   it's already revealed; no duplicate audit rows").
  */
-function revealAutomodCaseReporter(caseId, staffUserId, { nowMs } = {}) {
+function revealAutomodCaseReporter(communityId, caseId, staffUserId, { nowMs } = {}) {
+  assertCommunityId(communityId);
+  const cid = Number(communityId);
   const id = Number(caseId);
   if (!Number.isInteger(id) || id < 1) {
     return { ok: false, error: "No such auto-mod case row." };
@@ -361,11 +382,14 @@ function revealAutomodCaseReporter(caseId, staffUserId, { nowMs } = {}) {
       .prepare(
         `UPDATE automod_cases
             SET revealed_at=?, revealed_by_user_id=?, updated_at=?
-          WHERE id=? AND revealed_at IS NULL`,
+          WHERE id=? AND community_id=? AND revealed_at IS NULL`,
       )
-      .run(stamp, staff, stamp, id);
+      .run(stamp, staff, stamp, id, cid);
     const row = getAutomodCaseById(id);
-    if (!row) return { ok: false, error: `No auto-mod case row #${id}.` };
+    // Outside the caller's community the row is MISSING (no existence leak).
+    if (!row || Number(row.community_id) !== cid) {
+      return { ok: false, error: `No auto-mod case row #${id}.` };
+    }
     return { ok: true, revealed: res.changes === 1, alreadyRevealed: res.changes === 0, case: row };
   } catch (err) {
     return { ok: false, error: `Could not reveal the reporter: ${err?.message || err}` };
@@ -378,6 +402,7 @@ function revealAutomodCaseReporter(caseId, staffUserId, { nowMs } = {}) {
  * a losing click gets `{ok:true, won:false, existing:{...}}` and mutates
  * NOTHING (the callers show the EXISTING resolution — never an error).
  *
+ * @param {number} communityId the CALLER's community (#838 C2-6 belt — see setAutomodCaseIncidentSummary)
  * @param {number} caseId
  * @param {string} resolution one of AUTOMOD_CASE_RESOLUTIONS
  * @param {string} staffUserId the resolving staff member
@@ -385,7 +410,9 @@ function revealAutomodCaseReporter(caseId, staffUserId, { nowMs } = {}) {
  * @returns {{ ok: true, won: boolean, existing: object|null, case: object }
  *          | { ok: false, error: string }}
  */
-function resolveAutomodCase(caseId, resolution, staffUserId, { nowMs } = {}) {
+function resolveAutomodCase(communityId, caseId, resolution, staffUserId, { nowMs } = {}) {
+  assertCommunityId(communityId);
+  const cid = Number(communityId);
   const id = Number(caseId);
   if (!Number.isInteger(id) || id < 1) {
     return { ok: false, error: "No such auto-mod case row." };
@@ -405,11 +432,13 @@ function resolveAutomodCase(caseId, resolution, staffUserId, { nowMs } = {}) {
       .prepare(
         `UPDATE automod_cases
             SET resolved_at=?, resolution=?, resolved_by_user_id=?, updated_at=?
-          WHERE id=? AND resolved_at IS NULL`,
+          WHERE id=? AND community_id=? AND resolved_at IS NULL`,
       )
-      .run(stamp, kind, staff, stamp, id);
+      .run(stamp, kind, staff, stamp, id, cid);
     const row = getAutomodCaseById(id);
-    if (!row) return { ok: false, error: `No auto-mod case row #${id}.` };
+    if (!row || Number(row.community_id) !== cid) {
+      return { ok: false, error: `No auto-mod case row #${id}.` };
+    }
     return {
       ok: true,
       won: res.changes === 1,

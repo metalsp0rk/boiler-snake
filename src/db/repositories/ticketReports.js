@@ -27,6 +27,10 @@ const REPORT_KINDS = ["message", "user"];
  * the timestamps repositories/tickets.js uses.
  *
  * @param {object} opts
+ * @param {number} opts.communityId the CALLER's community — #838 (C2-6):
+ *   this insert took a raw ticketId with no community parameter at all, so
+ *   any caller holding any ticket id could file a report into ANOTHER
+ *   tenant's ticket. The ticket's ownership is now asserted up front.
  * @param {number} opts.ticketId tickets.id the report belongs to
  * @param {"message"|"user"} opts.kind
  * @param {string} opts.subjectUserId reported member's snowflake
@@ -38,6 +42,7 @@ const REPORT_KINDS = ["message", "user"];
  */
 function insertTicketReport(opts = {}) {
   const {
+    communityId,
     ticketId,
     kind,
     subjectUserId,
@@ -76,8 +81,13 @@ function insertTicketReport(opts = {}) {
 
   // Friendly pre-check so a stale/foreign ticket id reads as "Ticket not
   // found." instead of a raw FK dump; the FK itself still guards the race
-  // between this read and the insert (caught below).
-  if (!db.prepare(`SELECT 1 FROM tickets WHERE id=?`).get(tid)) {
+  // between this read and the insert (caught below). #838 (C2-6): the read
+  // is community-bound — a foreign ticket answers exactly like a missing
+  // one, and the communityId is a hard requirement (programmer-error
+  // posture, same as every writer in this file family).
+  assertCommunityId(communityId);
+  const owner = db.prepare(`SELECT community_id FROM tickets WHERE id=?`).get(tid);
+  if (!owner || Number(owner.community_id) !== Number(communityId)) {
     return { ok: false, error: "Ticket not found." };
   }
 
