@@ -89,6 +89,37 @@ describe("ssrfGuard.isDisallowedAddress", () => {
     }
   });
 
+  it("#836 B1-3: IPv4-compatible ::/96 refused whole; NAT64 64:ff9b::/96 unrolled through the v4 classes", () => {
+    // The literals the pre-#836 branch ALLOWED (verified on the shipped tree):
+    // "::127.0.0.1" is neither "::" nor "::1" and its first hextet is 0;
+    // "64:ff9b::7f00:1" hides 127.0.0.1 behind a legit-looking v6 prefix.
+    for (const ip of [
+      "::127.0.0.1",
+      "::10.0.0.1",
+      "::169.254.169.254",
+      "::0.9.9.9",
+      "0:0:0:0:0:0:0:5", // uncompressed spelling of the same ::/96 block
+      "64:ff9b::127.0.0.1", // dotted embedded quad
+      "64:ff9b::7f00:1", // hextet embedded quad
+      "64:ff9b::169.254.169.254", // cloud metadata via the v4 gateway
+      "64:ff9b::10.0.0.5",
+    ]) {
+      assert.equal(guard.isDisallowedAddress(ip), true, `must refuse ${ip}`);
+    }
+    // The unroll CLASSIFIES, it does not blanket-block: a public quad
+    // through NAT64 stays public; the SEPARATE 64:ff9b:1::/48 local prefix
+    // is not the well-known /96 and must not be caught by it.
+    for (const ip of [
+      "64:ff9b::8.8.8.8",
+      "64:ff9b::1.1.1.1",
+      "64:ff9b:1::7f00:1",
+      "2001:4860:4860::8888",
+      "2606:4700:4700::1111",
+    ]) {
+      assert.equal(guard.isDisallowedAddress(ip), false, `must allow ${ip}`);
+    }
+  });
+
   it("refuses empty and unparseable addresses", () => {
     assert.equal(guard.isDisallowedAddress(""), true);
     assert.equal(guard.isDisallowedAddress("  "), true);

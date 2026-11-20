@@ -111,12 +111,60 @@ const BLOCKED_V4_PREFIXES = [
 });
 
 /**
+ * Expand an IPv6 string into its EIGHT 16-bit hextets (numbers), handling
+ * "::" compression and a trailing embedded dotted IPv4 quad ("::ffff:1.2.3.4"
+ * / "64:ff9b::127.0.0.1"). Returns null for anything that is not an exact,
+ * unambiguous IPv6 — callers must treat null as refuse, never as allow.
+ * ("::" compresses one-or-more zero groups; a literal without it carries
+ * all eight hextets.)
+ *
+ * @param {string} lower
+ * @returns {number[]|null}
+ */
+function expandIPv6Hextets(lower) {
+  let s = String(lower);
+  const v4tail = /:(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(s);
+  if (v4tail) {
+    const p = v4tail.slice(1).map(Number);
+    if (p.length !== 4 || p.some((n) => !Number.isInteger(n) || n < 0 || n > 255)) {
+      return null;
+    }
+    s =
+      s.slice(0, v4tail.index) +
+      ":" +
+      ((p[0] << 8) | p[1]).toString(16) +
+      ":" +
+      ((p[2] << 8) | p[3]).toString(16);
+  }
+  const halves = s.split("::");
+  if (halves.length > 2) return null;
+  const parse = (part) =>
+    part === ""
+      ? []
+      : part.split(":").map((h) => (/^[0-9a-f]{1,4}$/i.test(h) ? parseInt(h, 16) : NaN));
+  if (halves.length === 1) {
+    const hs = parse(s);
+    return hs.length === 8 && hs.every((h) => Number.isInteger(h)) ? hs : null;
+  }
+  const head = parse(halves[0]);
+  const tail = parse(halves[1]);
+  if (head.some((h) => !Number.isInteger(h)) || tail.some((h) => !Number.isInteger(h))) {
+    return null;
+  }
+  const gap = 8 - head.length - tail.length;
+  if (gap < 1) return null; // "::" must stand for at least one zero group
+  return [...head, ...new Array(gap).fill(0), ...tail];
+}
+
+/**
  * Classify one address: true when the download target must be refused.
  * Refused classes (spec + the #273 union): every BLOCKED_V4_PREFIXES range;
  * IPv6 unspecified/loopback/ULA/link-local plus the unassigned c000::/2
  * block (covers ff00::/8 multicast); IPv4-mapped IPv6 forms — dotted AND
  * hex (e.g. ::ffff:7f00:1 == 127.0.0.1: a literal the pre-#273 guard let
- * through).
+ * through); and #836 (B1-3) the EMBEDDED-v4 families — IPv4-compatible
+ * ::/96 refused whole, NAT64 64:ff9b::/96 unrolled through the v4
+ * classifier.
  * @param {string} address
  * @returns {boolean}
  */
@@ -147,6 +195,35 @@ function isDisallowedAddress(address) {
     }
     if (/^f[cd][0-9a-f]{2}:/i.test(lower)) return true; // ULA fc00::/7
     if (/^fe[89ab][0-9a-f]:/i.test(lower)) return true; // link-local fe80::/10
+    // #836 (audit B1-3): two families EMBED an IPv4 address the literal
+    // text hides from a naive v6 read — both are unrolled through the v4
+    // classifier (or refused outright), never allowed on a v6 verdict:
+    //  - IPv4-compatible ::/96 (deprecated, still routable on some
+    //    stacks): "::127.0.0.1" is not "::", not "::1", and its first
+    //    hextet is 0 — the old branch ALLOWED it. Dead address space;
+    //    the whole /96 is refused.
+    //  - NAT64 well-known 64:ff9b::/96: a v4-only gateway relays the
+    //    embedded address — a class bypass of every v4 block on a NAT64
+    //    host. The trailing 32 bits are unrolled and re-classified.
+    // Full hextet expansion (handles "::" compression AND a trailing
+    // embedded dotted quad) so the /96 tests are exact, not textual.
+    const hextets = expandIPv6Hextets(lower);
+    if (hextets) {
+      if (hextets[0] === 0 && hextets[1] === 0 && hextets[2] === 0 &&
+          hextets[3] === 0 && hextets[4] === 0 && hextets[5] === 0) {
+        return true; // ::/96 — includes "::" and "::1" (already refused)
+      }
+      if (hextets[0] === 0x0064 && hextets[1] === 0xff9b &&
+          hextets[2] === 0 && hextets[3] === 0 &&
+          hextets[4] === 0 && hextets[5] === 0) {
+        return isDisallowedAddress(
+          `${hextets[6] >> 8}.${hextets[6] & 255}.${hextets[7] >> 8}.${hextets[7] & 255}`,
+        );
+      }
+    } else {
+      // isIPv6 accepted it but the expander refused — never a pass.
+      return true;
+    }
     const first = /^([0-9a-f]{1,4}):/.exec(lower);
     if (first && (parseInt(first[1], 16) & 0xc000) === 0xc000) return true; // c000::/2 (unassigned; incl. ff00::/8 multicast)
     const v4 = /^::ffff:(\d+\.\d+\.\d+\.\d+)$/i.exec(lower);

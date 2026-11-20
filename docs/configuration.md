@@ -87,7 +87,7 @@ RSS feed notifications ([`/rss` / `/setrss`](rss-notifications.md)) need **no** 
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
-| `RSS_MAX_FEEDS_PER_COMMUNITY` | **20** | Per-community subscription cap checked by `/rss add`. Unset/invalid = 20. Legacy rows **above** the cap keep polling (the cap gates subscriptions, not polls); lower it to freeze growth, raise it for feed-heavy communities |
+| `RSS_MAX_FEEDS_PER_COMMUNITY` | **20** | Per-community subscription cap checked by `/rss add`. Unset/invalid = 20, **clamped to 100** (#836: an unclamped knob let `/rss check` outrun the 15-minute interaction window). Legacy rows **above** the cap keep polling (the cap gates subscriptions, not polls); lower it to freeze growth, raise it (up to 100) for feed-heavy communities |
 | `RSS_USER_AGENT` | `BoilerSnakeRSS/1.0 (+https://github.com/metalsp0rk/boiler-snake)` | The User-Agent every feed poll sends (add-time validation and the ticker). Set it when a feed host wants a deployment-specific contact UA. Re-read per poll — no restart needed |
 
 ```dotenv
@@ -335,7 +335,7 @@ Each Discord server (guild) has its own settings stored in SQLite.
 | `twitch_golive_template` | *(none)* | Custom go-live message template (`NULL` = built-in `**{streamer}** is live!` — see [Twitch](twitch-notifications.md)) |
 | `rss_notification_channel_id` | *(none)* | Channel for RSS new-entry alerts (independent of YouTube/Twitch channels) |
 | `rss_notify_role_id` | *(none)* | Role mentioned on RSS new-entry posts (`/setrss role`; unset = no mention, never `@everyone`) |
-| `rss_polling_interval_minutes` | 15 | RSS feed polling frequency per community (1–60) |
+| `rss_polling_interval_minutes` | 15 | RSS feed polling frequency per community (5–60; floor = the 5-min poller tick, #836) |
 | `honeypot_pause_reason` | *(none)* | Set while the mass-ban safety valve has enforcement paused (#440; clear via `/honeypot safety resume`) |
 | `gork_*` | various | The Gork assistant family (`gork_enabled`, `gork_keyword` `@gork`, `gork_role_id`, `gork_context_window` 10, `gork_cooldown_sec`, `gork_search_enabled`, `gork_ste_enabled`, `gork_memory_*`, `gork_daily_limit`, `gork_log_channel_id`, …) — inventoried on [Gork](gork.md) |
 | `automod_enabled` | `0` | Auto-moderation master switch (`/automodconfig enable`; referrals refuse naming this cause while off) — [Auto-moderation](automod.md) |
@@ -533,7 +533,7 @@ Full guide: [RSS Feed Notifications](rss-notifications.md).
 ```bash
 /setrss channel channel:#feed-alerts
 /setrss role role:@NewsAlerts        # omit role to disable
-/setrss interval minutes:15          # 1-60 minutes
+/setrss interval minutes:15          # 5-60 minutes (poller ticks every 5; floor #836)
 /rss add url:https://feeds.example.com/blog.xml
 /rss list
 ```

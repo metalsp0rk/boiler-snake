@@ -32,7 +32,11 @@
  * calls pollFeedRow(force) verbatim.
  */
 
-const { validateFeedUrl, guardedFetchForFeed } = require("./feedFetch");
+const {
+  validateFeedUrl,
+  guardedFetchForFeed,
+  canonicalFeedUrl,
+} = require("./feedFetch");
 const {
   buildNotification,
   neutralizeRichText,
@@ -46,6 +50,8 @@ const {
 
 /** Spec default for the per-community subscription cap. */
 const DEFAULT_MAX_FEEDS_PER_COMMUNITY = 20;
+/** #836 (B1-6): hard ceiling on RSS_MAX_FEEDS_PER_COMMUNITY (see the clamp). */
+const MAX_FEEDS_PER_COMMUNITY_CEILING = 100;
 
 /**
  * Per-community subscription cap (spec: default 20, env override
@@ -62,9 +68,18 @@ function maxFeedsPerCommunity(env = process.env) {
   // access — test/env-parity.test.js's `env.NAME` scan pattern does not
   // match optional chaining, and a silent scan miss diverges the pin.
   const raw = Number(String(env.RSS_MAX_FEEDS_PER_COMMUNITY ?? "").trim());
-  return Number.isFinite(raw) && raw >= 1
-    ? Math.floor(raw)
-    : DEFAULT_MAX_FEEDS_PER_COMMUNITY;
+  const n =
+    Number.isFinite(raw) && raw >= 1
+      ? Math.floor(raw)
+      : DEFAULT_MAX_FEEDS_PER_COMMUNITY;
+  // #836 (audit B1-6): an UNCLAMPED knob made `/rss check` a timestart
+  // gamble — one defer, then sequential forcePolls (worst case 4 attempts
+  // × 10 s + redirects each), and past the 15-minute interaction window
+  // the summary editReply dies as "Unknown interaction". 100 keeps every
+  // realistic deployment inside the window's reach while honoring the
+  // knob's intent; raising the cap beyond it needs a chunked check, not
+  // a bigger number.
+  return Math.min(n, MAX_FEEDS_PER_COMMUNITY_CEILING);
 }
 
 /**
@@ -282,14 +297,21 @@ async function addFeed({
  */
 async function removeFeed({ communityId, url, db = defaultDb() } = {}) {
   try {
-    const row = db.getRssFeed(communityId, url);
+    let row = db.getRssFeed(communityId, url);
+    // #836 (B1-5): a typed variant of the stored (canonical) url resolves
+    // to the SAME subscription — the remove acts on the stored row.url,
+    // never on the typed spelling (rss_seen rows key on the stored url).
+    if (!row) {
+      const canon = canonicalFeedUrl(url);
+      if (canon !== String(url ?? "").trim()) row = db.getRssFeed(communityId, canon);
+    }
     if (!row) {
       return {
         ok: false,
         error: "no subscription found for that feed — check /rss list",
       };
     }
-    const removed = db.removeRssFeed(communityId, url);
+    const removed = db.removeRssFeed(communityId, row.url);
     if (!removed) {
       // Raced with a concurrent remove (community teardown?) — honest state.
       return {
@@ -518,6 +540,7 @@ async function forcePoll({
 
 module.exports = {
   DEFAULT_MAX_FEEDS_PER_COMMUNITY,
+  MAX_FEEDS_PER_COMMUNITY_CEILING,
   NO_CHANNEL_ERROR,
   DEFAULT_RSS_POLL_INTERVAL_MINUTES,
   maxFeedsPerCommunity,

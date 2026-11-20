@@ -278,8 +278,8 @@ describe("rss poller", () => {
     assert.equal(outbound.sent[0].payload.content, `<@&${ROLE}> **Role Feeds** ${EMDASH} new post`);
     assert.deepEqual(
       outbound.sent[0].payload.allowedMentions,
-      { roles: [ROLE] },
-      "#272 strict allow-list arm",
+      { parse: [], roles: [ROLE] },
+      "#272 allow-list arm in its #836 belt form (parse:[] rides alongside)",
     );
   });
 

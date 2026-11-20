@@ -517,6 +517,54 @@ describe("rss commands", () => {
     assert.deepEqual(api.listRssSeenKeysForFeed(cid, url), [], "seen-set cleaned with it");
   });
 
+  it("#836 B1-5: remove resolves a TYPED CANONICAL VARIANT of the stored url (upper scheme, :443)", async () => {
+    const cid = configured("rss-remove-variant");
+    const stored = "https://feeds.example.com/blog.xml";
+    api.addRssFeed(cid, stored, { feedTitle: "Example News" });
+    // The stored string is the add path's canonical output; a staff member
+    // retyping it (Discord keeps the typed shape) used to MISS the exact
+    // match and the docs' "paste the exact URL" hatch was broken by design.
+    const { ctx, replies } = makeCtx({
+      communityId: cid,
+      commandName: "rss",
+      sub: "remove",
+      options: { feed: "HTTPS://feeds.example.com:443/blog.xml" },
+    });
+    await runRss(ctx, diBox());
+    assert.match(replies[0].content, /Unsubscribed from \*\*Example News\*\*\./, replies[0].content);
+    assert.equal(api.getRssFeed(cid, stored), null, "the remove acted on the STORED row");
+  });
+
+  it("#836 B1-5: check resolves a typed variant for test/check lookup; a TRUE miss still names it", async () => {
+    const cid = configured("rss-check-variant");
+    const url = "https://feeds.example.com/blog.xml";
+    api.addRssFeed(cid, url, { feedTitle: "Variant Feeds" });
+    const fetch = fetchStub(
+      httpOk(rss2([rssItem({ guid: "v-1", title: "Variant Entry", link: "https://example.com/v1", pubMs: T0 })])),
+    );
+    const { ctx, replies } = makeCtx({
+      communityId: cid,
+      commandName: "rss",
+      sub: "check",
+      outbound: makeOutbound(),
+      options: { feed: "HTTPS://feeds.example.com/blog.xml" }, // case variant
+    });
+    await runRss(ctx, diBox({ fetchImpl: fetch, now: T0 }));
+    assert.doesNotMatch(replies[0].content, /no longer subscribed/, replies[0].content);
+
+    // The honesty guard: a string canonicalization cannot rescue (unknown
+    // host) still reports the miss with the typed spelling.
+    const miss = makeCtx({
+      communityId: cid,
+      commandName: "rss",
+      sub: "check",
+      outbound: makeOutbound(),
+      options: { feed: "https://nowhere.example/feed.xml" },
+    });
+    await runRss(miss.ctx, diBox({ fetchImpl: fetchStub(httpOk(BLOG_XML)), now: T0 }));
+    assert.match(miss.replies[0].content, /`https:\/\/nowhere\.example\/feed\.xml` is no longer subscribed/);
+  });
+
   // ---------------------------------------------------------------------------
   // /rss list + /setrss settings — **Label:** value readback
   // ---------------------------------------------------------------------------
@@ -568,7 +616,9 @@ describe("rss commands", () => {
 
   it("setrss interval OUT of range → specific correction, NOTHING written", async () => {
     const cid = configured("rss-set-interval");
-    for (const bad of [0, 61, -5]) {
+    // #836 (B1-6): floor is 5 — the poller ticks every 5 minutes, and 4 is
+    // exactly the cadence the engine cannot honor.
+    for (const bad of [0, 4, 61, -5]) {
       const { ctx, replies } = makeCtx({
         communityId: cid,
         commandName: "setrss",
@@ -578,7 +628,7 @@ describe("rss commands", () => {
       await runSetRss(ctx, diBox());
       assert.match(
         replies[0].content,
-        /Polling interval must be between 1 and 60 minutes\./,
+        /Polling interval must be between 5 and 60 minutes — the poller runs every 5 minutes\./,
         `minutes=${bad}`,
       );
       assert.equal(
@@ -595,11 +645,11 @@ describe("rss commands", () => {
       communityId: cid,
       commandName: "setrss",
       sub: "interval",
-      options: { minutes: 7 },
+      options: { minutes: 5 }, // #836: the new floor is a VALID boundary
     });
     await runSetRss(ctx, diBox());
-    assert.equal(api.getGuildSettings(cid).rss_polling_interval_minutes, 7);
-    assert.match(replies[0].content, /RSS polling interval set to \*\*7\*\* minute\(s\)\./);
+    assert.equal(api.getGuildSettings(cid).rss_polling_interval_minutes, 5);
+    assert.match(replies[0].content, /RSS polling interval set to \*\*5\*\* minute\(s\)\./);
   });
 
   it("setrss role sets, and OMITTING the role clears the mention", async () => {
@@ -710,7 +760,7 @@ describe("rss commands", () => {
       /^<@&435678901234567890> \*\*Example News\*\* .* new post/,
       "role prefix + bold feed label (format.js shape)",
     );
-    assert.deepEqual(payload.allowedMentions, { roles: ["435678901234567890"] }, "strict #272 form");
+    assert.deepEqual(payload.allowedMentions, { parse: [], roles: ["435678901234567890"] }, "#836 belt form");
     assert.equal(payload.embeds[0].title, "Brand New Post", "the LATEST entry was posted");
 
     // The no-side-effect contract (why /rss test does NOT reuse pollFeedRow):
@@ -894,5 +944,11 @@ describe("rss commands", () => {
     assert.equal(subscriptions.maxFeedsPerCommunity({ RSS_MAX_FEEDS_PER_COMMUNITY: "-4" }), 20);
     assert.equal(subscriptions.maxFeedsPerCommunity({ RSS_MAX_FEEDS_PER_COMMUNITY: "abc" }), 20);
     assert.equal(subscriptions.maxFeedsPerCommunity(), 20, "process.env default path stays 20 in tests");
+    // #836 B1-6: hard ceiling — an unclamped knob let /rss check (one
+    // defer + sequential forcePolls) outrun the 15-minute interaction
+    // window into "Unknown interaction" deaths.
+    assert.equal(subscriptions.maxFeedsPerCommunity({ RSS_MAX_FEEDS_PER_COMMUNITY: "100" }), 100);
+    assert.equal(subscriptions.maxFeedsPerCommunity({ RSS_MAX_FEEDS_PER_COMMUNITY: "100000" }), 100, "clamped to the ceiling");
+    assert.equal(subscriptions.MAX_FEEDS_PER_COMMUNITY_CEILING, 100);
   });
 });

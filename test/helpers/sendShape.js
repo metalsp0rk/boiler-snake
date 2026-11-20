@@ -13,9 +13,12 @@ const assert = require("node:assert/strict");
  * pins both sides of the contract:
  *
  *   content mention token built   →  exact allowedMentions payload
- *   @everyone                     →  { parse: ["everyone"] }
- *   <@&roleId> (configured role)  →  { roles: [roleId] }   (strict allow-list, #272)
- *   none                          →  { parse: [] }
+ *   @everyone                     → { parse: ["everyone"] }
+ *   <@&roleId> (configured role)  → { parse: [], roles: [roleId] }  (allow-list #272,
+ *                                     BELT form per #836 B1-8: parse:[] kills the
+ *                                     implicit classes; omitted parse rode the
+ *                                     server's full defaults — arms are additive)
+ *   none                          → { parse: [] }
  *
  * The assertions are two-sided on purpose: flipping parse back to [] fails
  * the exact-payload check, and suppressing/multiplying the content token the
@@ -97,14 +100,17 @@ function assertPingsEveryone(payload, { label = "live alert" } = {}) {
  * Role-only ping contract (YouTube upload role, Twitch go-live, GitHub
  * releases — "the message mentions that role only — never @everyone"):
  * content opens with the configured role token and the payload is the
- * STRICT allow-list { roles: [roleId] } — never with `parse` alongside.
+ * allow-list BELT { parse: [], roles: [roleId] }.
  *
- * #272 (resolved against the live Discord message docs): `parse` is mutually
- * exclusive with the id lists — `{parse:["roles"], roles:[id]}` is a
- * documented validation error, and even setting that aside `parse:["roles"]`
- * would validate ANY role token in third-party text (stream titles, release
- * bodies). The strict form is the only shape that pins the ping to exactly
- * the configured role: other role tokens render as plain text, no ping.
+ * #272 pinned the ping to exactly the configured role; #836 (B1-8) fixed
+ * the FORM: the old "parse is mutually exclusive with the id lists" claim
+ * is false against the installed discord.js (allowedMentions passes
+ * through untransformed) — arms are ADDITIVE, and an omitted `parse`
+ * defaults to the server's full implicit list, so the bare `{roles:[id]}`
+ * arm was safe only while the body rewrite held. `parse: []` now kills
+ * every implicit class outright: smuggled role tokens in third-party text
+ * (stream titles, release bodies) are inert by the PAYLOAD itself, and
+ * `roles: [roleId]` explicitly allows exactly the configured role.
  */
 function assertPingsRoleOnly(payload, roleId, { label = "role alert" } = {}) {
   assert.ok(payload, `${label}: expected a send payload`);
@@ -115,8 +121,8 @@ function assertPingsRoleOnly(payload, roleId, { label = "role alert" } = {}) {
   );
   assert.deepEqual(
     payload.allowedMentions,
-    { roles: [roleId] },
-    `${label}: allowedMentions must be exactly { roles: ["${roleId}"] } WITHOUT parse — strict allow-list (#272) (${describeSend(payload)})`
+    { parse: [], roles: [roleId] },
+    `${label}: allowedMentions must be exactly { parse: [], roles: ["${roleId}"] } — allow-list belt (#272 + #836) (${describeSend(payload)})`
   );
   assert.ok(
     !EVERYONE_TOKEN_RE.test(text),

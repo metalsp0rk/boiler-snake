@@ -43,7 +43,7 @@ TWITCH_EVENTSUB_MAX_CHANNELS=50                                    # optional qu
 Requirements:
 
 - The bot's [public web server](/web-admin) must be reachable at an **HTTPS URL on port 443** (a reverse proxy terminating TLS in front of `PUBLIC_HTTP_PORT` is fine). Plain HTTP is rejected by Twitch and by the bot at startup.
-- `TWITCH_EVENTSUB_SECRET` signs every delivery (HMAC-SHA256); the bot rejects bad signatures and deliveries older than 10 minutes.
+- `TWITCH_EVENTSUB_SECRET` signs every delivery (HMAC-SHA256); the bot rejects bad signatures and deliveries older than 10 minutes. A signed **replay** of the same `Webhook-Message-Id` inside that window is ACKED (204) without reprocessing — bounded in-memory seen-id store, challenges exempt so verification retries always get answered (#836).
 - The subscription endpoint must be `POST {callback}`; the bot serves it at `/hooks/twitch` on the public web server.
 
 `/settwitch settings` shows whether EventSub is enabled, how many subscriptions are healthy, and any failures. The bot self-heals: subscriptions are created when you `/twitch add`, deleted when the last guild removes the broadcaster, and an hourly reconcile prunes orphans and retries failures. Twitch redeliveries are deduped against the poller, so you never get double alerts.
