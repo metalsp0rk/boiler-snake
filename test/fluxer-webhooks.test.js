@@ -202,6 +202,9 @@ describe("platform/fluxer/webhooks — executeRelayWebhook", () => {
     const payload = JSON.parse(body.get("payload_json"));
     assert.equal(payload.content, "see attached");
     assert.equal(payload.nonce, "n-1", "nonce travels inside payload_json");
+    // #839 (D1-6): the bind-index — without it the server never ATTACHES
+    // files[i] (the #373 lesson from the channel-send path).
+    assert.deepEqual(payload.attachments, [{ id: 0, filename: "board.png" }]);
     const part = body.get("files[0]");
     assert.ok(part instanceof Blob);
     assert.equal(await part.text(), "PNGBYTES");
@@ -211,6 +214,34 @@ describe("platform/fluxer/webhooks — executeRelayWebhook", () => {
       {},
       "no content-type header on multipart — fetch owns the boundary",
     );
+  });
+
+  it("#839 D1-6: every multipart carries the attachments bind-index (both lanes, ids match parts)", async () => {
+    const fetchStub = makeFakeFetch({
+      [`POST ${apiPath("?wait=true")}`]: jsonResponse(200, { id: "m-3" }),
+      [`PATCH ${apiPath("/messages/m-9")}`]: jsonResponse(200, { id: "m-9" }),
+    });
+    const api = createFluxerWebhooks({ apiOrigin: API, fetch: fetchStub });
+
+    const files = [
+      { name: "a.png", data: Buffer.from("A"), contentType: "image/png" },
+      { name: "b.txt", data: Buffer.from("B"), contentType: "text/plain" },
+    ];
+    assert.equal((await api.executeRelayWebhook(WH, { files, nonce: "n-9" })).ok, true);
+    assert.equal((await api.patchRelayMessage(WH, "m-9", { files })).ok, true);
+
+    for (const call of fetchStub.calls) {
+      const payload = JSON.parse(call.init.body.get("payload_json"));
+      assert.deepEqual(
+        payload.attachments,
+        [
+          { id: 0, filename: "a.png" },
+          { id: 1, filename: "b.txt" },
+        ],
+        `${call.method}: claim ids index the files[i] parts exactly`,
+      );
+      assert.ok(call.init.body.get("files[1]") instanceof Blob, "part 1 rides beside the claim");
+    }
   });
 
   it("maps 429 to { ok:false, retryable:true } with the platform code", async () => {

@@ -248,14 +248,27 @@ function createFluxerWebhooks(transport = {}) {
   }
 
   /**
-   * files → FormData (payload_json + files[i] parts, the Phase 0-confirmed
-   * multipart shape shared with the send paths).
+   * files → FormData (payload_json + files[i] parts + the `attachments`
+   * bind-index, the multipart shape shared with the send paths — #839
+   * D1-6: the bind-index is what makes the server ATTACH the parts).
    */
   function buildMultipart(body, files, method) {
     let form;
     try {
+      const payload = { ...body };
+      // #839 (D1-6): files[i] parts only BIND when payload_json carries the
+      // matching `attachments: [{id, filename}]` index — the lesson the
+      // channel-send path paid for in #373 ("never appended the payload_json
+      // attachments index the server needs to bind files[i] parts"). Mirror
+      // the SDK's buildFormData exactly (same shape, same caller-set guard)
+      // so both Fluxer send paths speak one wire dialect; without it a
+      // webhook file relay 400s or silently drops the file (and the bridge
+      // ladder burns its 5 attempts on every row).
+      if (files.length > 0 && payload.attachments === undefined) {
+        payload.attachments = files.map((f, i) => ({ id: i, filename: f.name }));
+      }
       form = new FormData();
-      form.append("payload_json", JSON.stringify(body));
+      form.append("payload_json", JSON.stringify(payload));
       files.forEach((f, i) => {
         form.append(
           `files[${i}]`,

@@ -55,10 +55,36 @@ function eventReminderRetryDelayMs(attempts, fireAt, nowMs) {
 
 // ── tiny JSON column helpers ────────────────────────────────────────────────
 
+/**
+ * #839 (D1-8): the write boundary KILLS the #344 class instead of trusting
+ * every caller. Silent collapse of a non-array to "[]" re-mints the
+ * empty-gate bug (a whitelist that gates NOBODY, replied with success), so
+ * anything that is not an array or a JSON-parseable array-string is now a
+ * loud TypeError at the boundary (mirrors presets.normalizeWhitelist's
+ * parse-the-stored-form step, minus its leniency — reading junk is a
+ * display concern; WRITING junk away is data loss).
+ */
 function toJsonArray(value) {
   if (value == null) return "[]";
   if (Array.isArray(value)) return JSON.stringify(value.map(String));
-  return "[]";
+  if (typeof value === "string" && value.trim() !== "") {
+    try {
+      const parsed = JSON.parse(value);
+      if (Array.isArray(parsed)) return JSON.stringify(parsed.map(String));
+    } catch {
+      // fall through to the throw — a non-JSON string is not a list
+    }
+  }
+  const shown = (() => {
+    try {
+      return JSON.stringify(value) ?? String(value);
+    } catch {
+      return String(value);
+    }
+  })();
+  throw new TypeError(
+    `toJsonArray: expected an array or JSON array string, got ${typeof value}: ${shown.slice(0, 80)}`,
+  );
 }
 
 function fromJsonArray(text) {

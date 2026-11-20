@@ -42,14 +42,14 @@ function resolveOption(eventId, ref) {
 
 /**
  * Replace every option of an event atomically (create/edit/preset apply).
- * Existing signups are refused on by the caller when signups exist; here we
- * just swap rows.
+ * Refused outright whenever ANY signup/waitlist exists (#839 D1-7): the
+ * swap is a full delete+reinsert, so per-option commands are the only
+ * signup-safe mutation path.
  * @param {number} eventId
  * @param {Array<{label:string, emoji?:string|null, capacity?:number,
  *   waitlist_on?:boolean, reminders_on?:boolean, role_whitelist?:string|null}>} specs
  */
 function replaceOptions(eventId, specs) {
-  const existing = repo.listEventOptions(eventId);
   const signups = repo.countEventSignups(eventId);
   // countEventSignups groups by option id with CAMELCASE counters — the
   // old snake_case read here made hasSignups structurally false, so the
@@ -59,10 +59,14 @@ function replaceOptions(eventId, specs) {
   const hasSignups = Object.values(signups).some(
     (g) => (g?.signedUp ?? g?.signed_up ?? 0) + (g?.waitlisted ?? 0) > 0
   );
-  if (hasSignups && existing.length !== specs.length) {
-    // Keep option ids stable for existing rows when the count matches;
-    // changing the SET of options while people signed up needs a manual
-    // remove/add (options remove/add), never a silent swap.
+  if (hasSignups) {
+    // #839 (D1-7): ANY swap with live signups is refused — the old equal-
+    // count exemption was a lie: replaceEventOptions DELETES every option
+    // row and re-inserts (FK cascade takes the signups with it), so an
+    // equal-count preset apply silently destroyed all RSVPs. The r2
+    // remediation line is the law now: changing options while people
+    // signed up goes through the per-option commands, which respect the
+    // takers.
     return {
       ok: false,
       error:
