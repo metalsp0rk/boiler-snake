@@ -557,7 +557,12 @@ the dead claimer). The settle is deliberately **not a re-run**: a crash
 leaves the Discord side UNKNOWN (a ban may have landed), so the row lands
 `failed` with `Run interrupted by restart — result unknown; verify the
 outcome on Discord before retrying this action.` — the ledger tells the
-truth and staff decide next.
+truth and staff decide next. When the dead run had already **recorded
+suggestions**, the sweep also **rebuilds and posts the case card** from
+the ledger (#834): those rows stay approvable, so staff get the live
+approve/dismiss UI instead of an orphaned paper trail; if the rebuild
+itself fails, the notice names the cause and tells staff to handle the
+case manually — never a silently missing card.
 
 **Fluxer: explicit no-parity** (epic decision 8). The harness is Discord-only.
 

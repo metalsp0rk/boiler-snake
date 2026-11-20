@@ -867,6 +867,119 @@ test("boot sweep terminalizes stuck processing rows and posts the interrupted no
   assert.match(embed(w.posts[0]).description, /\*\*Reporter:\*\* hidden/);
   assert.doesNotMatch(embed(w.posts[0]).description, new RegExp(`<@${REF}>`));
   assert.match(embed(w.posts[0]).description, /run interrupted by restart/);
+  // #834 belt pin: this case recorded NOTHING before dying, so the sweep
+  // stays exactly as before — one notice, no suggestions line, no card.
+  // (start() fire-and-forgets the sweep posts; flush past the detached
+  // chain so a hypothetical second post could not still be in flight.)
+  for (let i = 0; i < 8; i += 1) await new Promise((r) => setImmediate(r));
+  assert.equal(w.posts.length, 1, "no suggestions, no card (law unchanged for silent deaths)");
+});
+
+// -------------------------------------------------------------------------
+// #834 / A1-5: a crash AFTER recording suggestions must not orphan them.
+// The rows stay `suggested` and claimable (approve gates on the ROW and
+// the case-level resolution, not on the dead run), so the sweep rebuilds
+// the card from the ledger; the notice names it — or names the rebuild
+// failure so staff stop waiting for a card that never posts.
+// -------------------------------------------------------------------------
+
+test("#834 boot sweep rebuilds the card when the dead run recorded suggestions - issue #834", async () => {
+  const { cid, caseRow, w } = await seededCommunity("sweep834");
+  db.db.prepare(`UPDATE automod_cases SET status='processing' WHERE id=?`).run(caseRow.id);
+  const ins = db.insertAutomodActionSuggestion({
+    communityId: cid,
+    caseId: caseRow.id,
+    guildId: GUILD,
+    subjectUserId: "852000000000000099",
+    action: "warn",
+    mode: "suggest",
+  });
+  assert.equal(ins.ok, true, ins.error);
+  // A `no_action` suggestion is a consideration marker with no button —
+  // it must NOT inflate the actionable count.
+  const ins2 = db.insertAutomodActionSuggestion({
+    communityId: cid,
+    caseId: caseRow.id,
+    guildId: GUILD,
+    subjectUserId: "852000000000000098",
+    action: "no_action",
+    mode: "suggest",
+  });
+  assert.equal(ins2.ok, true, ins2.error);
+
+  const cap = captureConsole();
+  let out;
+  try {
+    out = automodFeature.start({ discord: w.client });
+  } finally {
+    refer.setRunCaseHook(null);
+    cap.restore();
+  }
+  assert.deepEqual({ checked: out.checked, flipped: out.flipped }, { checked: 1, flipped: 1 });
+
+  const delivered = await waitFor(() => w.posts.length >= 2);
+  assert.ok(delivered, "the notice AND the rebuilt card land (the REAL buildCardFromCase ran)");
+  {
+    assert.match(
+      embed(w.posts[0]).description,
+      /\*\*Recorded suggestions:\*\* 1 action\(s\)[\s\S]*rebuilt case card follows/,
+      "the notice counts ONLY the actionable suggestion and points at the card",
+    );
+    const buttons = (w.posts[1].components ?? []).flatMap((r) => r.components ?? []);
+    assert.ok(
+      buttons.some((b) => /Approve warn/.test(b.label ?? "")),
+      `the rebuilt card carries the live Approve button: ${JSON.stringify(buttons.map((b) => b.label))}`,
+    );
+    assert.ok(buttons.some((b) => /Dismiss warn/.test(b.label ?? "")), "and the Dismiss twin");
+    assert.ok(
+      buttons.some((b) => (b.custom_id ?? "").startsWith("am:card:approve:")),
+      "row buttons ride the real custom-id law (approve works)",
+    );
+  }
+});
+
+test("#834 a failed card rebuild is NAMED in the notice and the log, never silent - issue #834", async () => {
+  const { cid, caseRow } = await seededCommunity("sweep834b");
+  db.db.prepare(`UPDATE automod_cases SET status='processing' WHERE id=?`).run(caseRow.id);
+  const ins = db.insertAutomodActionSuggestion({
+    communityId: cid,
+    caseId: caseRow.id,
+    guildId: GUILD,
+    subjectUserId: "852000000000000097",
+    action: "timeout",
+    mode: "suggest",
+    params: { durationSeconds: 60 },
+  });
+  assert.equal(ins.ok, true, ins.error);
+
+  const sent = [];
+  const cap = captureConsole();
+  let out;
+  try {
+    out = harness.sweepInterruptedRuns({
+      postToChannel: async (chId, payload) => {
+        sent.push({ chId, payload });
+        return { id: "sent" };
+      },
+      buildCard: () => ({ ok: false, error: "card rebuild boom" }),
+    });
+    await Promise.all(out.posts);
+  } finally {
+    cap.restore();
+  }
+  assert.equal(out.flipped, 1);
+  assert.equal(sent.length, 1, "no card post follows a failed rebuild");
+  assert.match(
+    embed(sent[0].payload).description,
+    /1 action\(s\)[\s\S]*could not be posted \(card rebuild boom\)[\s\S]*handle this case manually/,
+    "the notice tells staff the card is NOT coming and what to do instead",
+  );
+  assert.ok(
+    cap.lines.some(
+      (l) => l.includes("boot sweep card rebuild (best effort)") && l.includes("card rebuild boom"),
+    ),
+    `the rebuild failure is logged with cause: ${cap.lines.join(" | ")}`,
+  );
 });
 
 test("the sweep survives a dead channel (best-effort notice, the flip is what matters) - issue #728", async () => {
