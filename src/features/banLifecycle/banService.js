@@ -350,6 +350,17 @@ function buildGuardSeams(opts, guildId) {
       }
       return perms.has(MANAGE_GUILD_BIT) === true;
     },
+    // #835 (A2-10): the bot's OWN application grant. Tri-state by design:
+    // null = NOT VISIBLE (no client, no members.me, no bits) — the real
+    // banMember call stays the truth-source and its translated 50013 copy
+    // already names the fix; a belt that refuses on cache misses would
+    // break every legitimate ban.
+    fetchBotHasBanMembers: async () => {
+      const me = guildOf().members?.me;
+      const perms = me?.permissions;
+      if (!perms || typeof perms.has !== "function") return null;
+      return perms.has("BanMembers") === true;
+    },
   };
 }
 
@@ -466,6 +477,29 @@ async function guardBanSubject(opts) {
   if (subjectTop >= botTop) {
     return fail(
       `Refusing to ban <@${userId}> — their top role (position ${subjectTop}) is not below the bot's highest role (position ${botTop}). Discord only lets a higher role moderate a lower one; move the bot's role up. Nothing was banned.`
+    );
+  }
+
+  // #835 (A2-10): application-permission belt. The hierarchy law above
+  // proves the bot may moderate the subject by ROLE POSITION; it cannot
+  // see whether the bot's own role still carries the **Ban Members**
+  // grant. Without it every ban dies at Discord 50013 — AFTER the
+  // DM-first law has already told the subject they were banned, in a
+  // guild where nothing changed. Visible-and-missing refuses HERE
+  // (specific cause, zero side effects); NOT visible (no client, no
+  // members.me, no bits) proceeds: the real banMember call stays the
+  // truth-source and its translated 50013 copy already names the fix —
+  // a belt that refused on cache misses would break every legitimate ban.
+  const readBotCanBan = seamOf(opts, "fetchBotHasBanMembers", defaults);
+  let botCanBan = null;
+  try {
+    botCanBan = await readBotCanBan();
+  } catch {
+    botCanBan = null; // an unreadable belt never refuses; it just stays silent
+  }
+  if (botCanBan === false) {
+    return fail(
+      `The bot's own role is missing **Ban Members** in this guild — Discord would refuse this ban (Missing Access 50013) after the ban DM goes out. Fix the bot role's permissions, then retry. Nothing was banned.`
     );
   }
   return { ok: true };

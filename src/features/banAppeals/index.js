@@ -25,7 +25,7 @@
  * Explicit Fluxer NO-PARITY (#773 epic decision): the ban-DM button, the
  * statement modal, the header buttons and the ferry relay are all Discord
  * component mechanics; the /banappeals handler refuses Fluxer contexts with
- * the shipped sentence. Docs: docs/ban-appeals.md.
+ * the shipped sentence. Docs: docs/ban-lifecycle.md (appeals section).
  */
 
 const { LOG_PREFIX, AP_TICKET_PREFIX, AP_DENY_MODAL_PREFIX } = require("./constants");

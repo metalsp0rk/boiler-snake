@@ -8,7 +8,8 @@
  * /ban + /bannotify + the "Ban member" user menu and the `bl:ban:` modal
  * prefix under the owner name below (A2-10 collision guard). NO
  * buttonHandlers: #772 ships no ban buttons (the #773 appeals seam reserves
- * the sibling `bl:appeal:` prefix later).
+ * the sibling `appeal:` / `appeal:s:` prefixes — guildless, NOT `bl:` —
+ * see banAppeals/constants.js).
  *
  * Explicit Fluxer NO-PARITY (epic decision, docs/ban-lifecycle.md): every
  * command arm refuses NOT_ON_FLUXER inside ./commands handlers; this module
