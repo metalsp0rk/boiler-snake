@@ -1,5 +1,53 @@
 # Changelog
 
+## [1.41.0](https://github.com/metalsp0rk/boiler-snake/compare/v1.40.0...v1.41.0) (2026-11-20)
+
+
+### Features
+
+* **automod:** rules distillation gets preview, confirm, read-back + injection belt ([#815](https://github.com/metalsp0rk/boiler-snake/issues/815)) ([92dc957](https://github.com/metalsp0rk/boiler-snake/commit/92dc957049b297d29fe80d4b9c7e2c281c5b507a))
+* **automod:** sanctions bind to case participants at dispatch ([#816](https://github.com/metalsp0rk/boiler-snake/issues/816)) ([45caa2b](https://github.com/metalsp0rk/boiler-snake/commit/45caa2bfe611ac3d9eeb5ffd5eb89ad1f671e383))
+* **e2e:** enumerate DM channels in the mock + flip member-side DM coverage ([#328](https://github.com/metalsp0rk/boiler-snake/issues/328) gap 7) ([5544f74](https://github.com/metalsp0rk/boiler-snake/commit/5544f743669a2fb16386cecf43499811aa15814a))
+* **e2e:** execute Apps-menu context menus in the mock + tier-4 report coverage ([#757](https://github.com/metalsp0rk/boiler-snake/issues/757)) ([9b0ae74](https://github.com/metalsp0rk/boiler-snake/commit/9b0ae74cf4622fe10a7967252ed9cfeec170a000))
+* **e2e:** transport voice states in the mock + flip voice XP & AFK gates ([#328](https://github.com/metalsp0rk/boiler-snake/issues/328) gap 6) ([d7c76cd](https://github.com/metalsp0rk/boiler-snake/commit/d7c76cdab486ff038ab0bf0594fd25c938031496))
+* **levelRoles:** reconcile level roles when a threshold moves ([#828](https://github.com/metalsp0rk/boiler-snake/issues/828)) ([8516ba8](https://github.com/metalsp0rk/boiler-snake/commit/8516ba8ce6bbfd8248baec1bf600176e1b2a51cf))
+* **retention:** erasure paths for the whole moderation-PII family ([#822](https://github.com/metalsp0rk/boiler-snake/issues/822)) ([4e62980](https://github.com/metalsp0rk/boiler-snake/commit/4e629803826b07b268cebf707a72e8634d24e27d))
+* **tickets:** Report Post delete-answer becomes a required Label select ([#877](https://github.com/metalsp0rk/boiler-snake/issues/877)) ([efd1c32](https://github.com/metalsp0rk/boiler-snake/commit/efd1c32261501825a1bce540ec3360f1f9ed14ed))
+
+
+### Bug Fixes
+
+* **automod,gork:** ONE fail-closed permsAllow in core — the fail-open twin is gone ([#829](https://github.com/metalsp0rk/boiler-snake/issues/829)) ([a8b41c0](https://github.com/metalsp0rk/boiler-snake/commit/a8b41c0045293ab205702749742e40a2fe60203c))
+* **automod:** boot sweep settles action rows a dead run left claimed ([#823](https://github.com/metalsp0rk/boiler-snake/issues/823)) ([b85f359](https://github.com/metalsp0rk/boiler-snake/commit/b85f3596e643dc078630d45447c2f3e1d465be8a))
+* **automod:** numeric anchor-window ordering + sweep rebuilds cards for orphaned suggestions ([#834](https://github.com/metalsp0rk/boiler-snake/issues/834)) ([6110a1b](https://github.com/metalsp0rk/boiler-snake/commit/6110a1bb6a01cfa693874c0b2caeff824c9d0362))
+* **automod:** thread the note-overlap scrub through the Approve path ([1d41483](https://github.com/metalsp0rk/boiler-snake/commit/1d4148365af207147a05519011a085be8a08f15c))
+* **banAppeals:** a ban that ENDS must take its pending appeal with it ([03e97d2](https://github.com/metalsp0rk/boiler-snake/commit/03e97d243930d9f30a209eeee87468c6ff5225fc))
+* **banAppeals:** a hard clemency unban failure compensates to open for retry ([#821](https://github.com/metalsp0rk/boiler-snake/issues/821)) ([ae7f57c](https://github.com/metalsp0rk/boiler-snake/commit/ae7f57cec3346201ff3d9e8cc211993be2aa9d05))
+* **banAppeals:** clamp the statement embed + heal the filed-no-ticket trap ([#818](https://github.com/metalsp0rk/boiler-snake/issues/818), [#819](https://github.com/metalsp0rk/boiler-snake/issues/819)) ([7883eb7](https://github.com/metalsp0rk/boiler-snake/commit/7883eb71832e4a1c4786490b1ffef533aa00f9ce))
+* **banAppeals:** clemency/deny staff replies branch on the facts, always ([#820](https://github.com/metalsp0rk/boiler-snake/issues/820)) ([00744c7](https://github.com/metalsp0rk/boiler-snake/commit/00744c7c9efef72bf7f40d77d389092bce02139b))
+* **banAppeals:** subscribe DirectMessages — ferry inbound DM lane was dark ([#851](https://github.com/metalsp0rk/boiler-snake/issues/851)) ([f2bc221](https://github.com/metalsp0rk/boiler-snake/commit/f2bc221fafcb4a97a3d265e10705168f61f35e29))
+* **banLifecycle:** boot reconciles before sweeping; unobserved lifts settle silently ([#817](https://github.com/metalsp0rk/boiler-snake/issues/817)) ([0c67f2f](https://github.com/metalsp0rk/boiler-snake/commit/0c67f2fb6de08901c1d11befb685f6b57cdf6af9))
+* **banLifecycle:** quarantine chronically failing expiries; rotate the reconcile window ([01c01bb](https://github.com/metalsp0rk/boiler-snake/commit/01c01bb17cfa4d30810f46b86d17a253094d4046))
+* **banLifecycle:** the expiry sweep must recognize ITS OWN ban before lifting it ([b2ec15c](https://github.com/metalsp0rk/boiler-snake/commit/b2ec15c38c2746d68ea288e3846ae30b25986adf))
+* **bans:** Ban-Members pre-check belt, monotonic ferry cursor, comment drift ([#835](https://github.com/metalsp0rk/boiler-snake/issues/835)) ([fd03ccf](https://github.com/metalsp0rk/boiler-snake/commit/fd03ccf35e62bb050bd05594262d05c5774f359d))
+* **bridge:** edit spool write-back CASes on a payload generation — the last edit always wins ([#831](https://github.com/metalsp0rk/boiler-snake/issues/831)) ([93b38e5](https://github.com/metalsp0rk/boiler-snake/commit/93b38e56123185468b92b7670a54b502f0eca66f))
+* **copy,tickets:** error-rule-3 causes, H2-13 sweep, rule-6 pendingReports.put ([51815f5](https://github.com/metalsp0rk/boiler-snake/commit/51815f518a8b1cf44b141a49d623c2147aa00fad))
+* **core:** env/sleep/snippet consolidation, embed budget gate, safeHref decoded dots, pinned-fetch servername ([#837](https://github.com/metalsp0rk/boiler-snake/issues/837)) ([eedec7b](https://github.com/metalsp0rk/boiler-snake/commit/eedec7b68097339151e351f5695bc247e847c94f))
+* **core:** pin discord.js REST to its own undici agent ([#855](https://github.com/metalsp0rk/boiler-snake/issues/855)) ([1436a48](https://github.com/metalsp0rk/boiler-snake/commit/1436a48779e2d591e2cd76a5263bcccac5ab5727))
+* **core:** stop ticker wedges — googleGet timeout + scheduler tick watchdog ([#858](https://github.com/metalsp0rk/boiler-snake/issues/858)) ([498fd8d](https://github.com/metalsp0rk/boiler-snake/commit/498fd8d81f6445887e1939e92fa99114f4b4cd7b))
+* **db:** community-bind every id-keyed claim/finalize primitive (C2-6) + migration belts (C2-7/C2-8) ([a27d512](https://github.com/metalsp0rk/boiler-snake/commit/a27d5124400b08b83177fe0191f3454a448a675a))
+* **db:** make migration 057 crash-atomic — heal residue, one transaction ([7ce1f76](https://github.com/metalsp0rk/boiler-snake/commit/7ce1f76315d8fafe3a1f8564a0a4161287dbff46))
+* **deps:** patch the runtime advisory chain; CI fails runtime-chain highs ([#833](https://github.com/metalsp0rk/boiler-snake/issues/833)) ([a8d59fe](https://github.com/metalsp0rk/boiler-snake/commit/a8d59feb35c8f9bc8deb842ce90989c6b2afd52a))
+* **eventReminders:** retire vanished events with real gone codes 10070/10071 ([0b2e3da](https://github.com/metalsp0rk/boiler-snake/commit/0b2e3da0f8de2b829f64c76c95c706182a6a870c))
+* **events,fluxer:** close the three round-2 seams the r3 audit found (D1-6/7/8) ([6a0e596](https://github.com/metalsp0rk/boiler-snake/commit/6a0e59675b0dce9abbeaa5d49adc8afc4704a96e))
+* **events:** waitlist OFF survives duplicates, series & web option swaps ([#826](https://github.com/metalsp0rk/boiler-snake/issues/826)) ([42206de](https://github.com/metalsp0rk/boiler-snake/commit/42206deb3d52b4e6c4e9c3cde64c923f94c5a9bb))
+* **rss,twitch:** ssrf v6 embedded-v4 classes, validator belt, url canonicalization, replay nonce, mention belt ([#836](https://github.com/metalsp0rk/boiler-snake/issues/836)) ([5e17449](https://github.com/metalsp0rk/boiler-snake/commit/5e17449dc6c40686b5260a657de85a1e4eb3fd65))
+* **rss:** neutralize markdown deception in notification payloads ([#825](https://github.com/metalsp0rk/boiler-snake/issues/825)) ([ae51923](https://github.com/metalsp0rk/boiler-snake/commit/ae5192383fb440e3f8ae8c0d531bcb279491d099))
+* **tests:** strip deployment-context env in the test-env guard ([#857](https://github.com/metalsp0rk/boiler-snake/issues/857), [#832](https://github.com/metalsp0rk/boiler-snake/issues/832)) ([9dbf955](https://github.com/metalsp0rk/boiler-snake/commit/9dbf95541ce04d1a7597135e7243ea5cc045fb79))
+* **twitch:** EventSub rows remember their binding — rotation self-heals ([#824](https://github.com/metalsp0rk/boiler-snake/issues/824)) ([19badf2](https://github.com/metalsp0rk/boiler-snake/commit/19badf2abbb230b6a4c0388b608d07b36bc68e2e))
+* **visual:** resolve the forge Chrome canary from puppeteer itself ([4ef7206](https://github.com/metalsp0rk/boiler-snake/commit/4ef72069fd5f134b46f45e83e3af3e0e739ffce5))
+* **youtube,github:** capped retry + gone-retirement for the notifier tickers ([#827](https://github.com/metalsp0rk/boiler-snake/issues/827)) ([34e601d](https://github.com/metalsp0rk/boiler-snake/commit/34e601dce7c723d12b5f86bda8b56ad034a0dfb1))
+
 ## [1.40.0](https://github.com/metalsp0rk/boiler-snake/compare/v1.39.1...v1.40.0) (2026-11-03)
 
 
