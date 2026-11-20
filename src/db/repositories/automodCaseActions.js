@@ -526,7 +526,60 @@ function listAutomodActionsForCase(communityId, caseId, { state = null } = {}) {
     .all(communityId, c);
 }
 
+/**
+ * #822 (audit r3, A2-9/C2-4): retention primitive — case-action rows whose
+ * result/error text can no longer be acted on:
+ *  - the owning case is TERMINAL (complete/failed) and older than the
+ *    cutoff (the sketch's "case_actions whose case is resolved"; the action
+ *    row itself must ALSO be older than the cutoff, so a late claim on a
+ *    recently-touched row never mid-flights), or
+ *  - the owning case row is ALREADY GONE (the case sweep ran first) — an
+ *    orphan action row is unreachable by every per-case listing, so past
+ *    the window it is pure retained PII.
+ * case_id IS NULL rows (the dedupe-slot exception) are deliberately NOT
+ * swept: no case makes them terminal, and inventing a reachability claim
+ * for them is not this sweep's job (the IS NOT NULL guard below enforces
+ * that even when automod_cases is momentarily empty). Opt-in via RETENTION_AUTOMOD_CASES_DAYS
+ * (actions ride the CASES knob — they are meaningless without their case).
+ * @param {number} cutoffMs deleted strictly before (epoch ms)
+ * @param {number} [limit]
+ * @returns {number} rows deleted
+ */
+function deleteAutomodCaseActionsOlderThan(cutoffMs, limit = 500) {
+  if (!Number.isSafeInteger(cutoffMs)) {
+    throw new TypeError(
+      `deleteAutomodCaseActionsOlderThan: cutoffMs must be an integer ms epoch, got ${String(cutoffMs)}`
+    );
+  }
+  if (!Number.isSafeInteger(limit) || limit < 1) {
+    throw new TypeError(
+      `deleteAutomodCaseActionsOlderThan: limit must be a positive integer, got ${String(limit)}`
+    );
+  }
+  return db
+    .prepare(
+      `DELETE FROM automod_case_actions
+        WHERE updated_at < ?
+          AND (
+            case_id IN (SELECT id FROM automod_cases
+                         WHERE status IN ('complete','failed') AND updated_at < ?)
+            OR (
+              -- already-swept parent. The IS NOT NULL guard is load-bearing:
+              -- SQLite answers NULL NOT IN (empty subquery) as TRUE, so a
+              -- bare NOT IN would sweep NULL-case rows whenever the cases
+              -- table happens to be momentarily empty.
+              case_id IS NOT NULL
+              AND case_id NOT IN (SELECT id FROM automod_cases)
+            )
+          )
+        LIMIT ?`,
+    )
+    .run(cutoffMs, cutoffMs, limit).changes;
+}
+
+
 module.exports = {
+  deleteAutomodCaseActionsOlderThan,
   AUTOMOD_ACTION_STATES,
   AUTOMOD_CONSIDERED_STATES,
   insertAutomodActionSuggestion,

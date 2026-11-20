@@ -246,6 +246,15 @@ module.exports = {
   deleteVoidedWarningsOlderThan: warnings.deleteVoidedWarningsOlderThan,
   deleteErasedNotesOlderThan: staffNotes.deleteErasedNotesOlderThan,
   ERASED_NOTE_CONTENT: staffNotes.ERASED_NOTE_CONTENT,
+  // #822 (audit r3): the post-#469 moderation-PII family joins the erasure
+  // bus (four opt-in knobs; automod_case_actions rides the cases knob).
+  deleteTerminalAutomodCasesOlderThan:
+    automodCases.deleteTerminalAutomodCasesOlderThan,
+  deleteAutomodCaseActionsOlderThan:
+    automodCaseActions.deleteAutomodCaseActionsOlderThan,
+  deleteSettledBanRecordsOlderThan: banRecords.deleteSettledBanRecordsOlderThan,
+  deleteSettledBanAppealsOlderThan: banAppeals.deleteSettledBanAppealsOlderThan,
+  deleteTicketReportsOlderThan: ticketReports.deleteTicketReportsOlderThan,
   addHoneypotBanRole: honeypot.addHoneypotBanRole,
   removeHoneypotBanRole: honeypot.removeHoneypotBanRole,
   listHoneypotBanRoles: honeypot.listHoneypotBanRoles,

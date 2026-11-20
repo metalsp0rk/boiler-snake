@@ -356,6 +356,32 @@ CREATE TABLE ban_reconcile_state (   -- #810: boot-reconciliation rotation stamp
 ```
 
 Migration `074_ban_lifecycle` (also adds `guild_settings.ban_dm` / `welcome_back_dm`, both `DEFAULT 1`). The record `id` is a stable handle by contract. All settles are first-writer-wins CAS (claim → act → finalize): a losing claimer performs zero outbound calls and reports the live row. Migration `075_ban_appeals` keeps 074 byte-frozen and *extends*: a table rebuild widens the status CHECK with `clemency_granted` (ids and B-n numbers preserved), and the migration adds `ban_appeals` + the `guild_settings.ban_appeals` toggle (above). Migration `076_ban_identity` (#809) extends the same way: the status CHECK gains `expired_held` and the table gains `ban_identity_reason` — the fingerprint the expiry sweep checks before it dares to unban. Migration `077_expiry_quarantine` (#810) extends it once more: the CHECK gains `expiry_failed`, the table gains `expiry_attempts`, and `ban_reconcile_state` lands (the boot-reconcile rotation stamps — one attempt timestamp per community, FK-cascaded so a departed guild stops being tracked).
+## Retention & erasure (#822)
+
+Ban history is the most sensitive accumulation in the DB — per-user
+`reason` text here, up to 4000 chars of member-authored appeal statement in
+`ban_appeals` — and until #822 had NO erasure path. Two independent opt-in
+knobs (both default **off**: unset keeps every row) close the GDPR gap:
+
+- `RETENTION_BAN_RECORDS_DAYS` deletes only records whose ban was LIFTED and
+  whose welcome machine is done — `expired_unbanned`, `unbanned_manual`,
+  `clemency_granted` — by `banned_at` age (the conservative oldest reading;
+  there is no settled-at column). NEVER eligible: `active` (ban in force),
+  `pending_rejoin`/`welcomed` (the welcome machine still owns the row),
+  and the staff-owned quarantine states `expired_held` / `expiry_failed`
+  (#809/#810 — the live ban is not ours to forget). A settled row with a
+  still-open appeal also waits: `ban_appeals` cascades from here, and the
+  sweep refuses to shred an appeal staff is mid-decision on.
+- `RETENTION_BAN_APPEALS_DAYS` deletes only DECIDED appeals
+  (`granted`/`denied`/`closed`, per `updated_at`) older than the window.
+  `filed`/`open` appeals are never in scope.
+
+The two knobs are order-independent: whichever sweep runs first, the
+live-appeal guard on the records side plus the decision-filter on the
+appeals side mean no in-flight work can cascade away. Rows at exactly the
+cutoff survive (strict older-than). The knobs bound growth AND answer
+erasure requests — deleting a record also removes its ban number from
+history (`ban_number` is never reused; ids are not renumbered).
 
 ## Audit
 

@@ -717,7 +717,45 @@ function setAppealFerryPaused(appealId, paused) {
   }
 }
 
+/**
+ * #822 (audit r3, A2-9/C2-4): retention primitive — DECIDED ban appeals
+ * (granted/denied/closed) whose row stopped changing before the cutoff are
+ * erased. The appeal statement (up to 4000 chars of member-authored prose)
+ * and the denial reason are the heaviest member PII in the family; a decided
+ * appeal has no remaining workflow (the ferry lanes key on their own message
+ * ids, the clemency path claims at decision time). Filed/open appeals are
+ * NEVER touched. updated_at is the age column: every decision arm stamps it,
+ * and rows are append-only afterwards. Opt-in via RETENTION_BAN_APPEALS_DAYS.
+ * Deleting an appeal does NOT cascade upward (ban_records is the parent),
+ * and the records sweep refuses to delete a settled ban with a live appeal —
+ * the two knobs are independent without ordering hazards.
+ * @param {number} cutoffMs deleted strictly before (epoch ms)
+ * @param {number} [limit]
+ * @returns {number} rows deleted
+ */
+function deleteSettledBanAppealsOlderThan(cutoffMs, limit = 500) {
+  if (!Number.isSafeInteger(cutoffMs)) {
+    throw new TypeError(
+      `deleteSettledBanAppealsOlderThan: cutoffMs must be an integer ms epoch, got ${String(cutoffMs)}`
+    );
+  }
+  if (!Number.isSafeInteger(limit) || limit < 1) {
+    throw new TypeError(
+      `deleteSettledBanAppealsOlderThan: limit must be a positive integer, got ${String(limit)}`
+    );
+  }
+  return db
+    .prepare(
+      `DELETE FROM ban_appeals
+        WHERE status IN ('granted','denied','closed') AND updated_at < ?
+        LIMIT ?`,
+    )
+    .run(cutoffMs, limit).changes;
+}
+
+
 module.exports = {
+  deleteSettledBanAppealsOlderThan,
   BAN_APPEAL_STATUSES,
   APPEAL_OUTCOMES,
   FERRY_DIRECTIONS,

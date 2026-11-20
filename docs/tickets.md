@@ -240,6 +240,17 @@ Context menus are **Discord-native** — there is no `!ticket report` twin, and 
 ### Deploy
 
 Re-run `npm run register` after deploying: registration PUTs the command list **per guild** (there is no global-registration path; `DEV_GUILD_ID` narrows it to one guild while developing), so **Report Post / Report User** and **#794 Open ticket for user** stay invisible in Discord's Apps submenu until pushed.
+### Report retention & erasure (#822)
+
+Report snapshots (`ticket_reports`: the intake note, subject and message
+identity) had no lifecycle — their only structural delete path was CASCADE
+from tickets, and nothing ever deletes tickets, so that CASCADE is dormant.
+`RETENTION_TICKET_REPORTS_DAYS` (default **off** — unset keeps every row)
+erases snapshot rows by age once the window passes. Accepted, documented
+trades past the window: the "already reported on this message" dedupe can
+re-accept a very old message, and the staff note minted at close lives on
+independently under the staff-notes knobs (`RETENTION_ERASED_NOTES_DAYS`,
+#469). Rows at exactly the cutoff survive (strict older-than).
 
 ## Staff proxy ticket ("Open ticket for user" menu)
 

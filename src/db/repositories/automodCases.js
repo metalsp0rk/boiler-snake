@@ -457,7 +457,41 @@ function resolveAutomodCase(communityId, caseId, resolution, staffUserId, { nowM
   }
 }
 
+/**
+ * #822 (audit r3, A2-9/C2-4): retention primitive — TERMINAL automod cases
+ * (complete/failed) whose row stopped changing before the cutoff are erased.
+ * A terminal case carries no queue or run state; its note, required_context
+ * and message_snippet are retained PII (referral prose + a content excerpt of
+ * the reported message). Recorded/processing cases are NEVER touched — the
+ * live queue stays whole. Opt-in via RETENTION_AUTOMOD_CASES_DAYS; the
+ * companion automod_case_actions prune rides the same knob.
+ * @param {number} cutoffMs deleted strictly before (epoch ms)
+ * @param {number} [limit]
+ * @returns {number} rows deleted
+ */
+function deleteTerminalAutomodCasesOlderThan(cutoffMs, limit = 500) {
+  if (!Number.isSafeInteger(cutoffMs)) {
+    throw new TypeError(
+      `deleteTerminalAutomodCasesOlderThan: cutoffMs must be an integer ms epoch, got ${String(cutoffMs)}`
+    );
+  }
+  if (!Number.isSafeInteger(limit) || limit < 1) {
+    throw new TypeError(
+      `deleteTerminalAutomodCasesOlderThan: limit must be a positive integer, got ${String(limit)}`
+    );
+  }
+  return db
+    .prepare(
+      `DELETE FROM automod_cases
+        WHERE status IN ('complete','failed') AND updated_at < ?
+        LIMIT ?`,
+    )
+    .run(cutoffMs, limit).changes;
+}
+
+
 module.exports = {
+  deleteTerminalAutomodCasesOlderThan,
   AUTOMOD_CASE_STATUSES,
   AUTOMOD_CASE_RESOLUTIONS,
   AUTOMOD_REFER_NOTE_MAX_LEN,

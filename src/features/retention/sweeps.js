@@ -7,7 +7,13 @@
  *    already justified it as aiding "pruning");
  *  - `admin_audit`                  — rows older than RETENTION_ADMIN_AUDIT_DAYS;
  *  - `warnings` / `staff_notes`   — OPT-IN moderation erasure (#469
- *      F2-11): voided warnings / erased-note tombstones only, per knob.
+ *      F2-11): voided warnings / erased-note tombstones only, per knob;
+ *  - `automod_case_actions` / `automod_cases` / `ban_appeals` /
+ *    `ban_records` / `ticket_reports`
+ *      — OPT-IN moderation-PII erasure for the post-#469 family (#822):
+ *      terminal-state-qualified deletes only (complete/failed cases, decided
+ *      appeals, settled bans without live appeals, aged report snapshots);
+ *      case_actions ride the automod_cases knob.
  *  - `user_channel_message_daily`   — UTC days before the
  *    RETENTION_DAILY_AGGREGATES_DAYS cutoff day;
  *  - `fluxer_oauth_transactions`    — rows past their own `expires_at`
@@ -80,6 +86,13 @@ const RETENTION_TABLES = Object.freeze([
   // the knob — both sweeps report "disabled" skips when unset).
   "warnings",
   "staff_notes",
+  // #822 (audit r3): the post-#469 moderation-PII family (opt-in like
+  // F2-11; every delete is state-qualified — terminal rows only).
+  "automod_case_actions",
+  "automod_cases",
+  "ban_appeals",
+  "ban_records",
+  "ticket_reports",
 ]);
 
 /**
@@ -168,6 +181,50 @@ const TABLE_SWEEPS = Object.freeze([
     daysKey: "erasedNotesDays",
     cutoff: "ms",
     remove: (cutoffMs, limit) => db.deleteErasedNotesOlderThan(cutoffMs, limit),
+  },
+  // ---- #822 (audit r3): the post-#469 moderation-PII family -----------
+  {
+    // Actions whose CASE is terminal (complete/failed) and past the window,
+    // plus actions orphaned by an already-swept case. Rides the CASES knob:
+    // an action row without a reachable case is unreachable data. Runs
+    // BEFORE automod_cases so one sweep uses the parent as the truth.
+    table: "automod_case_actions",
+    daysKey: "automodCasesDays",
+    cutoff: "ms",
+    remove: (cutoffMs, limit) => db.deleteAutomodCaseActionsOlderThan(cutoffMs, limit),
+  },
+  {
+    // TERMINAL cases only (complete/failed by updated_at); the recorded/
+    // processing queue is outside the WHERE entirely.
+    table: "automod_cases",
+    daysKey: "automodCasesDays",
+    cutoff: "ms",
+    remove: (cutoffMs, limit) => db.deleteTerminalAutomodCasesOlderThan(cutoffMs, limit),
+  },
+  {
+    // DECIDED appeals only (granted/denied/closed by updated_at) — the
+    // member-authored statement is the heaviest PII in the family.
+    table: "ban_appeals",
+    daysKey: "banAppealsDays",
+    cutoff: "ms",
+    remove: (cutoffMs, limit) => db.deleteSettledBanAppealsOlderThan(cutoffMs, limit),
+  },
+  {
+    // SETTLED bans only (lifted, no welcome machine, not quarantined) by
+    // banned_at age; a settled row with a live appeal survives until the
+    // appeal itself settles (the appeal cascade lives here).
+    table: "ban_records",
+    daysKey: "banRecordsDays",
+    cutoff: "ms",
+    remove: (cutoffMs, limit) => db.deleteSettledBanRecordsOlderThan(cutoffMs, limit),
+  },
+  {
+    // Report snapshots by age — no lifecycle to qualify on (the dormant
+    // ticket-CASCADE never fires; this is the table's only erasure path).
+    table: "ticket_reports",
+    daysKey: "ticketReportsDays",
+    cutoff: "ms",
+    remove: (cutoffMs, limit) => db.deleteTicketReportsOlderThan(cutoffMs, limit),
   },
 ]);
 

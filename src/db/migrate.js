@@ -88,6 +88,8 @@ const migrations = [
   require("./migrations/078_notify_retry_valves"),
   require("./migrations/079_twitch_eventsub_binding"),
   require("./migrations/080_bridge_payload_seq"),
+  // #822: sweep indexes for the moderation-PII erasure family
+  require("./migrations/081_retention_moderation_pii"),
 ];
 
 const helpers = {
