@@ -738,7 +738,52 @@ function recordWelcomeDmSent(recordId) {
   );
 }
 
+/**
+ * #822 (audit r3, A2-9/C2-4): retention primitive — SETTLED ban records
+ * older than the cutoff are erased (ban history + moderator reason text is
+ * the most sensitive accumulation in the DB with no erasure path since 074).
+ * "Settled" is exactly the lifted-and-nothing-else-runs set:
+ * expired_unbanned / unbanned_manual / clemency_granted. NEVER touched:
+ * active (ban in force), pending_rejoin/welcomed (the welcome machine still
+ * owns those rows), expired_held + expiry_failed (the live ban is NOT ours
+ * to forget — staff owns the row, #809/#810). The age column is banned_at
+ * (no settled-at timestamp exists; banned_at is the conservative OLDEST
+ * reading). A settled row with a still-LIVE appeal (filed/open) is skipped:
+ * ban_appeals cascades from here, and the sweep must not silently shred an
+ * appeal staff is mid-decision on. Opt-in via RETENTION_BAN_RECORDS_DAYS.
+ * @param {number} cutoffMs deleted strictly before (epoch ms)
+ * @param {number} [limit]
+ * @returns {number} rows deleted
+ */
+function deleteSettledBanRecordsOlderThan(cutoffMs, limit = 500) {
+  if (!Number.isSafeInteger(cutoffMs)) {
+    throw new TypeError(
+      `deleteSettledBanRecordsOlderThan: cutoffMs must be an integer ms epoch, got ${String(cutoffMs)}`
+    );
+  }
+  if (!Number.isSafeInteger(limit) || limit < 1) {
+    throw new TypeError(
+      `deleteSettledBanRecordsOlderThan: limit must be a positive integer, got ${String(limit)}`
+    );
+  }
+  return db
+    .prepare(
+      `DELETE FROM ban_records
+        WHERE status IN ('expired_unbanned','unbanned_manual','clemency_granted')
+          AND banned_at < ?
+          AND NOT EXISTS (
+            SELECT 1 FROM ban_appeals a
+             WHERE a.ban_record_id = ban_records.id
+               AND a.status IN ('filed','open')
+          )
+        LIMIT ?`,
+    )
+    .run(cutoffMs, limit).changes;
+}
+
+
 module.exports = {
+  deleteSettledBanRecordsOlderThan,
   BAN_RECORD_STATUSES,
   BAN_SOURCES,
   MAX_BAN_REASON,

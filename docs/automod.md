@@ -1414,6 +1414,26 @@ migration `071_automod_case_queue` (`required_context`, `read_before` /
 `setAutomodCaseIncidentSummary` on the same repository (plus the
 `AUTOMOD_CASE_RESOLUTIONS` vocabulary). The referral modal (pending-form
 store + submit arm) is `src/features/automod/referModal.js`.
+## Retention & erasure (#822)
+
+Cases and their action rows store member-visible prose (referral note,
+required context, message snippet; per-action result/error text), so they
+join the opt-in erasure bus alongside voided warnings and erased notes:
+`RETENTION_AUTOMOD_CASES_DAYS` (default **off** — unset keeps every row,
+reported as an honest `disabled` skip by every sweep run).
+
+The sweep is state-qualified: only cases whose status is TERMINAL
+(`complete`/`failed`, per `updated_at`) older than the window die — the
+`recorded`/`processing` queue is structurally outside the WHERE. A re-armed
+case (the harness's `complete → recorded` path) is live again and untouchable;
+past the opt-in window a terminal case is simply no longer re-armable — the
+documented trade. `automod_case_actions` rows ride the SAME knob and die
+when their case is terminal-and-aged (or the case row is already swept);
+an action row touched recently survives even under an old terminal case,
+and the dedupe-slot rows without a case are never claimed.
+
+Rows at exactly the cutoff instant survive (strict older-than, the suite-wide
+boundary law). See [Configuration](configuration.md) for the knob table.
 
 ## Related
 

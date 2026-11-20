@@ -167,7 +167,40 @@ function findOpenReportForMessage(communityId, messageId) {
   );
 }
 
+/**
+ * #822 (audit r3, A2-9/C2-4): retention primitive — report snapshots older
+ * than the cutoff are erased by AGE. ticket_reports has no lifecycle (the
+ * snapshot is intake-time prose: snapshot_note + the subject/message
+ * identity); its only structural delete path was CASCADE from tickets, and
+ * no code ever deletes tickets, so the CASCADE was dormant (verified: zero
+ * ticket deletes) — this is the family's only real erasure path. Accepted,
+ * documented trades past the window: the "already reported on this message"
+ * dedupe can re-accept a very old message, and the staff note minted at
+ * close lives on independently in staff_notes (own knobs since F2-11).
+ * Opt-in via RETENTION_TICKET_REPORTS_DAYS.
+ * @param {number} cutoffMs deleted strictly before (epoch ms)
+ * @param {number} [limit]
+ * @returns {number} rows deleted
+ */
+function deleteTicketReportsOlderThan(cutoffMs, limit = 500) {
+  if (!Number.isSafeInteger(cutoffMs)) {
+    throw new TypeError(
+      `deleteTicketReportsOlderThan: cutoffMs must be an integer ms epoch, got ${String(cutoffMs)}`
+    );
+  }
+  if (!Number.isSafeInteger(limit) || limit < 1) {
+    throw new TypeError(
+      `deleteTicketReportsOlderThan: limit must be a positive integer, got ${String(limit)}`
+    );
+  }
+  return db
+    .prepare(`DELETE FROM ticket_reports WHERE created_at < ? LIMIT ?`)
+    .run(cutoffMs, limit).changes;
+}
+
+
 module.exports = {
+  deleteTicketReportsOlderThan,
   REPORT_KINDS,
   insertTicketReport,
   getTicketReport,

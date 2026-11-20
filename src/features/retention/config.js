@@ -85,6 +85,34 @@ const DEFAULT_TICKET_TRANSCRIPT_ORPHAN_DAYS = 7;
 const DEFAULT_VOIDED_WARNINGS_DAYS = null;
 const DEFAULT_ERASED_NOTES_DAYS = null;
 
+/**
+ * #822 (audit r3, A2-9/C2-4): the moderation-PII family that shipped AFTER
+ * #469 grows the same forever-with-no-knob problem with HEAVIER data — ban
+ * reason text, up to 4000 chars of member-authored appeal statements,
+ * automod referral notes + message snippets, report snapshots. Same
+ * OPT-IN doctrine as F2-11 (default null = keep forever = the honest
+ * "disabled" skip): erasure windows for moderation data are a policy call
+ * the bot must not make silently. Each knob is state-QUALIFIED — only
+ * terminal/settled/decided rows ever die (live enforcement, in-flight
+ * appeals and quarantined rows are outside the WHERE entirely); see the
+ * per-primitive docs in src/db/repositories/.
+ *  - RETENTION_AUTOMOD_CASES_DAYS: complete/failed cases older than the
+ *    window; automod_case_actions rows whose case is terminal (or already
+ *    swept) ride the SAME knob — actions are meaningless without their case.
+ *  - RETENTION_BAN_RECORDS_DAYS: settled bans (expired_unbanned /
+ *    unbanned_manual / clemency_granted) by banned_at age; welcome-machine
+ *    and staff-owned quarantine rows never qualify, and a settled row with
+ *    a live appeal is skipped.
+ *  - RETENTION_BAN_APPEALS_DAYS: decided appeals (granted/denied/closed).
+ *  - RETENTION_TICKET_REPORTS_DAYS: report snapshots by age (the table has
+ *    no lifecycle; the ticket-CASCADE path is dormant since nothing
+ *    deletes tickets).
+ */
+const DEFAULT_AUTOMOD_CASES_DAYS = null;
+const DEFAULT_BAN_RECORDS_DAYS = null;
+const DEFAULT_BAN_APPEALS_DAYS = null;
+const DEFAULT_TICKET_REPORTS_DAYS = null;
+
 const DEFAULT_BRIDGE_OUTBOX_DAYS = 30;
 const DEFAULT_BRIDGE_LINKS_DAYS = 90;
 const DEFAULT_EVENT_ACTIVITY_DAYS = 90;
@@ -116,6 +144,11 @@ const ENV_KEYS = Object.freeze([
   "RETENTION_EVENT_NOTIFICATIONS_DAYS",
   "RETENTION_VOIDED_WARNINGS_DAYS",
   "RETENTION_ERASED_NOTES_DAYS",
+  // #822: the post-#469 moderation-PII family (all opt-in, default null).
+  "RETENTION_AUTOMOD_CASES_DAYS",
+  "RETENTION_BAN_RECORDS_DAYS",
+  "RETENTION_BAN_APPEALS_DAYS",
+  "RETENTION_TICKET_REPORTS_DAYS",
 ]);
 
 /** config field ← env name (the mapping pick() needs to stay honest). */
@@ -131,6 +164,10 @@ const ENV_BY_FIELD = Object.freeze({
   eventNotificationsDays: "RETENTION_EVENT_NOTIFICATIONS_DAYS",
   voidedWarningsDays: "RETENTION_VOIDED_WARNINGS_DAYS",
   erasedNotesDays: "RETENTION_ERASED_NOTES_DAYS",
+  automodCasesDays: "RETENTION_AUTOMOD_CASES_DAYS",
+  banRecordsDays: "RETENTION_BAN_RECORDS_DAYS",
+  banAppealsDays: "RETENTION_BAN_APPEALS_DAYS",
+  ticketReportsDays: "RETENTION_TICKET_REPORTS_DAYS",
 });
 
 /**
@@ -220,6 +257,24 @@ function retentionConfig(overrides = {}) {
       "erasedNotesDays",
       (v) => parseDaysKnob(v, DEFAULT_ERASED_NOTES_DAYS)
     ),
+    // #822: the moderation-PII family (unset ⇒ null ⇒ honest "disabled"
+    // skip; garbage ⇒ default ⇒ still null ⇒ still never deletes).
+    automodCasesDays: pick(
+      "automodCasesDays",
+      (v) => parseDaysKnob(v, DEFAULT_AUTOMOD_CASES_DAYS)
+    ),
+    banRecordsDays: pick(
+      "banRecordsDays",
+      (v) => parseDaysKnob(v, DEFAULT_BAN_RECORDS_DAYS)
+    ),
+    banAppealsDays: pick(
+      "banAppealsDays",
+      (v) => parseDaysKnob(v, DEFAULT_BAN_APPEALS_DAYS)
+    ),
+    ticketReportsDays: pick(
+      "ticketReportsDays",
+      (v) => parseDaysKnob(v, DEFAULT_TICKET_REPORTS_DAYS)
+    ),
     batchRows,
     maxBatchesPerTable,
   };
@@ -233,6 +288,10 @@ module.exports = {
   DEFAULT_EVENT_NOTIFICATIONS_DAYS,
   DEFAULT_VOIDED_WARNINGS_DAYS,
   DEFAULT_ERASED_NOTES_DAYS,
+  DEFAULT_AUTOMOD_CASES_DAYS,
+  DEFAULT_BAN_RECORDS_DAYS,
+  DEFAULT_BAN_APPEALS_DAYS,
+  DEFAULT_TICKET_REPORTS_DAYS,
   DEFAULT_TICKET_TRANSCRIPT_ORPHAN_DAYS,
   DEFAULT_ADMIN_AUDIT_DAYS,
   DEFAULT_DAILY_AGGREGATES_DAYS,

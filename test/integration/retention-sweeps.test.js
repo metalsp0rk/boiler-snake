@@ -247,7 +247,12 @@ describe("activity_log / admin_audit / daily aggregates via real writers (defaul
     const results = runRetentionSweeps();
     for (const row of results) {
       assert.equal(row.error, null, `${row.table} swept clean`);
-      if (row.table === "warnings" || row.table === "staff_notes") {
+      if (
+        ["warnings", "staff_notes",
+         // #822: the post-#469 family joined the same opt-in bus.
+         "automod_case_actions", "automod_cases",
+         "ban_appeals", "ban_records", "ticket_reports"].includes(row.table)
+      ) {
         // #469 (F2-11): moderation-PII erasure is OPT-IN — unset knobs must
         // report an honest "disabled" skip and touch nothing.
         assert.equal(row.skipped, "disabled", `${row.table} is opt-in by default`);

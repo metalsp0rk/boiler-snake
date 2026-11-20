@@ -605,6 +605,35 @@ describe("#399 (B2-7): queue/history tables are now bounded", () => {
         `DELETE FROM user_channel_message_daily WHERE day < '2026-01-01'`,
         "idx_ucmd_day",
       ],
+      // #822: the moderation-PII family joins the no-full-scans doctrine.
+      // Partial indexes mirror each state filter exactly (migration 081).
+      // automod_case_actions is deliberately NOT pinned here: its delete is
+      // a two-arm subquery against the PARENT (terminal / already-swept
+      // case) — the seek lives on the cases side, and the actions table is
+      // bounded by case count x few rows.
+      automod_cases: [
+        `DELETE FROM automod_cases WHERE status IN ('complete','failed') AND updated_at < 1`,
+        "idx_automod_cases_retention",
+      ],
+      ban_records: [
+        `DELETE FROM ban_records
+          WHERE status IN ('expired_unbanned','unbanned_manual','clemency_granted')
+            AND banned_at < 1
+            AND NOT EXISTS (
+              SELECT 1 FROM ban_appeals a
+               WHERE a.ban_record_id = ban_records.id
+                 AND a.status IN ('filed','open')
+            )`,
+        "idx_ban_records_retention",
+      ],
+      ban_appeals: [
+        `DELETE FROM ban_appeals WHERE status IN ('granted','denied','closed') AND updated_at < 1`,
+        "idx_ban_appeals_retention",
+      ],
+      ticket_reports: [
+        `DELETE FROM ticket_reports WHERE created_at < 1`,
+        "idx_ticket_reports_created",
+      ],
     };
     for (const [table, [sql, index]] of Object.entries(expected)) {
       const plan = api.db.prepare(`EXPLAIN QUERY PLAN ${sql}`).all();

@@ -125,12 +125,14 @@ describe(`${id} — schema shape`, () => {
     ]);
   });
 
-  it("creates the two named UNIQUE belts and the two plain indexes", () => {
+  it("creates the two named UNIQUE belts and the three plain indexes", () => {
     // NAMED indexes (unlike 068's table constraints) so the repository's
-    // error path can name them; the plain pair is the user-history and the
-    // partial expiry-sweep index.
+    // error path can name them; the plain set is the user-history and the
+    // partial expiry-sweep index — plus 081's partial retention-sweep index
+    // (#822), which rides the lifted-only state filter.
     assert.deepEqual(banIndexNames(), [
       "idx_ban_records_due",
+      "idx_ban_records_retention",
       "idx_ban_records_user",
       "uq_ban_records_active",
       "uq_ban_records_number",
@@ -443,12 +445,14 @@ describe(`${id075} — ban_records CHECK rebuild preserved the 074 shape`, () =>
     );
   });
 
-  it("the rebuild preserved every column, in order, and all four indexes", () => {
+  it("the rebuild preserved every column, in order, and every index", () => {
     // PRAGMA reads the LIVE (rebuilt) table — byte-identical shape is the
     // 040-discipline contract: the copy used an explicit column list and the
     // captured index SQL was re-issued. The trailing ban_identity_reason /
     // expiry_attempts are 076 (#809) / 077 (#810) appends; the 075 rebuild
-    // itself was column-preserving.
+    // itself was column-preserving. idx_ban_records_retention is 081's
+    // (#822) index-only ADD (a later migration may extend a table's index
+    // set; a rebuild may not shrink it).
     assert.deepEqual(getColumns("ban_records"), [
       "id",
       "community_id",
@@ -469,6 +473,7 @@ describe(`${id075} — ban_records CHECK rebuild preserved the 074 shape`, () =>
     ]);
     assert.deepEqual(banIndexNames(), [
       "idx_ban_records_due",
+      "idx_ban_records_retention", // 081 (#822), index-only add
       "idx_ban_records_user",
       "uq_ban_records_active",
       "uq_ban_records_number",
@@ -499,6 +504,7 @@ describe(`${id075} — ban_appeals schema law`, () => {
       "updated_at",
     ]);
     assert.deepEqual(banAppealIndexNames(), [
+      "idx_ban_appeals_retention", // 081 (#822), index-only add
       "idx_ban_appeals_ticket",
       "uq_ban_appeals_ban_record",
     ]);
