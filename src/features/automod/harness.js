@@ -110,8 +110,11 @@
  *    card EDITS this message; colors/titles follow the card's family).
  *  - the outcome post is `card.buildCardPayload({...})` (#730) — exported
  *    from `src/features/automod/card.js`, tested there.
- *  - `buildInterruptedPayload(caseRow)` — the boot-sweep notice (no card:
- *    the run died mid-flight; nothing interactive to approve).
+ *  - `buildInterruptedPayload(caseRow, …)` — the boot-sweep notice. #834
+ *    (A1-5) retired the old "nothing interactive to approve" premise: a
+ *    crash AFTER recording leaves `suggested` rows that stay claimable, so
+ *    when actionable suggestions exist the sweep ALSO rebuilds the card
+ *    (card.buildCardFromCase) and the notice names it (or its failure).
  */
 
 const { sliceSafe } = require("../../core/text");
@@ -291,20 +294,30 @@ function buildReviewPlaceholderPayload(caseRow) {
  * builder is gone; grep history: `buildDecisionPayload`.
  */
 
-/** The boot-sweep notice (minimal; the case's real state is the row). */
-function buildInterruptedPayload(caseRow) {
+/** The boot-sweep notice (minimal; the case's real state is the row).
+ * #834 (audit A1-5): when the dead run had already RECORDED suggestions,
+ * the notice says so — and names the rebuilt card that follows (or the
+ * cause when the card could not be posted, so staff know to handle the
+ * case manually instead of waiting for a card that never comes). */
+function buildInterruptedPayload(caseRow, { suggestedCount = 0, cardError = null } = {}) {
   // #771 §3: same anonymity law as the placeholder and the card.
   const lead =
     caseRow.revealed_at != null
       ? `Referred by <@${caseRow.referrer_user_id}>`
       : "**Reporter:** hidden";
+  let suggestionLine = "";
+  if (suggestedCount > 0) {
+    suggestionLine = cardError
+      ? `\n\n**Recorded suggestions:** ${suggestedCount} action(s) were recorded to this case's ledger before the crash, but the rebuilt case card could not be posted (${cardError}) — handle this case manually.`
+      : `\n\n**Recorded suggestions:** ${suggestedCount} action(s) were recorded to this case's ledger before the crash — the rebuilt case card follows for approve/dismiss.`;
+  }
   return {
     allowedMentions: { parse: [] },
     embeds: [
       {
         title: `Automod — case A-${caseRow.case_number} — interrupted`,
         description: sliceSafe(
-          `${lead} — the review run was interrupted by a restart. The case was marked **failed** (${INTERRUPTED_ERROR}); a staff member can handle it manually.`,
+          `${lead} — the review run was interrupted by a restart. The case was marked **failed** (${INTERRUPTED_ERROR}); a staff member can handle it manually.${suggestionLine}`,
           4000,
         ),
         color: COLORS.failed,
@@ -1450,10 +1463,15 @@ async function runCaseInner({ communityId, guildId, caseId, deps, nowMs }) {
  * start hook never blocks and load.js's per-feature guard already wraps
  * the hook itself.
  *
- * @param {{client?: object, db?: object, postToChannel?: Function}} [opts]
+ * @param {{client?: object, db?: object, postToChannel?: Function, buildCard?: Function}} [opts]
  * @returns {{ checked: number, flipped: number, posts: Promise[] }}
  */
-function sweepInterruptedRuns({ client = null, db: dbHandle = null, postToChannel = null } = {}) {
+function sweepInterruptedRuns({
+  client = null,
+  db: dbHandle = null,
+  postToChannel = null,
+  buildCard = null,
+} = {}) {
   const out = { checked: 0, flipped: 0, actionsSettled: 0, posts: [] };
   const handle = dbHandle ?? facadeDb;
   try {
@@ -1495,7 +1513,52 @@ function sweepInterruptedRuns({ client = null, db: dbHandle = null, postToChanne
               if (!channel?.send) throw new Error(`channel ${chId} is not sendable`);
               return channel.send(payload);
             });
-          await send(channelId, buildInterruptedPayload(row));
+
+          // #834 (audit A1-5): suggestions the dead run had ALREADY
+          // recorded are not lost — the ledger rows sit `suggested` and
+          // remain claimable (approve gates on the ROW state and the
+          // case-level resolution, never on the case's run status).
+          // Without a card nobody could see or act on them (no command
+          // re-renders a card for a case number), so the sweep rebuilds
+          // the card from the ledger. The count is the ACTIONABLE subset
+          // (a `no_action` suggestion is a consideration marker with no
+          // button to press). The notice names what follows — or the
+          // rebuild failure, so staff handle it manually instead of
+          // waiting for a card that never posts.
+          let suggestedCount = 0;
+          try {
+            suggestedCount = Number(
+              handle
+                .prepare(
+                  `SELECT COUNT(*) AS c FROM automod_case_actions
+                   WHERE case_id=? AND state='suggested' AND action<>'no_action'`,
+                )
+                .get(row.id)?.c ?? 0,
+            );
+          } catch (err) {
+            logFail("boot sweep suggestion count (best effort)", ids, err);
+          }
+          let cardPayload = null;
+          let cardError = null;
+          if (suggestedCount > 0) {
+            try {
+              const build = buildCard ?? card.buildCardFromCase;
+              const built = build({
+                communityId: Number(row.community_id),
+                caseId: row.id,
+                botUserId: client?.user?.id ?? null,
+              });
+              if (built?.ok) cardPayload = built.payload;
+              else cardError = String(built?.error || "the card rebuild returned no cause");
+            } catch (err) {
+              cardError = String(err?.message || err);
+            }
+          }
+          await send(channelId, buildInterruptedPayload(row, { suggestedCount, cardError }));
+          if (cardError) {
+            logFail("boot sweep card rebuild (best effort)", ids, new Error(cardError));
+          }
+          if (cardPayload) await send(channelId, cardPayload);
         } catch (err) {
           logFail("boot sweep notice (best effort)", ids, err);
         }

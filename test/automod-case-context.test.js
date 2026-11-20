@@ -1112,6 +1112,60 @@ describe("capAroundAnchor (pure)", () => {
     const capped = caseContext.capAroundAnchor([mk(1)], mid(9), 2, 2);
     assert.deepEqual(capped.map((m) => m.id), []);
   });
+
+  it("#834 (A1-4): orders across the 18→19-digit snowflake boundary NUMERICALLY", () => {
+    // Discord ids crossed 18→19 decimal digits ~Aug 2022. Lexicographic
+    // order put "9999…" (18 digits, OLDER) ABOVE "1000…" (19 digits,
+    // NEWER) — a window straddling the boundary kept the wrong ends.
+    const older = "999999999999999999"; // 18 digits
+    const anchor = "1000000000000000000"; // 19 digits
+    const newer = "1000000000000000001";
+
+    // Classification, not just order: the old rule filed `older` as
+    // "after the anchor" and `newer` as "before" — caps slice the WRONG
+    // ends, so build the sets to prove the buckets.
+    assert.deepEqual(
+      caseContext
+        .capAroundAnchor([{ id: older }, { id: anchor }], anchor, 1, 0)
+        .map((m) => m.id),
+      [older, anchor],
+      "an 18-digit id is BEFORE a 19-digit anchor",
+    );
+    assert.deepEqual(
+      caseContext
+        .capAroundAnchor([{ id: anchor }, { id: newer }], anchor, 0, 1)
+        .map((m) => m.id),
+      [anchor, newer],
+      "the next 19-digit id is AFTER the anchor",
+    );
+    assert.deepEqual(
+      caseContext
+        .capAroundAnchor([{ id: older }, { id: anchor }, { id: newer }], anchor, 1, 1)
+        .map((m) => m.id),
+      [older, anchor, newer],
+      "the straddling window keeps BOTH real neighbours",
+    );
+  });
+
+  it("#834: non-numeric ids keep the deterministic string fallback (no crash)", () => {
+    const anchor = "1000000000000000000";
+    // Contract violator mixed into an otherwise-numeric set: string order
+    // ("abc" > "1000…") lands it in `after` — legacy behavior, never a throw.
+    assert.deepEqual(
+      caseContext
+        .capAroundAnchor([{ id: "abc" }, { id: anchor }], anchor, 0, 1)
+        .map((m) => m.id),
+      [anchor, "abc"],
+    );
+    // Non-numeric ANCHOR: every pair compares as strings; the anchor still
+    // bounds the window (no orphaned surround).
+    assert.deepEqual(
+      caseContext
+        .capAroundAnchor([{ id: "m1" }, { id: "m2" }, { id: "m3" }], "m2", 1, 1)
+        .map((m) => m.id),
+      ["m1", "m2", "m3"],
+    );
+  });
 });
 
 function sort(mk, nums) {

@@ -417,10 +417,17 @@ function buildDefaultDeps(deps = {}) {
 /**
  * Re-apply the contract caps on ALREADY-MERGED, oldest→newest messages:
  * the anchor plus the nearest `beforeCap` older and nearest `afterCap`
- * newer. Snowflake ids are fixed-width, so lexicographic comparison is
- * chronological (readDiscord's sortOldestFirst contract). An honest
- * producer never exceeds the caps (the fetches ask for exactly that many)
- * — this is the belt so an over-delivering one cannot bloat the prompt.
+ * newer. Snowflake ids are compared as NUMBERS, never as strings: ids
+ * crossed 18→19 decimal digits around Aug 2022, so a window straddling
+ * that boundary ordered BACKWARDS under the old lexicographic rule
+ * (`"9999…" > "1000…"`). BigInt, not Number: snowflakes exceed
+ * Number.MAX_SAFE_INTEGER, and a precision loss here is another silent
+ * mis-order. A non-numeric id (contract violator) falls back to the
+ * historical string comparison — deterministic, and the only behavior
+ * such an id can honestly get. Chronological order matches
+ * readDiscord's sortOldestFirst contract. An honest producer never
+ * exceeds the caps (the fetches ask for exactly that many) — this is the
+ * belt so an over-delivering one cannot bloat the prompt.
  *
  * @param {object[]} messagesOldestFirst
  * @param {string} anchorId
@@ -431,6 +438,12 @@ function buildDefaultDeps(deps = {}) {
  */
 function capAroundAnchor(messagesOldestFirst, anchorId, beforeCap, afterCap) {
   const anchor = String(anchorId);
+  let anchorNum = null;
+  try {
+    anchorNum = BigInt(anchor);
+  } catch {
+    anchorNum = null; // non-numeric anchor: every pair falls to string order
+  }
   const before = [];
   const after = [];
   let anchorMessage = null;
@@ -440,8 +453,20 @@ function capAroundAnchor(messagesOldestFirst, anchorId, beforeCap, afterCap) {
       anchorMessage = m;
       continue;
     }
-    if (id < anchor) before.push(m);
-    else if (id > anchor) after.push(m);
+    let idNum = null;
+    if (anchorNum !== null) {
+      try {
+        idNum = BigInt(id);
+      } catch {
+        idNum = null;
+      }
+    }
+    // #834 (audit A1-4): numeric when both sides are snowflakes — the
+    // digit-boundary straddle is exactly what this belt used to get wrong.
+    const isBefore = idNum !== null ? idNum < anchorNum : id < anchor;
+    const isAfter = idNum !== null ? idNum > anchorNum : id > anchor;
+    if (isBefore) before.push(m);
+    else if (isAfter) after.push(m);
   }
   // No anchor in the set = no anchored window (never orphan the surround).
   if (!anchorMessage) return [];
