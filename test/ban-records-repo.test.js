@@ -119,8 +119,8 @@ describe("banRecords.nextBanNumber — per-community B-n allocation", () => {
     const cid = communityKey("772-repo-num-d");
     const r1 = mk(cid, uid("c1"));
     const r2 = mk(cid, uid("c2"));
-    assert.equal(db.markUnbannedManual(r1.id, "lifted").won, true);
-    assert.equal(db.markUnbannedManual(r2.id, "lifted").won, true);
+    assert.equal(db.markUnbannedManual(r1.community_id, r1.id, "lifted").won, true);
+    assert.equal(db.markUnbannedManual(r2.community_id, r2.id, "lifted").won, true);
     // MAX+1 counts CLOSED rows — a new cycle gets B-3, never a reused B-1.
     const r3 = mk(cid, uid("c3"));
     assert.equal(r3.ban_number, 3);
@@ -244,7 +244,7 @@ describe("banRecords.createBanRecord — round-trip + validation battery", () =>
   it("after the cycle closes, the user may be banned again with a FRESH number", () => {
     const cid = communityKey("772-repo-recycle");
     const first = mk(cid, "990000000000000002");
-    assert.equal(db.finalizeUnban(first.id, "expired_unbanned", null, { nowMs: T0 + MIN }).won, true);
+    assert.equal(db.finalizeUnban(first.community_id, first.id, "expired_unbanned", null, { nowMs: T0 + MIN }).won, true);
     const second = db.createBanRecord({
       communityId: cid,
       userId: "990000000000000002",
@@ -298,7 +298,7 @@ describe("banRecords.findActiveBanRecord / getBanRecord", () => {
   it("returns only ACTIVE rows, scoped to the community", () => {
     const active = mk(CID, "991000000000000001");
     const closed = mk(CID, "991000000000000002");
-    db.markUnbannedManual(closed.id, "lifted");
+    db.markUnbannedManual(closed.community_id, closed.id, "lifted");
 
     assert.equal(db.findActiveBanRecord(CID, "991000000000000001").id, active.id);
     assert.equal(db.findActiveBanRecord(CID, "991000000000000002"), null, "closed ≠ active");
@@ -342,7 +342,7 @@ describe("banRecords.listDueExpiredBans(nowMs) — the ticker sweep", () => {
   const later = mk(CID, uid("later"), { expiresAt: T0 + 30 * MIN });
   const permanent = mk(CID, uid("perm"));
   const closed = mk(CID, uid("closed"), { expiresAt: T0 - 10 * MIN });
-  db.finalizeUnban(closed.id, "expired_unbanned", null, { nowMs: T0 });
+  db.finalizeUnban(closed.community_id, closed.id, "expired_unbanned", null, { nowMs: T0 });
 
   it("expires_at == now is DUE (boundary is inclusive)", () => {
     const at = T0 + 5 * MIN;
@@ -389,7 +389,7 @@ describe("banRecords.listReconcilableActiveBans", () => {
     const old = mk(CID, uid("r1"), { bannedAt: T0 });
     const fresh = mk(CID, uid("r2"), { bannedAt: T0 + 10 * MIN });
     const closed = mk(CID, uid("r3"), { bannedAt: T0 + 20 * MIN });
-    db.markUnbannedManual(closed.id);
+    db.markUnbannedManual(closed.community_id, closed.id);
     mk(communityKey("772-repo-recon-b"), uid("r-other"));
 
     const rows = db.listReconcilableActiveBans(CID);
@@ -407,14 +407,14 @@ describe("banRecords.claimUnban — first-click-wins LEASE (tickets #419 law)", 
   it("winner stamps the claim; the racing loser gets won:false + the LIVE row and mutates NOTHING", () => {
     const rec = mk(CID, uid("cl1"));
 
-    const first = db.claimUnban(rec.id, T0);
+    const first = db.claimUnban(rec.community_id, rec.id, T0);
     assert.equal(first.ok, true);
     assert.equal(first.won, true);
     assert.equal(first.record.unban_claimed_at, T0, "claim stamped at the injected instant");
 
     // Mid-flight (the outbound unban is "in progress"): second claimer loses
     // and the row is byte-identical — no duplicate outbound-facing churn.
-    const second = db.claimUnban(rec.id, T0 + MIN);
+    const second = db.claimUnban(rec.community_id, rec.id, T0 + MIN);
     assert.equal(second.won, false);
     assert.equal(second.record.unban_claimed_at, T0, "the stamp rides from the FIRST claimer — stamped exactly once");
     assert.equal(second.record.status, "active", "loser reads truth, changes nothing");
@@ -425,41 +425,41 @@ describe("banRecords.claimUnban — first-click-wins LEASE (tickets #419 law)", 
 
   it("lease boundaries: LEASE-1 held, ==LEASE stealable (re-stamp), +1 loses to the NEW holder, 2×LEASE ages again", () => {
     const rec = mk(CID, uid("cl2"));
-    assert.equal(db.claimUnban(rec.id, T0).won, true);
+    assert.equal(db.claimUnban(rec.community_id, rec.id, T0).won, true);
 
-    assert.equal(db.claimUnban(rec.id, T0 + LEASE - 1).won, false, "one ms short: live holder keeps it");
+    assert.equal(db.claimUnban(rec.community_id, rec.id, T0 + LEASE - 1).won, false, "one ms short: live holder keeps it");
 
     // At maturity the holder is DEAD (crash-wedge) — next ticker pass steals.
-    const steal = db.claimUnban(rec.id, T0 + LEASE);
+    const steal = db.claimUnban(rec.community_id, rec.id, T0 + LEASE);
     assert.equal(steal.won, true, "expired lease must never wedge the row forever");
     assert.equal(steal.record.unban_claimed_at, T0 + LEASE, "the steal RE-STAMPS to the stealing instant");
 
-    assert.equal(db.claimUnban(rec.id, T0 + LEASE + 1).won, false, "the new holder owns a fresh lease");
-    assert.equal(db.claimUnban(rec.id, T0 + 2 * LEASE).won, true, "the lease is uniform, not a one-shot");
+    assert.equal(db.claimUnban(rec.community_id, rec.id, T0 + LEASE + 1).won, false, "the new holder owns a fresh lease");
+    assert.equal(db.claimUnban(rec.community_id, rec.id, T0 + 2 * LEASE).won, true, "the lease is uniform, not a one-shot");
   });
 
   it("claims only ACTIVE rows — a settled ban loses with the live row (manual race honesty)", () => {
     const rec = mk(CID, uid("cl3"));
-    db.finalizeUnban(rec.id, "unbanned_manual", "lifted by hand", { nowMs: T0 });
-    const stale = db.claimUnban(rec.id, T0 + MIN);
+    db.finalizeUnban(rec.community_id, rec.id, "unbanned_manual", "lifted by hand", { nowMs: T0 });
+    const stale = db.claimUnban(rec.community_id, rec.id, T0 + MIN);
     assert.equal(stale.ok, true);
     assert.equal(stale.won, false);
     assert.equal(stale.record.status, "unbanned_manual");
   });
 
   it("unknown record loses cleanly: {ok:true, won:false, record:null}", () => {
-    const res = db.claimUnban(9_999_999, T0);
+    const res = db.claimUnban(CID, 9_999_999, T0);
     assert.deepEqual(res, { ok: true, won: false, record: null });
   });
 
   it("malformed record ids are {ok:false,error} runtime answers — numeric strings coerce (api ids arrive as strings)", () => {
     for (const bad of [0, -1, "", null, undefined, {}, "abc", 1.5]) {
-      const res = db.claimUnban(bad, T0);
+      const res = db.claimUnban(CID, bad, T0);
       assert.equal(res.ok, false, `${JSON.stringify(bad) ?? String(bad)} must be refused`);
       assert.equal(res.error, "No such ban record.");
     }
     const rec = mk(CID, uid("cl4"));
-    assert.equal(db.claimUnban(String(rec.id), T0).won, true, "numeric-string id wins the real row");
+    assert.equal(db.claimUnban(CID, String(rec.id), T0).won, true, "numeric-string id wins the real row");
   });
 });
 
@@ -468,7 +468,7 @@ describe("banRecords.finalizeUnban / markUnbannedManual — CAS on status", () =
 
   it("settles an UNCLAIMED active row and back-stamps the claim (manual path honesty)", () => {
     const rec = mk(CID, uid("f1"));
-    const res = db.finalizeUnban(rec.id, "expired_unbanned", "Expired — auto-unban", { nowMs: T0 + MIN });
+    const res = db.finalizeUnban(rec.community_id, rec.id, "expired_unbanned", "Expired — auto-unban", { nowMs: T0 + MIN });
     assert.equal(res.ok, true);
     assert.equal(res.won, true);
     assert.equal(res.record.status, "expired_unbanned");
@@ -482,8 +482,8 @@ describe("banRecords.finalizeUnban / markUnbannedManual — CAS on status", () =
 
   it("finalize from the CLAIMED state keeps the ORIGINAL claim stamp (never re-stamps)", () => {
     const rec = mk(CID, uid("f2"));
-    db.claimUnban(rec.id, T0); // ticker claimed here
-    const res = db.finalizeUnban(rec.id, "expired_unbanned", null, { nowMs: T0 + 1000 });
+    db.claimUnban(rec.community_id, rec.id, T0); // ticker claimed here
+    const res = db.finalizeUnban(rec.community_id, rec.id, "expired_unbanned", null, { nowMs: T0 + 1000 });
     assert.equal(res.won, true);
     assert.equal(res.record.status, "expired_unbanned");
     assert.equal(res.record.unban_claimed_at, T0, "the OUTBOUND-facing claim instant survives finalize");
@@ -491,11 +491,11 @@ describe("banRecords.finalizeUnban / markUnbannedManual — CAS on status", () =
 
   it("CAS: a manual unban between claim and finalize WINS — the ticker's finalize loses and reports the existing truth", () => {
     const rec = mk(CID, uid("f3"));
-    assert.equal(db.claimUnban(rec.id, T0).won, true, "ticker claimed, outbound about to fire");
+    assert.equal(db.claimUnban(rec.community_id, rec.id, T0).won, true, "ticker claimed, outbound about to fire");
     // The GuildBanRemove event lands first: the record must tell what ACTUALLY happened.
-    assert.equal(db.markUnbannedManual(rec.id, "staff lifted it").won, true);
+    assert.equal(db.markUnbannedManual(rec.community_id, rec.id, "staff lifted it").won, true);
 
-    const loser = db.finalizeUnban(rec.id, "expired_unbanned", "ticker says expired", { nowMs: T0 + MIN });
+    const loser = db.finalizeUnban(rec.community_id, rec.id, "expired_unbanned", "ticker says expired", { nowMs: T0 + MIN });
     assert.equal(loser.ok, true);
     assert.equal(loser.won, false, "changes===0 — the loser never overwrites");
     assert.equal(loser.record.status, "unbanned_manual");
@@ -508,8 +508,8 @@ describe("banRecords.finalizeUnban / markUnbannedManual — CAS on status", () =
 
   it("two settles for one unban settle EXACTLY ONCE (double event safety)", () => {
     const rec = mk(CID, uid("f4"));
-    assert.equal(db.markUnbannedManual(rec.id, "event 1").won, true);
-    assert.equal(db.markUnbannedManual(rec.id, "event 2").won, false);
+    assert.equal(db.markUnbannedManual(rec.community_id, rec.id, "event 1").won, true);
+    assert.equal(db.markUnbannedManual(rec.community_id, rec.id, "event 2").won, false);
     assert.equal(db.getBanRecord(rec.id).unban_reason, "event 1");
   });
 
@@ -519,7 +519,7 @@ describe("banRecords.finalizeUnban / markUnbannedManual — CAS on status", () =
     // refusal list into its own settle pin below — the appeal outcome is
     // now one of the ways a ban ends; the domain stays CLOSED beyond that).
     for (const status of ["active", "welcomed", "pending_rejoin", "EXPIRED_UNBANNED", ""]) {
-      const res = db.finalizeUnban(rec.id, status, null, { nowMs: T0 });
+      const res = db.finalizeUnban(rec.community_id, rec.id, status, null, { nowMs: T0 });
       assert.equal(res.ok, false, `${JSON.stringify(status)} must be refused`);
       assert.match(res.error, /Unknown ban unban outcome/);
       assert.match(res.error, /expired_unbanned, unbanned_manual, clemency_granted/, "the message teaches the domain");
@@ -529,7 +529,7 @@ describe("banRecords.finalizeUnban / markUnbannedManual — CAS on status", () =
 
   it("clemency_granted settles an ACTIVE row (#773 appeal outcome) — once; the CAS holds", () => {
     const rec = mk(CID, uid("f5c"));
-    const res = db.finalizeUnban(rec.id, "clemency_granted", "Ban appeal — clemency granted by staff", {
+    const res = db.finalizeUnban(rec.community_id, rec.id, "clemency_granted", "Ban appeal — clemency granted by staff", {
       nowMs: T0,
     });
     assert.equal(res.ok, true);
@@ -539,7 +539,7 @@ describe("banRecords.finalizeUnban / markUnbannedManual — CAS on status", () =
 
     // The event path arrives late: manual CAS LOSES (clemency owns the row)
     // and reports the live truth — events never overwrite the decision.
-    const late = db.markUnbannedManual(rec.id, "GuildBanRemove");
+    const late = db.markUnbannedManual(rec.community_id, rec.id, "GuildBanRemove");
     assert.equal(late.won, false, "the settled clemency row is final");
     assert.equal(late.record.status, "clemency_granted");
     assert.equal(db.getBanRecord(rec.id).unban_reason, "Ban appeal — clemency granted by staff");
@@ -547,33 +547,33 @@ describe("banRecords.finalizeUnban / markUnbannedManual — CAS on status", () =
 
   it("unban_reason rides COALESCE: blank/null are ABSENT (never stored), a real one lands once", () => {
     const rec = mk(CID, uid("f6"));
-    assert.equal(db.markUnbannedManual(rec.id, "first truth").won, true);
+    assert.equal(db.markUnbannedManual(rec.community_id, rec.id, "first truth").won, true);
     assert.equal(db.getBanRecord(rec.id).unban_reason, "first truth");
 
     const rec2 = mk(CID, uid("f7"));
-    assert.equal(db.finalizeUnban(rec2.id, "unbanned_manual", "  ", { nowMs: T0 }).won, true);
+    assert.equal(db.finalizeUnban(rec2.community_id, rec2.id, "unbanned_manual", "  ", { nowMs: T0 }).won, true);
     assert.equal(db.getBanRecord(rec2.id).unban_reason, null, "blank reason normalizes to absent");
 
     // A settled row can never carry a second reason (the CAS above) — the
     // COALESCE is the belt, the CAS is the law.
-    assert.equal(db.markUnbannedManual(rec.id, "rewrite attempt").won, false);
+    assert.equal(db.markUnbannedManual(rec.community_id, rec.id, "rewrite attempt").won, false);
     assert.equal(db.getBanRecord(rec.id).unban_reason, "first truth");
   });
 
   it("unknown record: {ok:true, won:false, record:null} — and garbage ids the {ok:false} answer", () => {
-    assert.deepEqual(db.finalizeUnban(9_999_999, "expired_unbanned", null, { nowMs: T0 }), {
+    assert.deepEqual(db.finalizeUnban(CID, 9_999_999, "expired_unbanned", null, { nowMs: T0 }), {
       ok: true,
       won: false,
       record: null,
     });
-    const bad = db.finalizeUnban(null, "expired_unbanned");
+    const bad = db.finalizeUnban(CID, null, "expired_unbanned");
     assert.equal(bad.ok, false);
     assert.equal(bad.error, "No such ban record.");
   });
 
   it("markUnbannedManual stamps the claim even when nobody claimed (record stays honest)", () => {
     const rec = mk(CID, uid("f9"));
-    const res = db.markUnbannedManual(rec.id, "GuildBanRemove");
+    const res = db.markUnbannedManual(rec.community_id, rec.id, "GuildBanRemove");
     assert.equal(res.won, true);
     assert.ok(Number(res.record.unban_claimed_at) > 0, "back-stamp present (wall-clock path — existence pinned, value not)");
     assert.equal(res.record.unban_reason, "GuildBanRemove");
@@ -585,7 +585,7 @@ describe("banRecords.claimWelcome — the cycle's ONE welcome DM", () => {
 
   const settled = () => {
     const rec = mk(CID, uid("w"));
-    assert.equal(db.markUnbannedManual(rec.id, "lifted").won, true);
+    assert.equal(db.markUnbannedManual(rec.community_id, rec.id, "lifted").won, true);
     return rec;
   };
 
@@ -630,7 +630,7 @@ describe("banRecords.markPendingRejoin / markWelcomed — the welcome sub-machin
 
   const settled = () => {
     const rec = mk(CID, uid("p"));
-    db.markUnbannedManual(rec.id, "lifted");
+    db.markUnbannedManual(rec.community_id, rec.id, "lifted");
     return rec;
   };
 
@@ -639,7 +639,7 @@ describe("banRecords.markPendingRejoin / markWelcomed — the welcome sub-machin
     assert.equal(db.markPendingRejoin(manual.id).status, "pending_rejoin");
 
     const rec = mk(CID, uid("pe"));
-    db.finalizeUnban(rec.id, "expired_unbanned", null, { nowMs: T0 });
+    db.finalizeUnban(rec.community_id, rec.id, "expired_unbanned", null, { nowMs: T0 });
     assert.equal(db.markPendingRejoin(rec.id).status, "pending_rejoin");
   });
 
@@ -686,14 +686,14 @@ describe("banRecords DM flags — recordBanDmSent / recordWelcomeDmSent", () => 
 
   it("welcome recorder stamps an unstamped row and reports an already-stamped one as false", () => {
     const rec = mk(CID, uid("wdm"));
-    db.markUnbannedManual(rec.id);
+    db.markUnbannedManual(rec.community_id, rec.id);
     assert.equal(db.recordWelcomeDmSent(rec.id), true, "rejoin-retry success lands in the record");
     assert.equal(db.recordWelcomeDmSent(rec.id), false);
   });
 
   it("claimWelcome IS the stamp — the recorder then reports false (claim === stamp on the locked schema)", () => {
     const rec = mk(CID, uid("both"));
-    db.markUnbannedManual(rec.id);
+    db.markUnbannedManual(rec.community_id, rec.id);
     assert.equal(db.claimWelcome(rec.id).won, true);
     assert.equal(db.recordWelcomeDmSent(rec.id), false, "no second welcome can sneak past the claim");
     assert.equal(db.getBanRecord(rec.id).welcome_dm_sent, 1);
@@ -714,9 +714,9 @@ describe("banRecords — the status machine, end to end (injected clock througho
 
     // Ticker pass at the expiry instant: due → claim → finalize.
     assert.ok(db.listDueExpiredBans(T0 + 10 * MIN).some((r) => r.id === rec.id));
-    assert.equal(db.claimUnban(rec.id, T0 + 10 * MIN).won, true);
+    assert.equal(db.claimUnban(rec.community_id, rec.id, T0 + 10 * MIN).won, true);
     assert.equal(
-      db.finalizeUnban(rec.id, "expired_unbanned", "Expired — auto-unban", { nowMs: T0 + 10 * MIN + 500 })
+      db.finalizeUnban(rec.community_id, rec.id, "expired_unbanned", "Expired — auto-unban", { nowMs: T0 + 10 * MIN + 500 })
         .won,
       true,
     );
@@ -743,7 +743,7 @@ describe("banRecords — the status machine, end to end (injected clock througho
     const rec = mk(cid, uid("man"), { expiresAt: T0 + MIN });
 
     // Staff lifts the ban outside the bot → GuildBanRemove → CAS settle.
-    assert.equal(db.markUnbannedManual(rec.id, "staff lift").won, true);
+    assert.equal(db.markUnbannedManual(rec.community_id, rec.id, "staff lift").won, true);
     // Welcome not sent at unban time (toggle off / DM fail) → park directly.
     assert.equal(db.markPendingRejoin(rec.id).status, "pending_rejoin");
     assert.equal(db.markWelcomed(rec.id).status, "welcomed");
@@ -761,10 +761,10 @@ describe("banRecords.markExpiryHeld — the #809 held-expiry settle", () => {
 
   it("CAS from ACTIVE: stamps expired_held + cause, keeps the original claim stamp", () => {
     const rec = mk(CID, uid("held"), { expiresAt: T0 + MIN });
-    const claim = db.claimUnban(rec.id, T0 + MIN);
+    const claim = db.claimUnban(rec.community_id, rec.id, T0 + MIN);
     assert.equal(claim.won, true);
 
-    const held = db.markExpiryHeld(rec.id, "expiry HELD: live ban differs", { nowMs: T0 + MIN });
+    const held = db.markExpiryHeld(rec.community_id, rec.id, "expiry HELD: live ban differs", { nowMs: T0 + MIN });
     assert.deepEqual({ ok: held.ok, won: held.won }, { ok: true, won: true });
     assert.equal(held.record.status, "expired_held");
     assert.equal(held.record.unban_reason, "expiry HELD: live ban differs");
@@ -773,11 +773,11 @@ describe("banRecords.markExpiryHeld — the #809 held-expiry settle", () => {
 
   it("CAS loses to a concurrent settle: the live status is reported, nothing overwritten", () => {
     const rec = mk(CID, uid("race"), { expiresAt: T0 + MIN });
-    assert.equal(db.claimUnban(rec.id, T0 + MIN).won, true);
+    assert.equal(db.claimUnban(rec.community_id, rec.id, T0 + MIN).won, true);
     // The manual path beats the in-flight pass (events-keep-truth law).
-    assert.equal(db.markUnbannedManual(rec.id, "staff lift").won, true);
+    assert.equal(db.markUnbannedManual(rec.community_id, rec.id, "staff lift").won, true);
 
-    const held = db.markExpiryHeld(rec.id, "too late", { nowMs: T0 + 2 * MIN });
+    const held = db.markExpiryHeld(rec.community_id, rec.id, "too late", { nowMs: T0 + 2 * MIN });
     assert.equal(held.ok, true);
     assert.equal(held.won, false);
     assert.equal(held.record.status, "unbanned_manual", "the winner's truth stands verbatim");
@@ -787,7 +787,7 @@ describe("banRecords.markExpiryHeld — the #809 held-expiry settle", () => {
   it("a held row is TERMINAL for the sweep and NEVER welcome-claimable", () => {
     const cid = communityKey("772-repo-held-terminal");
     const rec = mk(cid, uid("term"), { expiresAt: T0 + MIN });
-    assert.equal(db.markExpiryHeld(rec.id, "held", { nowMs: T0 + MIN }).won, true);
+    assert.equal(db.markExpiryHeld(rec.community_id, rec.id, "held", { nowMs: T0 + MIN }).won, true);
 
     assert.deepEqual(
       db
@@ -814,7 +814,7 @@ describe("banRecords.markExpiryHeld — the #809 held-expiry settle", () => {
   });
 
   it("programmer-shape ids answer the honest record error, never throw", () => {
-    const res = db.markExpiryHeld(0, "x");
+    const res = db.markExpiryHeld(CID, 0, "x");
     assert.equal(res.ok, false);
     assert.equal(res.error, "No such ban record.");
   });
@@ -836,7 +836,7 @@ describe("banRecords.noteExpiryAttempt — winner-side counting + terminal cross
   it("bump law: ACTIVE-only, +1 per call, post-increment count, status untouched below the ceiling", () => {
     const rec = mk(CID, uid("bump"), { expiresAt: T0 - MIN });
     for (let expected = 1; expected <= 3; expected++) {
-      const res = db.noteExpiryAttempt(rec.id, { maxAttempts: 10, nowMs: T0 + expected * MIN });
+      const res = db.noteExpiryAttempt(rec.community_id, rec.id, { maxAttempts: 10, nowMs: T0 + expected * MIN });
       assert.equal(res.ok, true, res.error);
       assert.equal(res.won, true, "the row is ACTIVE — every winner-side call counts");
       assert.equal(res.attempts, expected, "attempts is the POST-increment value");
@@ -850,7 +850,7 @@ describe("banRecords.noteExpiryAttempt — winner-side counting + terminal cross
 
   it("the crossing pass quarantines: expiry_failed + reason stamped + OUT of both sweep reads", () => {
     const rec = mk(CID, uid("crossing"), { expiresAt: T0 - MIN });
-    const crossing = db.noteExpiryAttempt(rec.id, {
+    const crossing = db.noteExpiryAttempt(rec.community_id, rec.id, {
       maxAttempts: 2,
       reason: "expiry QUARANTINED after repeated failed auto-unban attempts — last error: Missing Access",
       nowMs: T0 + 5 * MIN,
@@ -858,7 +858,7 @@ describe("banRecords.noteExpiryAttempt — winner-side counting + terminal cross
     assert.equal(crossing.ok, true);
     assert.equal(crossing.won, true);
     assert.equal(crossing.attempts, 1, "first of two — no crossing yet");
-    const crossed = db.noteExpiryAttempt(rec.id, {
+    const crossed = db.noteExpiryAttempt(rec.community_id, rec.id, {
       maxAttempts: 2,
       reason: "expiry QUARANTINED after repeated failed auto-unban attempts — last error: Missing Access",
       nowMs: T0 + 6 * MIN,
@@ -891,7 +891,7 @@ describe("banRecords.noteExpiryAttempt — winner-side counting + terminal cross
     // the row is ACTIVE with attempts AT the ceiling.
     db.db.prepare("UPDATE ban_records SET expiry_attempts=? WHERE id=?").run(5, rec.id);
 
-    const res = db.noteExpiryAttempt(rec.id, { maxAttempts: 5, reason: "residue heals", nowMs: T0 + MIN });
+    const res = db.noteExpiryAttempt(rec.community_id, rec.id, { maxAttempts: 5, reason: "residue heals", nowMs: T0 + MIN });
     assert.equal(res.ok, true);
     assert.equal(res.attempts, 6, "the increment moves PAST the ceiling — gating it would wedge the row ACTIVE forever");
     assert.equal(res.quarantined, true, "the over-ceiling re-run lands the quarantine CAS right here");
@@ -901,21 +901,21 @@ describe("banRecords.noteExpiryAttempt — winner-side counting + terminal cross
 
   it("CAS-loss law: a row that LEFT active is never counted, ever (count frozen, live row reported)", () => {
     const rec = mk(CID, uid("frozen"), { expiresAt: T0 - MIN });
-    assert.equal(db.noteExpiryAttempt(rec.id, { maxAttempts: 9 }).attempts, 1);
+    assert.equal(db.noteExpiryAttempt(rec.community_id, rec.id, { maxAttempts: 9 }).attempts, 1);
 
     // A concurrent settle wins the row (manual unban).
-    assert.equal(db.claimUnban(rec.id, T0 + MIN).won, true);
-    assert.equal(db.markUnbannedManual(rec.id, "staff lifted it").won, true);
+    assert.equal(db.claimUnban(rec.community_id, rec.id, T0 + MIN).won, true);
+    assert.equal(db.markUnbannedManual(rec.community_id, rec.id, "staff lifted it").won, true);
 
     const before = db.getBanRecord(rec.id);
-    const res = db.noteExpiryAttempt(rec.id, { maxAttempts: 9 });
+    const res = db.noteExpiryAttempt(rec.community_id, rec.id, { maxAttempts: 9 });
     assert.deepEqual({ ok: res.ok, won: res.won, quarantined: res.quarantined }, { ok: true, won: false, quarantined: false });
     assert.equal(res.attempts, 1, "the count FROZE with the status — a settled row performs no attempts");
     assert.deepEqual(db.getBanRecord(rec.id), before, "a losing note mutates NOTHING (byte-stable)");
 
     // Even at the ceiling, a non-ACTIVE row never quarantines.
     db.db.prepare("UPDATE ban_records SET expiry_attempts=? WHERE id=?").run(50, rec.id);
-    const after = db.noteExpiryAttempt(rec.id, { maxAttempts: 9 });
+    const after = db.noteExpiryAttempt(rec.community_id, rec.id, { maxAttempts: 9 });
     assert.equal(after.won, false);
     assert.equal(after.quarantined, false);
     assert.equal(db.getBanRecord(rec.id).status, "unbanned_manual", "the settle stands, terminal or not");
@@ -923,8 +923,8 @@ describe("banRecords.noteExpiryAttempt — winner-side counting + terminal cross
 
   it("held rows (#809) are outside the domain too — HELD is a decision, not an attempt", () => {
     const rec = mk(CID, uid("held"), { expiresAt: T0 - MIN });
-    assert.equal(db.markExpiryHeld(rec.id, "live ban is not ours", { nowMs: T0 + MIN }).won, true);
-    const res = db.noteExpiryAttempt(rec.id, { maxAttempts: 3 });
+    assert.equal(db.markExpiryHeld(rec.community_id, rec.id, "live ban is not ours", { nowMs: T0 + MIN }).won, true);
+    const res = db.noteExpiryAttempt(rec.community_id, rec.id, { maxAttempts: 3 });
     assert.equal(res.won, false);
     assert.equal(res.quarantined, false);
     assert.equal(db.getBanRecord(rec.id).status, "expired_held", "HELD never degrades into expiry_failed");
@@ -933,7 +933,7 @@ describe("banRecords.noteExpiryAttempt — winner-side counting + terminal cross
   it("the injected clock is the ONLY clock; a NULL reason keeps the existing unban_reason", () => {
     const rec = mk(CID, uid("clock"), { expiresAt: T0 - MIN });
     assert.equal(
-      db.noteExpiryAttempt(rec.id, { maxAttempts: 1, nowMs: T0 + 42 * MIN }).quarantined,
+      db.noteExpiryAttempt(rec.community_id, rec.id, { maxAttempts: 1, nowMs: T0 + 42 * MIN }).quarantined,
       true
     );
     const row = db.getBanRecord(rec.id);
@@ -943,14 +943,14 @@ describe("banRecords.noteExpiryAttempt — winner-side counting + terminal cross
 
   it("runtime refusals: programmer-shape ids answer the record error, never throw", () => {
     for (const bad of [0, -1, "abc", null, undefined, 1.5, {}]) {
-      const res = db.noteExpiryAttempt(bad, { maxAttempts: 3 });
+      const res = db.noteExpiryAttempt(CID, bad, { maxAttempts: 3 });
       assert.equal(res.ok, false, `${JSON.stringify(bad) ?? String(bad)} must be refused`);
       assert.equal(res.error, "No such ban record.");
     }
   });
 
   it("a never-existing id is a LOSS, not an error (won:false + null row, nothing counted)", () => {
-    const res = db.noteExpiryAttempt(999999, { maxAttempts: 3 });
+    const res = db.noteExpiryAttempt(CID, 999999, { maxAttempts: 3 });
     assert.equal(res.ok, true, "a positive id that matches no row is the ghost-loss shape");
     assert.equal(res.won, false);
     assert.equal(res.quarantined, false);
@@ -965,16 +965,16 @@ describe("banRecords.markExpiryFailed — the terminal CAS (#810)", () => {
   it("ACTIVE → expiry_failed with COALESCE'd reason and claim stamp; loser gets the live truth", () => {
     const rec = mk(CID, uid("cas"), { expiresAt: T0 - MIN });
     // Pre-claim the lease so the COALESCE "keep the original stamp" law is observable.
-    assert.equal(db.claimUnban(rec.id, T0 + MIN).won, true);
+    assert.equal(db.claimUnban(rec.community_id, rec.id, T0 + MIN).won, true);
 
-    const res = db.markExpiryFailed(rec.id, "dead community", { nowMs: T0 + 2 * MIN });
+    const res = db.markExpiryFailed(rec.community_id, rec.id, "dead community", { nowMs: T0 + 2 * MIN });
     assert.deepEqual({ ok: res.ok, won: res.won }, { ok: true, won: true });
     const row = db.getBanRecord(rec.id);
     assert.equal(row.status, "expiry_failed");
     assert.equal(row.unban_reason, "dead community");
     assert.equal(row.unban_claimed_at, T0 + MIN, "the ORIGINAL claim stamp survives (COALESCE, never re-stamped)");
 
-    const second = db.markExpiryFailed(rec.id, "late passer", { nowMs: T0 + 3 * MIN });
+    const second = db.markExpiryFailed(rec.community_id, rec.id, "late passer", { nowMs: T0 + 3 * MIN });
     assert.equal(second.won, false, "one winner: the terminal row is outside the ACTIVE domain");
     assert.equal(second.record.status, "expiry_failed", "the loser reports the LIVE truth");
     assert.equal(db.getBanRecord(rec.id).unban_reason, "dead community", "nothing clobbered");
@@ -982,8 +982,8 @@ describe("banRecords.markExpiryFailed — the terminal CAS (#810)", () => {
 
   it("a DECIDED row is untouched: expiry_failed never overwrites a human outcome", () => {
     const rec = mk(CID, uid("decided"), { expiresAt: T0 - MIN });
-    assert.equal(db.finalizeUnban(rec.id, "expired_unbanned", null, { nowMs: T0 + MIN }).won, true);
-    const res = db.markExpiryFailed(rec.id, "stale quarantine", { nowMs: T0 + 2 * MIN });
+    assert.equal(db.finalizeUnban(rec.community_id, rec.id, "expired_unbanned", null, { nowMs: T0 + MIN }).won, true);
+    const res = db.markExpiryFailed(rec.community_id, rec.id, "stale quarantine", { nowMs: T0 + 2 * MIN });
     assert.equal(res.won, false);
     const row = db.getBanRecord(rec.id);
     assert.equal(row.status, "expired_unbanned", "the settle stands");
@@ -991,7 +991,7 @@ describe("banRecords.markExpiryFailed — the terminal CAS (#810)", () => {
   });
 
   it("programmer-shape ids answer the record error", () => {
-    const res = db.markExpiryFailed(0, "x");
+    const res = db.markExpiryFailed(CID, 0, "x");
     assert.equal(res.ok, false);
     assert.equal(res.error, "No such ban record.");
   });

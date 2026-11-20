@@ -370,11 +370,18 @@ function listFiledAppealsWithoutTicket(limit = 10) {
  * exactly one ticket; a racing second attach reads `won:false` plus the LIVE
  * row and keeps the channel that is actually on the record).
  *
+ * @param {number} communityId the CALLER's community (from request context,
+ *   never from the row) — #838 (C2-6): id-only claims/finalizes bound
+ *   `WHERE id=?` alone, so cross-tenant safety lived ONLY in handler belts.
+ *   The DB now answers a foreign row as absent (won:false + appeal:null),
+ *   never leaking its existence.
  * @param {number} appealId
  * @param {string} ticketChannelId
  * @returns {{ ok: true, won: boolean, appeal: object|null } | { ok: false, error: string }}
  */
-function attachAppealTicketChannel(appealId, ticketChannelId) {
+function attachAppealTicketChannel(communityId, appealId, ticketChannelId) {
+  assertCommunityId(communityId);
+  const cid = Number(communityId);
   const { id, error } = appealIdOrError(appealId);
   if (!id) return { ok: false, error };
   const channel = optionalText(ticketChannelId);
@@ -385,10 +392,10 @@ function attachAppealTicketChannel(appealId, ticketChannelId) {
     const res = db
       .prepare(
         `UPDATE ban_appeals SET ticket_channel_id=?, updated_at=?
-          WHERE id=? AND ticket_channel_id IS NULL`,
+          WHERE id=? AND community_id=? AND ticket_channel_id IS NULL`,
       )
-      .run(channel, now(), id);
-    return { ok: true, won: res.changes === 1, appeal: getAppealById(id) };
+      .run(channel, now(), id, cid);
+    return { ok: true, won: res.changes === 1, appeal: visibleAppeal(id, cid) };
   } catch (err) {
     return {
       ok: false,
@@ -398,23 +405,37 @@ function attachAppealTicketChannel(appealId, ticketChannelId) {
 }
 
 /**
+ * #838 (C2-6): the community-visible read behind every claim/finalize belt.
+ * A row that exists but belongs to ANOTHER community answers as `null`,
+ * exactly like a row that is gone — the CAS losers learn "someone owns it"
+ * (won:false) without ever learning the foreign row's shape.
+ */
+function visibleAppeal(appealId, cid) {
+  const row = getAppealById(appealId);
+  return row && Number(row.community_id) === cid ? row : null;
+}
+
+/**
  * `filed → open` (the ticket exists and the header landed — the relay may
  * start). CAS on status; the loser reads the LIVE row.
  *
+ * @param {number} communityId the CALLER's community (#838 C2-6 belt — see attachAppealTicketChannel)
  * @param {number} appealId
  * @returns {{ ok: true, won: boolean, appeal: object|null } | { ok: false, error: string }}
  */
-function openAppeal(appealId) {
+function openAppeal(communityId, appealId) {
+  assertCommunityId(communityId);
+  const cid = Number(communityId);
   const { id, error } = appealIdOrError(appealId);
   if (!id) return { ok: false, error };
   try {
     const res = db
       .prepare(
         `UPDATE ban_appeals SET status='open', updated_at=?
-          WHERE id=? AND status='filed'`,
+          WHERE id=? AND community_id=? AND status='filed'`,
       )
-      .run(now(), id);
-    return { ok: true, won: res.changes === 1, appeal: getAppealById(id) };
+      .run(now(), id, cid);
+    return { ok: true, won: res.changes === 1, appeal: visibleAppeal(id, cid) };
   } catch (err) {
     return { ok: false, error: `Could not open the ban appeal: ${err?.message || err}` };
   }
@@ -433,6 +454,7 @@ function openAppeal(appealId) {
  * means exactly one writer ever touches it, so the value at claim time IS
  * the record (clemency/close claims carry null and correctly clear nothing).
  *
+ * @param {number} communityId the CALLER's community (#838 C2-6 belt — see attachAppealTicketChannel)
  * @param {number} appealId
  * @param {object} opts
  * @param {string} opts.status one of APPEAL_OUTCOMES ('granted'|'denied'|'closed')
@@ -442,7 +464,9 @@ function openAppeal(appealId) {
  * @param {number} [opts.nowMs] ms epoch (injectable clock)
  * @returns {{ ok: true, won: boolean, appeal: object|null } | { ok: false, error: string }}
  */
-function claimAppealOutcome(appealId, opts = {}) {
+function claimAppealOutcome(communityId, appealId, opts = {}) {
+  assertCommunityId(communityId);
+  const cid = Number(communityId);
   const { id, error } = appealIdOrError(appealId);
   if (!id) return { ok: false, error };
   const { status, decidedBy, denialReason, nowMs } = opts || {};
@@ -466,10 +490,10 @@ function claimAppealOutcome(appealId, opts = {}) {
       .prepare(
         `UPDATE ban_appeals
             SET status=?, decided_by=?, decided_at=?, denial_reason=?, updated_at=?
-          WHERE id=? AND status='open'`,
+          WHERE id=? AND community_id=? AND status='open'`,
       )
-      .run(status, decider, ts, denial, ts, id);
-    return { ok: true, won: res.changes === 1, appeal: getAppealById(id) };
+      .run(status, decider, ts, denial, ts, id, cid);
+    return { ok: true, won: res.changes === 1, appeal: visibleAppeal(id, cid) };
   } catch (err) {
     return {
       ok: false,
@@ -489,12 +513,15 @@ function claimAppealOutcome(appealId, opts = {}) {
  * untouched: the SAME cycle keeps its one appeal, no re-file needed. The
  * status CHECK already admits 'open' (no migration).
  *
+ * @param {number} communityId the CALLER's community (#838 C2-6 belt — see attachAppealTicketChannel)
  * @param {number} appealId
  * @param {object} [opts]
  * @param {number} [opts.nowMs] ms epoch (injectable clock)
  * @returns {{ ok: true, won: boolean, appeal: object|null } | { ok: false, error: string }}
  */
-function reopenAppealAfterFailedExecution(appealId, { nowMs } = {}) {
+function reopenAppealAfterFailedExecution(communityId, appealId, { nowMs } = {}) {
+  assertCommunityId(communityId);
+  const cid = Number(communityId);
   const { id, error } = appealIdOrError(appealId);
   if (!id) return { ok: false, error };
   const ts = timestampOr(nowMs, now());
@@ -504,10 +531,10 @@ function reopenAppealAfterFailedExecution(appealId, { nowMs } = {}) {
         `UPDATE ban_appeals
             SET status='open', decided_by=NULL, decided_at=NULL,
                 denial_reason=NULL, updated_at=?
-          WHERE id=? AND status='granted'`,
+          WHERE id=? AND community_id=? AND status='granted'`,
       )
-      .run(ts, id);
-    return { ok: true, won: res.changes === 1, appeal: getAppealById(id) };
+      .run(ts, id, cid);
+    return { ok: true, won: res.changes === 1, appeal: visibleAppeal(id, cid) };
   } catch (err) {
     return {
       ok: false,

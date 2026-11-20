@@ -1613,9 +1613,9 @@ function seedOpenAppeal(channel) {
     createdAt: T0,
   });
   assert.equal(filed.ok, true, `appeal seed failed: ${filed.error}`);
-  const attached = db.attachAppealTicketChannel(filed.appeal.id, channel);
+  const attached = db.attachAppealTicketChannel(filed.appeal.community_id, filed.appeal.id, channel);
   assert.equal(attached.ok, true, attached.error);
-  const opened = db.openAppeal(filed.appeal.id);
+  const opened = db.openAppeal(filed.appeal.community_id, filed.appeal.id);
   assert.equal(opened.won, true, `open seed failed: ${opened.error}`);
   return opened.appeal;
 }

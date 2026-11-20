@@ -283,6 +283,11 @@ function recordAutomodActionRefusal(opts = {}) {
  * mutation is never re-run (epic #723: "Approve must claim the action row
  * before calling Discord; a second click returns the existing result").
  *
+ * @param {number} communityId the CALLER's community (from request context,
+ *   never from the row) — #838 (C2-6): the id-only WHERE made every claim/
+ *   finalize primitive cross-tenant-able; safety lived entirely in handler
+ *   belts, so the next caller inheriting these helpers inherited a foot-gun.
+ *   The DB now binds `AND community_id=?` too.
  * @param {number} actionRowId
  * @param {string} claimant who claimed (staff snowflake / label)
  * @param {{ nowMs?: number }} [opts]
@@ -290,7 +295,9 @@ function recordAutomodActionRefusal(opts = {}) {
  *          | { ok: false, deduped: true, row: object }
  *          | { ok: false, error: string }}
  */
-function claimAutomodSuggestion(actionRowId, claimant, { nowMs = now() } = {}) {
+function claimAutomodSuggestion(communityId, actionRowId, claimant, { nowMs = now() } = {}) {
+  assertCommunityId(communityId);
+  const cid = Number(communityId);
   const id = Number(actionRowId);
   if (!Number.isInteger(id) || id < 1) {
     return { ok: false, error: "actionRowId must be a positive integer." };
@@ -300,13 +307,17 @@ function claimAutomodSuggestion(actionRowId, claimant, { nowMs = now() } = {}) {
     .prepare(
       `UPDATE automod_case_actions
        SET state='approved', claimed_by=?, claimed_at=?, updated_at=?
-       WHERE id=? AND state='suggested'`,
+       WHERE id=? AND community_id=? AND state='suggested'`,
     )
-    .run(String(claimant ?? "staff").trim() || "staff", at, at, id);
+    .run(String(claimant ?? "staff").trim() || "staff", at, at, id, cid);
   if (info.changes === 1) return { ok: true, row: getAutomodAction(id) };
 
+  // A row outside the caller's community answers as MISSING (the same
+  // shape as "gone"): a cross-tenant probe must not learn the row exists.
   const row = getAutomodAction(id);
-  if (!row) return { ok: false, error: `No auto-mod action row #${id}.` };
+  if (!row || Number(row.community_id) !== cid) {
+    return { ok: false, error: `No auto-mod action row #${id}.` };
+  }
   return { ok: false, deduped: true, row };
 }
 
@@ -315,6 +326,7 @@ function claimAutomodSuggestion(actionRowId, claimant, { nowMs = now() } = {}) {
  * `state='suggested'`. Nothing runs; the row still counts the subject as
  * considered. A second Dismiss click loses and returns the existing row.
  *
+ * @param {number} communityId the CALLER's community (#838 C2-6 belt — see claimAutomodSuggestion)
  * @param {number} actionRowId
  * @param {string} claimant the dismissing staff member
  * @param {{ note?: string|null, nowMs?: number }} [opts]
@@ -322,7 +334,14 @@ function claimAutomodSuggestion(actionRowId, claimant, { nowMs = now() } = {}) {
  *          | { ok: false, deduped: true, row: object }
  *          | { ok: false, error: string }}
  */
-function dismissAutomodSuggestion(actionRowId, claimant, { note = null, nowMs = now() } = {}) {
+function dismissAutomodSuggestion(
+  communityId,
+  actionRowId,
+  claimant,
+  { note = null, nowMs = now() } = {},
+) {
+  assertCommunityId(communityId);
+  const cid = Number(communityId);
   const id = Number(actionRowId);
   if (!Number.isInteger(id) || id < 1) {
     return { ok: false, error: "actionRowId must be a positive integer." };
@@ -335,7 +354,7 @@ function dismissAutomodSuggestion(actionRowId, claimant, { note = null, nowMs = 
     .prepare(
       `UPDATE automod_case_actions
        SET state='dismissed', claimed_by=?, claimed_at=?, result_text=?, updated_at=?
-       WHERE id=? AND state='suggested'`,
+       WHERE id=? AND community_id=? AND state='suggested'`,
     )
     .run(
       String(claimant ?? "staff").trim() || "staff",
@@ -343,11 +362,14 @@ function dismissAutomodSuggestion(actionRowId, claimant, { note = null, nowMs = 
       resultText,
       at,
       id,
+      cid,
     );
   if (info.changes === 1) return { ok: true, row: getAutomodAction(id) };
 
   const row = getAutomodAction(id);
-  if (!row) return { ok: false, error: `No auto-mod action row #${id}.` };
+  if (!row || Number(row.community_id) !== cid) {
+    return { ok: false, error: `No auto-mod action row #${id}.` };
+  }
   return { ok: false, deduped: true, row };
 }
 
@@ -358,6 +380,7 @@ function dismissAutomodSuggestion(actionRowId, claimant, { note = null, nowMs = 
  * loses to the first. `executed` carries the post-clamp params and the
  * human-readable result; `refused`/`failed` carry the specific error text.
  *
+ * @param {number} communityId the CALLER's community (#838 C2-6 belt — see claimAutomodSuggestion)
  * @param {number} actionRowId
  * @param {object} fields
  * @param {"executed"|"refused"|"failed"} fields.state
@@ -370,10 +393,13 @@ function dismissAutomodSuggestion(actionRowId, claimant, { note = null, nowMs = 
  *          | { ok: false, error: string }}
  */
 function recordAutomodActionResult(
+  communityId,
   actionRowId,
   { state, resultText = null, errorText = null, params = null, } = {},
   { nowMs = now() } = {},
 ) {
+  assertCommunityId(communityId);
+  const cid = Number(communityId);
   const id = Number(actionRowId);
   if (!Number.isInteger(id) || id < 1) {
     return { ok: false, error: "actionRowId must be a positive integer." };
@@ -394,7 +420,7 @@ function recordAutomodActionResult(
            error_text=COALESCE(?, error_text),
            params_json=COALESCE(?, params_json),
            updated_at=?
-       WHERE id=? AND state='approved'`,
+       WHERE id=? AND community_id=? AND state='approved'`,
     )
     .run(
       state,
@@ -403,11 +429,14 @@ function recordAutomodActionResult(
       paramsJson,
       at,
       id,
+      cid,
     );
   if (info.changes === 1) return { ok: true, row: getAutomodAction(id) };
 
   const row = getAutomodAction(id);
-  if (!row) return { ok: false, error: `No auto-mod action row #${id}.` };
+  if (!row || Number(row.community_id) !== cid) {
+    return { ok: false, error: `No auto-mod action row #${id}.` };
+  }
   return { ok: false, deduped: true, row };
 }
 

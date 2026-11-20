@@ -94,17 +94,17 @@ function suggest(cid, caseRow, action, subject = SUB, params = null) {
 
 /** Drive a row to a terminal state through the real state machine. */
 function toExecuted(row, resultText) {
-  const claim = db.claimAutomodSuggestion(row.id, "staff:test");
+  const claim = db.claimAutomodSuggestion(row.community_id, row.id, "staff:test");
   assert.equal(claim.ok, true, JSON.stringify(claim));
-  const fin = db.recordAutomodActionResult(row.id, { state: "executed", resultText });
+  const fin = db.recordAutomodActionResult(row.community_id, row.id, { state: "executed", resultText });
   assert.equal(fin.ok, true, JSON.stringify(fin));
   return fin.row;
 }
 
 function toRefused(row, errorText, state = "refused") {
-  const claim = db.claimAutomodSuggestion(row.id, "staff:test");
+  const claim = db.claimAutomodSuggestion(row.community_id, row.id, "staff:test");
   assert.equal(claim.ok, true, JSON.stringify(claim));
-  const fin = db.recordAutomodActionResult(row.id, { state, errorText });
+  const fin = db.recordAutomodActionResult(row.community_id, row.id, { state, errorText });
   assert.equal(fin.ok, true, JSON.stringify(fin));
   return fin.row;
 }

@@ -616,10 +616,11 @@ async function openAppealTicket(params = {}) {
     // ── attach + open (CAS; the LIVE row always wins a race) ────────────────
     const attachFn =
       deps.attachAppealTicketChannel ||
-      ((id, channelArg) =>
-        dbApi().attachAppealTicketChannel(id, channelArg));
+      ((cid, id, channelArg) =>
+        dbApi().attachAppealTicketChannel(cid, id, channelArg));
     // await: the shipped primitives are synchronous; async test seams ride the same path.
-    const attach = await attachFn(appealId, channel.id);
+    // #838 (C2-6): communityId leads — the repository refuses a foreign appeal.
+    const attach = await attachFn(communityId, appealId, channel.id);
     if (!attach || attach.ok !== true) {
       console.error(
         `${LOG_PREFIX} appeal ticket attach failed ${ids()} channel=${channel.id}:`,
@@ -651,8 +652,8 @@ async function openAppealTicket(params = {}) {
     );
 
     const openFn =
-      deps.openAppeal || ((id) => dbApi().openAppeal(id));
-    const open = await openFn(appealId);
+      deps.openAppeal || ((cid, id) => dbApi().openAppeal(cid, id));
+    const open = await openFn(communityId, appealId);
     if (!open || open.ok !== true) {
       console.error(
         `${LOG_PREFIX} appeal open transition failed ${ids()} channel=${channelOfRecordId}:`,

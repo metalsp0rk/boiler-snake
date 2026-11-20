@@ -217,7 +217,7 @@ describe("mode gate — one executor, three modes (kick probe)", () => {
     const { promise } = run(cid, "kick", { exec: { caseId: 5 } });
     const sug = await promise; // suggest mode default
     setMode(cid, "kick", "off"); // staff flip it off before the click lands
-    const res = await executor.approveSuggestion({ actionRowId: sug.actionRowId, claimant: "staff-1" });
+    const res = await executor.approveSuggestion({ communityId: cid, actionRowId: sug.actionRowId, claimant: "staff-1" });
     assert.equal(res.ok, false);
     assert.equal(res.state, "refused");
     assert.match(res.error, /is off for this guild now/);
@@ -560,7 +560,7 @@ describe("timeout clamp — [60 s, min(guild cap, 28 days)]", () => {
     const row = rowsFor(cid, 233)[0];
     db.setAutomodPause(cid, { reason: "kick storm" });
     try {
-      const res = await executor.approveSuggestion({
+      const res = await executor.approveSuggestion({ communityId: cid,
         actionRowId: row.id,
         claimant: "staff-9",
         deps: makeRecorder().deps,
@@ -666,9 +666,9 @@ describe("kick tool — required reason rides the audit log through the outbound
     const row = rowsFor(cid, 244)[0];
 
     const rec = makeRecorder();
-    const a1 = await executor.approveSuggestion({ actionRowId: row.id, claimant: "staff-1", deps: rec.deps });
+    const a1 = await executor.approveSuggestion({ communityId: cid, actionRowId: row.id, claimant: "staff-1", deps: rec.deps });
     assert.equal(a1.ok, true);
-    const a2 = await executor.approveSuggestion({ actionRowId: row.id, claimant: "staff-1", deps: rec.deps });
+    const a2 = await executor.approveSuggestion({ communityId: cid, actionRowId: row.id, claimant: "staff-1", deps: rec.deps });
     assert.equal(rec.calls.filter((c) => c === "kick").length, 1, "ONE outbound kick across two clicks");
     assert.equal(a2.ok, true);
     assert.match(String(a2.result ?? ""), /Kicked <@200000000000000002>\./, "the second click reports the existing result");
@@ -776,9 +776,9 @@ describe("ban tool — required reason rides the audit log through the outbound 
     const row = rowsFor(cid, 255)[0];
 
     const rec = makeRecorder();
-    const a1 = await executor.approveSuggestion({ actionRowId: row.id, claimant: "staff-1", deps: rec.deps });
+    const a1 = await executor.approveSuggestion({ communityId: cid, actionRowId: row.id, claimant: "staff-1", deps: rec.deps });
     assert.equal(a1.ok, true);
-    const a2 = await executor.approveSuggestion({ actionRowId: row.id, claimant: "staff-1", deps: rec.deps });
+    const a2 = await executor.approveSuggestion({ communityId: cid, actionRowId: row.id, claimant: "staff-1", deps: rec.deps });
     assert.equal(rec.calls.filter((c) => c.startsWith("ban:")).length, 1, "ONE outbound ban across two clicks");
     assert.equal(a2.ok, true);
     assert.match(String(a2.result ?? ""), /Banned <@200000000000000002>\./, "the second click reports the existing result");
@@ -1107,7 +1107,7 @@ describe("circuit breaker trip — auto gated attempts count, past the cap the p
       // Approve ONE (a staff decision — the handler runs but the row is
       // mode=suggest: NOT an auto attempt), then exactly five AUTO kicks
       // (= cap, not over).
-      const approved = await executor.approveSuggestion({
+      const approved = await executor.approveSuggestion({ communityId: cid,
         actionRowId: rows[0], claimant: "staff-1", deps: makeRecorder().deps,
       });
       assert.equal(approved.ok, true);
@@ -1234,8 +1234,8 @@ describe("claim-before-commit — mutations run EXACTLY once", () => {
     });
     assert.equal(sug.state, "recorded_suggestion");
 
-    const p1 = executor.approveSuggestion({ actionRowId: sug.actionRowId, claimant: "staff-A", deps: slow.deps });
-    const p2 = await executor.approveSuggestion({ actionRowId: sug.actionRowId, claimant: "staff-B", deps: makeRecorder().deps });
+    const p1 = executor.approveSuggestion({ communityId: cid, actionRowId: sug.actionRowId, claimant: "staff-A", deps: slow.deps });
+    const p2 = await executor.approveSuggestion({ communityId: cid, actionRowId: sug.actionRowId, claimant: "staff-B", deps: makeRecorder().deps });
     assert.equal(p2.deduped, true);
     assert.equal(p2.state, "approved");
     assert.equal(p2.inFlight, true);
@@ -1247,7 +1247,7 @@ describe("claim-before-commit — mutations run EXACTLY once", () => {
     assert.equal(repo.getAutomodAction(sug.actionRowId).claimed_by, "staff-A", "first click wins the slot");
 
     // A late third click returns the recorded RESULT (not another run).
-    const late = await executor.approveSuggestion({ actionRowId: sug.actionRowId, claimant: "staff-C", deps: makeRecorder().deps });
+    const late = await executor.approveSuggestion({ communityId: cid, actionRowId: sug.actionRowId, claimant: "staff-C", deps: makeRecorder().deps });
     assert.equal(late.deduped, true);
     assert.equal(late.state, "executed");
     assert.equal(late.result, "approved once");
@@ -1259,7 +1259,7 @@ describe("claim-before-commit — mutations run EXACTLY once", () => {
     const sug = await executor.executeAutomodAction({
       communityId: cid, guildId: GUILD, subjectUserId: SUBJECT, action: "ban", caseId: 32, deps,
     });
-    const gone = await executor.dismissSuggestion({ actionRowId: sug.actionRowId, claimant: "staff-X", note: "misidentified" });
+    const gone = await executor.dismissSuggestion({ communityId: cid, actionRowId: sug.actionRowId, claimant: "staff-X", note: "misidentified" });
     assert.equal(gone.ok, true);
     assert.equal(gone.state, "dismissed");
     assert.deepEqual(calls, [], "dismiss never touches Discord");
@@ -1267,12 +1267,12 @@ describe("claim-before-commit — mutations run EXACTLY once", () => {
     assert.equal(row.state, "dismissed");
     assert.equal(row.result_text, "misidentified");
 
-    const again = await executor.dismissSuggestion({ actionRowId: sug.actionRowId, claimant: "staff-Y" });
+    const again = await executor.dismissSuggestion({ communityId: cid, actionRowId: sug.actionRowId, claimant: "staff-Y" });
     assert.equal(again.deduped, true);
     assert.equal(again.state, "dismissed");
 
     // An Approve can NEVER revive a dismissed row.
-    const revive = await executor.approveSuggestion({ actionRowId: sug.actionRowId, claimant: "staff-Z", deps });
+    const revive = await executor.approveSuggestion({ communityId: cid, actionRowId: sug.actionRowId, claimant: "staff-Z", deps });
     assert.equal(revive.deduped, true);
     assert.equal(revive.state, "dismissed");
     assert.deepEqual(calls, []);
@@ -1471,8 +1471,8 @@ describe("ticket tool (#735) — the member-visible case ticket through the real
     return { cid, rowId: sug.actionRowId, caseRow: c.case, seams, deps };
   }
 
-  const approveOf = ({ rowId, deps }) =>
-    executor.approveSuggestion({ actionRowId: rowId, claimant: "staff-1", deps });
+  const approveOf = ({ cid, rowId, deps }) =>
+    executor.approveSuggestion({ communityId: cid, actionRowId: rowId, claimant: "staff-1", deps });
 
   it("#812 Approve resolves the harness note: a reason reproducing it REFUSES — zero opens", async () => {
     const note = "posted repeated slurs at a member in general chat after two verbal asks to stop";
@@ -1626,7 +1626,7 @@ describe("ticket tool (#735) — the member-visible case ticket through the real
 
     // Approve refuses — the guard set was NOT changed for #735.
     const aSeams = ticketSeams();
-    const approved = await executor.approveSuggestion({
+    const approved = await executor.approveSuggestion({ communityId: cid,
       actionRowId: sug.actionRowId, claimant: "staff-1",
       deps: makeRecorder({ roleIds: ["role-mod"], deps: aSeams.deps }).deps,
     });
@@ -1669,10 +1669,10 @@ describe("ticket tool (#735) — the member-visible case ticket through the real
         return out;
       },
     };
-    const p1 = executor.approveSuggestion({
+    const p1 = executor.approveSuggestion({ communityId: cid,
       actionRowId: sug.actionRowId, claimant: "staff-A", deps: makeRecorder({ deps: gated }).deps,
     });
-    const p2 = await executor.approveSuggestion({
+    const p2 = await executor.approveSuggestion({ communityId: cid,
       actionRowId: sug.actionRowId, claimant: "staff-B", deps: makeRecorder({ deps: seams.deps }).deps,
     });
     assert.equal(p2.deduped, true, "the second click loses the claim and reports the existing outcome");
@@ -1684,7 +1684,7 @@ describe("ticket tool (#735) — the member-visible case ticket through the real
     assert.equal(seams.opens.length, 1, "ONE ticket opened for two clicks");
     assert.equal(seams.claims.length, 1);
 
-    const late = await executor.approveSuggestion({
+    const late = await executor.approveSuggestion({ communityId: cid,
       actionRowId: sug.actionRowId, claimant: "staff-C", deps: makeRecorder({ deps: seams.deps }).deps,
     });
     assert.equal(late.deduped, true);
@@ -1903,7 +1903,7 @@ describe("action handlers — delete pre-flight, real warn", () => {
     assert.deepEqual(suggestCalls, [], "suggest makes zero Discord calls — no guard to consult yet");
 
     const { calls, deps } = makeRecorder({ roleIds: ["role-mod"] });
-    const approved = await executor.approveSuggestion({ actionRowId: sug.actionRowId, claimant: "staff-1", deps });
+    const approved = await executor.approveSuggestion({ communityId: cid, actionRowId: sug.actionRowId, claimant: "staff-1", deps });
     assert.equal(approved.ok, false);
     assert.equal(approved.state, "refused");
     assert.match(approved.error, /staff role <@&role-mod>/);
@@ -1932,8 +1932,8 @@ describe("action handlers — delete pre-flight, real warn", () => {
       deps: makeRecorder().deps,
     });
     assert.equal(sug.state, "recorded_suggestion");
-    const p1 = executor.approveSuggestion({ actionRowId: sug.actionRowId, claimant: "staff-A", deps: shared.deps });
-    const p2 = await executor.approveSuggestion({ actionRowId: sug.actionRowId, claimant: "staff-B", deps: makeRecorder().deps });
+    const p1 = executor.approveSuggestion({ communityId: cid, actionRowId: sug.actionRowId, claimant: "staff-A", deps: shared.deps });
+    const p2 = await executor.approveSuggestion({ communityId: cid, actionRowId: sug.actionRowId, claimant: "staff-B", deps: makeRecorder().deps });
     assert.equal(p2.deduped, true, "the second click loses the claim and reports the existing outcome");
     const res = await p1;
     assert.equal(res.ok, true, res.error);
@@ -1941,7 +1941,7 @@ describe("action handlers — delete pre-flight, real warn", () => {
     assert.equal(deletions.length, 2, "ONE pass deleted its two ids");
     assert.equal(new Set(deletions.map((d) => d.msg)).size, 2);
 
-    const late = await executor.approveSuggestion({ actionRowId: sug.actionRowId, claimant: "staff-C", deps: makeRecorder().deps });
+    const late = await executor.approveSuggestion({ communityId: cid, actionRowId: sug.actionRowId, claimant: "staff-C", deps: makeRecorder().deps });
     assert.equal(late.deduped, true);
     assert.equal(late.state, "executed");
     assert.equal(deletions.length, 2, "a late third click never re-deletes");
@@ -2124,11 +2124,11 @@ describe("action handlers — delete pre-flight, real warn", () => {
       deps: makeRecorder().deps,
     });
     assert.equal(sug.state, "recorded_suggestion");
-    const p1 = executor.approveSuggestion({
+    const p1 = executor.approveSuggestion({ communityId: cid,
       actionRowId: sug.actionRowId, claimant: "staff-A",
       deps: makeRecorder({ deps: { sendWarnDm: async () => {} } }).deps,
     });
-    const p2 = await executor.approveSuggestion({
+    const p2 = await executor.approveSuggestion({ communityId: cid,
       actionRowId: sug.actionRowId, claimant: "staff-B", deps: makeRecorder().deps,
     });
     assert.equal(p2.deduped, true, "the second click loses the claim and reports the existing outcome");
@@ -2172,13 +2172,17 @@ describe("service contract — {ok:false,error} everywhere, no throws, no bogus 
   });
 
   it("approve/dismiss on unknown rows report instead of exploding", async () => {
-    const missing = await executor.approveSuggestion({ actionRowId: 987654 });
+    const cid = freshCommunity();
+    const missing = await executor.approveSuggestion({ communityId: cid, actionRowId: 987654 });
     assert.equal(missing.ok, false);
     assert.match(missing.error, /No auto-mod suggestion row #987654/);
-    const dismissed = await executor.dismissSuggestion({ actionRowId: 987654 });
+    const dismissed = await executor.dismissSuggestion({ communityId: cid, actionRowId: 987654 });
     assert.equal(dismissed.ok, false);
     assert.match(dismissed.error, /No auto-mod action row/);
+    // #838 (C2-6): the communityId gate is the FIRST refusal — a caller that
+    // cannot name its tenant never reaches the row lookup at all.
     const junk = await executor.approveSuggestion({});
     assert.equal(junk.ok, false);
+    assert.match(junk.error, /communityId/);
   });
 });

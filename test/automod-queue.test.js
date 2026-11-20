@@ -231,28 +231,28 @@ test("reveal is single-winner at the row level; resolve stores the vocabulary", 
   const subj = nextSubject();
   const caseRow = seededCase(subj, { note: false });
 
-  const first = db.revealAutomodCaseReporter(caseRow.id, STAFF, { nowMs: 1700000000000 });
+  const first = db.revealAutomodCaseReporter(caseRow.community_id, caseRow.id, STAFF, { nowMs: 1700000000000 });
   assert.equal(first.ok, true);
   assert.equal(first.revealed, true);
   assert.equal(first.case.revealed_at, 1700000000000);
 
-  const second = db.revealAutomodCaseReporter(caseRow.id, "u-other-staff");
+  const second = db.revealAutomodCaseReporter(caseRow.community_id, caseRow.id, "u-other-staff");
   assert.equal(second.ok, true);
   assert.equal(second.revealed, false);
   assert.equal(second.alreadyRevealed, true);
   assert.equal(second.case.revealed_by_user_id, STAFF, "the FIRST reveal stands");
 
-  const won = db.resolveAutomodCase(caseRow.id, "manual", STAFF, { nowMs: 1700000000500 });
+  const won = db.resolveAutomodCase(caseRow.community_id, caseRow.id, "manual", STAFF, { nowMs: 1700000000500 });
   assert.equal(won.ok, true);
   assert.equal(won.won, true);
 
-  const loser = db.resolveAutomodCase(caseRow.id, "none", "u-other-staff");
+  const loser = db.resolveAutomodCase(caseRow.community_id, caseRow.id, "none", "u-other-staff");
   assert.equal(loser.ok, true);
   assert.equal(loser.won, false);
   assert.equal(loser.existing.resolution, "manual");
   assert.equal(loser.existing.resolvedByUserId, STAFF);
 
-  const garbage = db.resolveAutomodCase(caseRow.id, "vengeance", STAFF);
+  const garbage = db.resolveAutomodCase(caseRow.community_id, caseRow.id, "vengeance", STAFF);
   assert.equal(garbage.ok, false);
   assert.match(garbage.error, /Unknown case resolution/);
 });

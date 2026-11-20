@@ -12,15 +12,21 @@
  *    ALREADY promises "deleteLevelRole removes both rows" (DB-10 flagged the
  *    un-wrapped pair); now the database keeps that promise too — the orphan
  *    class becomes impossible, not just unlikely.
- *  - guild_settings: FK→communities(id) on the PK. No pre-clean: an orphan
- *    settings row would abort the copy LOUDLY (041's demonstrated doctrine —
- *    settings rows only ever mint through ensureGuildSettings on a
- *    registered community).
+ *  - guild_settings: FK→communities(id) on the PK.
  *
- * Orphan role_drop_state rows CAN legitimately exist on legacy DBs (exactly
- * the DB-10 gap: a level_roles row deleted, its drop-state stranded), so
- * they are pre-cleaned with a named count before the copy — the sweep is
- * idempotent and stays outside the schema gate so every replay re-checks it.
+ * Orphan rows CAN legitimately exist on both tables (exactly the DB-10 gap
+ * for role_drop_state; a communities row removed by out-of-band DB hygiene
+ * for guild_settings — no shipped flow deletes communities rows, but a
+ * hand-cleaned DB is a real DB), so BOTH are pre-cleaned with a named count
+ * before the copy — the sweep is idempotent and stays outside the schema
+ * gate so every replay re-checks it. #838 (C2-8): guild_settings previously
+ * relied on the copy-time FK abort as its "loud" orphan detector — but the
+ * only repair for an aborted settings copy was manual SQL at boot-loop
+ * frequency (the #458 class this file's own #813 pass was built to end).
+ * An unreachable settings row (its community is gone; every reader keys on
+ * a live community) is quarantine, not data: it gets the same named-count
+ * sweep as drop-state, and the copy-time FK stays as the belt for anomalies
+ * the sweep does NOT explain.
  *
  * The rebuild itself is gated on the FK actually being absent (ledger-less
  * replay is the law), same 040 shape.
@@ -45,11 +51,13 @@
  *    after this version a crash CANNOT leave mid-rebuild residue — the
  *    heals above exist for DBs damaged by the pre-fix code.
  *  - DOCUMENTED DEVIATION from 034/040/075: `PRAGMA foreign_keys` stays ON
- *    through the rebuild (they toggle it OFF around theirs). This file's
- *    copy-time FK enforcement IS the loud-abort doctrine above (an orphan
- *    guild_settings row must make the copy FAIL, not copy silently), and
- *    both tables are FK CHILDREN ONLY — no shipped DDL references them, so
- *    DROP/RENAME under enforcement is safe (verified #813).
+ *    through the rebuild (they toggle it OFF around theirs). The sweeps
+ *    above quarantine every orphan the FK domain can express, so the copy
+ *    runs clean under enforcement — the FK staying ON is the belt that
+ *    makes an anomaly the sweeps do NOT explain fail LOUD (never a silent
+ *    copy) and keeps the installed constraint enforcing from the moment it
+ *    exists. Both tables are FK CHILDREN ONLY — no shipped DDL references
+ *    them, so DROP/RENAME under enforcement is safe (verified #813).
  *  - A post-rebuild DDL belt re-reads sqlite_master and refuses to let the
  *    migration claim an FK it did not install (040's law).
  *
@@ -194,6 +202,22 @@ DELETE FROM role_drop_state
   if (stranded.changes > 0) {
     console.log(
       `[db] Migration 057: removed ${stranded.changes} orphan role_drop_state row(s) (DB-10 class)`,
+    );
+  }
+
+  // #838 (C2-8): the guild_settings mirror — settings rows whose community
+  // is gone are unreachable (every reader keys on a live community) and
+  // would otherwise abort the FK copy at boot-loop frequency. Named count,
+  // same doctrine as the drop-state sweep above.
+  const orphanedSettings = db
+    .prepare(`
+DELETE FROM guild_settings
+ WHERE community_id NOT IN (SELECT id FROM communities)
+`)
+    .run();
+  if (orphanedSettings.changes > 0) {
+    console.log(
+      `[db] Migration 057: removed ${orphanedSettings.changes} orphan guild_settings row(s) (C2-8 quarantine)`,
     );
   }
 

@@ -654,7 +654,7 @@ describe("integration: ban appeals full loop (#773)", () => {
     await slashBan(target);
     const record = activeRecord(target);
     await env.guild.members.unban(target.id, "staff lifted it");
-    env.db.finalizeUnban(record.id, "unbanned_manual", "lifted");
+    env.db.finalizeUnban(record.community_id, record.id, "unbanned_manual", "lifted");
     const lifted = await emitGuildless(
       guildlessPress({ user: target, customId: `${C.APPEAL_PREFIX}${record.id}` }),
     );
@@ -1301,8 +1301,8 @@ describe("integration: ban appeals full loop (#773)", () => {
       appealStatement: "foreign statement",
     });
     assert.ok(filed.ok);
-    env.db.attachAppealTicketChannel(filed.appeal.id, "channel-foreign-ticket");
-    env.db.openAppeal(filed.appeal.id);
+    env.db.attachAppealTicketChannel(filed.appeal.community_id, filed.appeal.id, "channel-foreign-ticket");
+    env.db.openAppeal(filed.appeal.community_id, filed.appeal.id);
 
     const unbansBefore = env.guild._unbans.length;
     const ix = await ticketClick(`ap:clemency:${filed.appeal.id}`);

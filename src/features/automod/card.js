@@ -1366,6 +1366,7 @@ async function handleCardApprove(interaction, ctx) {
     // ── the shared executor (claims atomically; re-guards mode/staff/
     //    hierarchy at run time — this arm never touches Discord itself) ────
     const res = await approveSuggestion({
+      communityId,
       actionRowId: row.id,
       claimant: `staff:${staffUserId}`,
       deps: { client: ctx?.supervisor?.discord ?? interaction?.client ?? null },
@@ -1502,6 +1503,7 @@ async function handleCardDismiss(interaction, ctx) {
     }
 
     const res = await dismissSuggestion({
+      communityId,
       actionRowId: row.id,
       claimant: `staff:${staffUserId}`,
       note: `Dismissed by <@${staffUserId}>`,
@@ -1718,7 +1720,7 @@ async function handleCaseReveal(interaction, ctx) {
       return;
     }
 
-    const res = revealAutomodCaseReporter(caseRow.id, staffUserId);
+    const res = revealAutomodCaseReporter(communityId, caseRow.id, staffUserId);
     if (!res.ok) {
       console.error(
         `[automod] case ${caseRef} reveal failed ${idTag({ communityId, guildId, caseId: caseRow.id })}: ${res.error}`,
@@ -1841,7 +1843,7 @@ async function resolveCaseCore(interaction, ctx, resolution, prefix, verbLabel) 
     return;
   }
 
-  const claim = resolveAutomodCase(caseRow.id, resolution, staffUserId);
+  const claim = resolveAutomodCase(communityId, caseRow.id, resolution, staffUserId);
   if (!claim.ok) {
     console.error(
       `[automod] case ${caseRef} resolve failed ${idTag(ids)} (${resolution}): ${claim.error}`,
@@ -1885,6 +1887,7 @@ async function resolveCaseCore(interaction, ctx, resolution, prefix, verbLabel) 
         continue;
       }
       const res = await approveSuggestion({
+        communityId,
         actionRowId: row.id,
         claimant: `staff:${staffUserId}`,
         deps: { client },
@@ -1932,6 +1935,7 @@ async function resolveCaseCore(interaction, ctx, resolution, prefix, verbLabel) 
     let superseded = 0;
     for (const row of pending) {
       const res = await dismissSuggestion({
+        communityId,
         actionRowId: row.id,
         claimant: `staff:${staffUserId}`,
         note: supersedeNote,

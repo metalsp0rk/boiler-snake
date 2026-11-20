@@ -446,7 +446,7 @@ test("attach refusal → specific 'record' failure with the row untouched; attac
   const s2 = seed();
   const a2 = seedFiledAppeal(s2.cid, s2.record);
   const LIVE = "555900000000000009";
-  assert.equal(db.attachAppealTicketChannel(a2.id, LIVE).won, true); // race winner got there first
+  assert.equal(db.attachAppealTicketChannel(a2.community_id, a2.id, LIVE).won, true); // race winner got there first
   const w2 = makeWorld({ cid: s2.cid, guildId: s2.guildId, channelOpts: { id: "555900000000000010" } });
   const r2 = await openAppealTicket(params({ cid: s2.cid, appeal: a2, record: s2.record, guildId: s2.guildId, world: w2 }));
   assert.equal(r2.ok, true, JSON.stringify(r2));

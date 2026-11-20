@@ -909,7 +909,7 @@ async function finalizeExpiry(recordOrId, deps = {}) {
     const nowMs = clockOf(opts);
 
     // ── CAS claim BEFORE any await / outbound (first-writer-wins) ──────────
-    const claim = facade.claimUnban(id, nowMs);
+    const claim = facade.claimUnban(communityId, id, nowMs);
     if (!claim.ok) {
       return failLogged(log, "expiry claim failed", communityId, userId, claim.error);
     }
@@ -953,7 +953,7 @@ async function finalizeExpiry(recordOrId, deps = {}) {
       const cause = String(error ?? "unknown error");
       let note = null;
       try {
-        note = facade.noteExpiryAttempt(id, {
+        note = facade.noteExpiryAttempt(communityId, id, {
           ...(maxAttempts != null ? { maxAttempts } : {}),
           reason:
             `expiry QUARANTINED after repeated failed auto-unban attempts — last error: ${cause.slice(0, 300)}`,
@@ -1045,7 +1045,7 @@ async function finalizeExpiry(recordOrId, deps = {}) {
         const heldReason =
           `${unbanReason} — HELD: the live ban does not match this record ` +
           `(live reason differs from the reason captured at issue — a staff re-ban is assumed; nothing was lifted)`;
-        const held = facade.markExpiryHeld(id, heldReason, { nowMs });
+        const held = facade.markExpiryHeld(communityId, id, heldReason, { nowMs });
         if (!held.ok) {
           return failLogged(log, "expiry held-settle failed", communityId, userId, held.error);
         }
@@ -1103,7 +1103,7 @@ async function finalizeExpiry(recordOrId, deps = {}) {
     let status = null;
     let externallyUnbanned = false;
     if (res?.ok === true) {
-      const fin = facade.finalizeUnban(id, "expired_unbanned", unbanReason, {
+      const fin = facade.finalizeUnban(communityId, id, "expired_unbanned", unbanReason, {
         nowMs,
       });
       if (!fin.ok) {
@@ -1125,7 +1125,7 @@ async function finalizeExpiry(recordOrId, deps = {}) {
       // 10026: lifted outside the bot — the repo machine settles manual,
       // NOT an error out (issue §4 "events keep the record truthful").
       const settleReason = `${unbanReason} — ban was already lifted outside the bot`;
-      const settle = facade.markUnbannedManual(id, settleReason);
+      const settle = facade.markUnbannedManual(communityId, id, settleReason);
       if (!settle.ok) {
         return failLogged(log, "expiry manual settle failed", communityId, userId, settle.error);
       }
@@ -1265,6 +1265,7 @@ async function handleExternalUnban(opts = {}) {
     // CAS active → unbanned_manual (first event for one unban wins; a fresh
     // ticker CLAIM does not hold the status, so manual wins the race).
     const settle = facade.markUnbannedManual(
+      communityId,
       active.id,
       optionalText(opts.unbanReason)
     );

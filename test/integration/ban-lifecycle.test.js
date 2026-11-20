@@ -700,7 +700,7 @@ describe("integration: ban lifecycle (#772)", () => {
     const record = activeRecord(target);
 
     // A crashed/hung ticker pass holds the CLAIM but not the status.
-    const claim = env.db.claimUnban(record.id);
+    const claim = env.db.claimUnban(record.community_id, record.id);
     assert.equal(claim.ok, true);
     assert.equal(claim.won, true, "lease stamped BEFORE the race below");
 
@@ -786,8 +786,8 @@ describe("integration: ban lifecycle (#772)", () => {
     assert.ok(created.ok);
     // Settle it exactly the way the welcome-failure path does, then age the
     // anchor PAST the REJOIN_WELCOME_WINDOW_DAYS bound.
-    env.db.claimUnban(created.record.id);
-    env.db.finalizeUnban(created.record.id, "expired_unbanned", "Expired — auto-unban");
+    env.db.claimUnban(created.record.community_id, created.record.id);
+    env.db.finalizeUnban(created.record.community_id, created.record.id, "expired_unbanned", "Expired — auto-unban");
     env.db.markPendingRejoin(created.record.id);
     env.db.db
       .prepare("UPDATE ban_records SET unban_claimed_at=? WHERE id=?")

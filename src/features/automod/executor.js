@@ -1020,10 +1020,13 @@ async function executeAutomodActionInner(opts) {
  * — mode gate re-applies at run time, so an action staff turned `off` after
  * the suggestion was recorded refuses even mid-approval.
  *
- * @param {{ actionRowId: number, claimant?: string, deps?: object,
- *           referrerUserId?: string|null, nowMs?: number }} opts
+ * @param {{ communityId: number, actionRowId: number, claimant?: string,
+ *           deps?: object, referrerUserId?: string|null, nowMs?: number }} opts
+ *   communityId (#838 C2-6) is the CALLER's community from request context —
+ *   the repository now refuses a row outside it at the SQL level.
  */
 async function approveSuggestion({
+  communityId,
   actionRowId,
   claimant = "staff",
   deps = {},
@@ -1031,11 +1034,14 @@ async function approveSuggestion({
   nowMs = now(),
 } = {}) {
   try {
+    if (!Number.isInteger(Number(communityId))) {
+      return { ok: false, error: "Approving needs the caller's communityId." };
+    }
     const row = getAutomodAction(actionRowId);
     if (!row) {
       return { ok: false, error: `No auto-mod suggestion row #${actionRowId} to approve.` };
     }
-    const claimed = claimAutomodSuggestion(row.id, claimant, { nowMs });
+    const claimed = claimAutomodSuggestion(communityId, row.id, claimant, { nowMs });
     if (!claimed.ok) {
       if (!claimed.deduped) {
         logFail("approve claim", { communityId: row.community_id, action: row.action }, claimed.error);
@@ -1080,13 +1086,17 @@ async function approveSuggestion({
  *           nowMs?: number }} opts
  */
 async function dismissSuggestion({
+  communityId,
   actionRowId,
   claimant = "staff",
   note = null,
   nowMs = now(),
 } = {}) {
   try {
-    const done = dismissAutomodSuggestion(actionRowId, claimant, { note, nowMs });
+    if (!Number.isInteger(Number(communityId))) {
+      return { ok: false, error: "Dismissing needs the caller's communityId." };
+    }
+    const done = dismissAutomodSuggestion(communityId, actionRowId, claimant, { note, nowMs });
     if (done.ok) {
       return { ok: true, state: "dismissed", actionRowId: done.row.id, result: done.row.result_text };
     }
@@ -1790,7 +1800,11 @@ function defaultResultText(act, row, params) {
  * (nothing silently drops).
  */
 async function finalize(row, { state, result = null, error = null, params = null, ids, nowMs }) {
+  // #838 C2-6: ids.communityId is the RUN's community (auto path: the
+  // settings row it fired for; approve path: approveSuggestion's caller).
+  // The repository refuses a row outside it.
   const written = recordAutomodActionResult(
+    ids.communityId,
     row.id,
     { state, resultText: result, errorText: error, params },
     { nowMs },

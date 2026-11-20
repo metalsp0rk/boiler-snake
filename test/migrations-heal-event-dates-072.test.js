@@ -40,12 +40,15 @@ function seed() {
     );
   `);
   // Affinity proof: these non-numeric strings stay TEXT on insert.
+  // #838 (C2-7): ONLY zone-suffixed text ('Z' / ±hh:mm) heals to an instant;
+  // suffix-less wall-clock ('2026-06-07 20:00:00') is AMBIGUOUS junk.
   db.prepare(
     `INSERT INTO events (id, start_at, end_at, post_at, cutoff_at, created_at) VALUES
       (1, ${START}, ${START + 7200000}, NULL, NULL, ${START - 86400000}),
-      (2, '2026-06-06T20:00:00Z', 'NaN', 'gibberish', '2026-06-06 19:00:00', ${START - 86400000}),
+      (2, '2026-06-06T20:00:00Z', 'NaN', 'gibberish', '2026-06-06T21:00:00+02:00', ${START - 86400000}),
       (3, '2026-06-07 20:00:00', 1780992000500.5, '2026-06-07T18:30:00Z', NULL, ${START}),
-      (4, 'NaN', 'not a date', 'NaN', 'NaN', ${START - 3600000})`
+      (4, 'NaN', 'not a date', 'NaN', 'NaN', ${START - 3600000}),
+      (5, '2026-06-08 09:00', '2026-06-08T11:00:00Z', NULL, '2026-06-08 08:00:00', ${START + 3600000})`
   ).run();
   db.prepare(
     `INSERT INTO event_reminder_offsets (id, fire_at, sent_at) VALUES
@@ -57,7 +60,8 @@ function seed() {
     `INSERT INTO event_series (id, next_occurrence_at) VALUES
       (1, ${START}),
       (2, '2026-07-04 18:00:00'),
-      (3, 'whenever')`
+      (3, 'whenever'),
+      (4, '2026-07-05T10:00:00-04:00')`
   ).run();
   return db;
 }
@@ -65,7 +69,7 @@ function seed() {
 const row = (db, sql) => db.prepare(sql).get();
 
 describe(`${id} — event date columns heal to integer ms`, () => {
-  it("repairs parseable text instants, drops REAL dust, NULLs junk nullable columns", () => {
+  it("heals zone-qualified instants only, drops REAL dust, NULLs junk + ambiguous columns", () => {
     const db = seed();
     // Affinity guard: the junk really is TEXT in an INTEGER-affinity column.
     assert.equal(row(db, `SELECT typeof(start_at) t FROM events WHERE id=2`).t, "text");
@@ -77,16 +81,19 @@ describe(`${id} — event date columns heal to integer ms`, () => {
     assert.equal(clean.start_at, START);
     assert.equal(clean.end_at, START + 7200000);
 
-    // Row 2: ISO Z parsed; junk post_at → NULL; space-date cutoff parsed.
+    // Row 2: ISO Z parsed; junk post_at → NULL; ±hh:mm cutoff parsed WITH
+    // its offset applied (21:00+02:00 = 19:00 UTC — C2-7, the suffix form
+    // that DOES name an unambiguous instant).
     const healed = row(db, `SELECT * FROM events WHERE id=2`);
     assert.equal(healed.start_at, Date.parse("2026-06-06T20:00:00Z"));
     assert.equal(healed.end_at, null, "junk end_at → NULL (renders —)");
     assert.equal(healed.post_at, null, "junk post_at → NULL (renders on approval)");
     assert.equal(healed.cutoff_at, Date.parse("2026-06-06T19:00:00Z"));
 
-    // Row 3: wall-clock date parsed in UTC; REAL cast to integer ms.
+    // Row 3: suffix-less wall-clock start_at is AMBIGUOUS → junk route
+    // (created_at), NOT silently guessed as UTC (#838 C2-7). REAL cast runs.
     const r3 = row(db, `SELECT * FROM events WHERE id=3`);
-    assert.equal(r3.start_at, Date.UTC(2026, 5, 7, 20, 0, 0));
+    assert.equal(r3.start_at, START, "wall-clock start_at → created_at, not a UTC guess");
     assert.equal(r3.end_at, 1780992000500, "REAL dust casts to integer ms");
     assert.equal(typeof r3.end_at, "number");
     assert.equal(r3.post_at, Date.parse("2026-06-07T18:30:00Z"));
@@ -97,6 +104,13 @@ describe(`${id} — event date columns heal to integer ms`, () => {
     assert.equal(r4.end_at, null);
     assert.equal(r4.post_at, null);
     assert.equal(r4.cutoff_at, null);
+
+    // Row 5 (C2-7): wall-clock start_at → created_at; a wall-clock cutoff
+    // NULLs; the Z-suffixed end_at still heals normally beside them.
+    const r5 = row(db, `SELECT * FROM events WHERE id=5`);
+    assert.equal(r5.start_at, START + 3600000, "ambiguous start_at → created_at");
+    assert.equal(r5.end_at, Date.parse("2026-06-08T11:00:00Z"));
+    assert.equal(r5.cutoff_at, null, "ambiguous cutoff → NULL, never a zone guess");
 
     // Every column is now integer or NULL — the calendar can never print NaN.
     for (const col of ["start_at", "end_at", "post_at", "cutoff_at"]) {
@@ -123,11 +137,14 @@ describe(`${id} — event date columns heal to integer ms`, () => {
     assert.equal(parsed.fire_at, Date.parse("2026-06-06T19:30:00Z"));
 
     assert.equal(row(db, `SELECT next_occurrence_at v FROM event_series WHERE id=1`).v, START);
-    assert.equal(
-      row(db, `SELECT next_occurrence_at v FROM event_series WHERE id=2`).v,
-      Date.UTC(2026, 6, 4, 18, 0, 0)
-    );
     assert.equal(row(db, `SELECT next_occurrence_at v FROM event_series WHERE id=3`).v, null);
+    // C2-7: the wall-clock residue NULLs…
+    assert.equal(row(db, `SELECT next_occurrence_at v FROM event_series WHERE id=2`).v, null);
+    // …while the -04:00 form heals WITH the offset applied.
+    assert.equal(
+      row(db, `SELECT next_occurrence_at v FROM event_series WHERE id=4`).v,
+      Date.parse("2026-07-05T10:00:00-04:00")
+    );
   });
 
   it("is idempotent (replay heals nothing and changes nothing)", () => {

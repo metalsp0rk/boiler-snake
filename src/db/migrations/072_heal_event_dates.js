@@ -12,15 +12,23 @@
  * Repair per targeted column (events.*, event_reminder_offsets.fire_at,
  * event_series.next_occurrence_at), in order:
  *   1. REAL values  → integer ms (drop the float dust; SQLite NaN is NULL).
- *   2. parseable TEXT instants (ISO / 'YYYY-MM-DD HH:MM[:SS]') → ms instant
- *      via strftime('%s'). Pure numeric strings never reach here — affinity
- *      already stored them as integers.
- *   3. junk TEXT ('NaN', '', gibberish): nullable columns → NULL (the UI
- *      says "—" / "on approval" / "no cutoff"); events.start_at (NOT NULL)
- *      → its created_at; reminder fire_at → 0 + sent_at stamped, preserving
- *      the row's effective behavior (a TEXT fire_at compared against the
- *      numeric ticker clock NEVER matched due date — numbers sort before
- *      text in SQLite — so the reminder never fired and never will).
+ *   2. TEXT instants that CARRY A ZONE SUFFIX ('…Z' or '…±hh:mm') → ms
+ *      instant via strftime('%s') — such values name an unambiguous UTC
+ *      moment. #838 (C2-7): suffix-less wall-clock text ('2026-06-06 20:00')
+ *      is NOT healed to an instant. Those strings were typed into the web
+ *      form in the STAFF's local time, but this migration cannot know that
+ *      zone — interpreting them as UTC (what bare strftime('%s') silently
+ *      does) fabricates an instant shifted by an unknown offset. The honest
+ *      answer for an ambiguous value is the junk route below, not a guess.
+ *      Pure numeric strings never reach here — affinity already stored them
+ *      as integers.
+ *   3. junk / ambiguous TEXT ('NaN', '', gibberish, suffix-less wall-clock):
+ *      nullable columns → NULL (the UI says "—" / "on approval" / "no
+ *      cutoff"); events.start_at (NOT NULL) → its created_at; reminder
+ *      fire_at → 0 + sent_at stamped, preserving the row's effective
+ *      behavior (a TEXT fire_at compared against the numeric ticker clock
+ *      NEVER matched due date — numbers sort before text in SQLite — so the
+ *      reminder never fired and never will).
  *
  * Safe to re-run: after one pass every targeted column is integer/NULL and
  * each statement matches nothing.
@@ -34,6 +42,16 @@ const parseableMs = (col) =>
   `CAST(strftime('%s', replace(replace(${col}, 'T', ' '), 'Z', '')) AS INTEGER) * 1000`;
 const parsesToMs = (col) =>
   `strftime('%s', replace(replace(${col}, 'T', ' '), 'Z', '')) IS NOT NULL`;
+
+/**
+ * #838 (C2-7): only zone-qualified text names an unambiguous instant. GLOB
+ * is case-sensitive by design — ISO 'Z' is uppercase; the ±hh:mm form is
+ * what Date#toISOString-derived and JS-serialized stamps carry. Evaluated
+ * on the ORIGINAL column value (before the parse normalisations).
+ */
+const zoneSuffixed = (col) =>
+  `(${col} GLOB '*Z' OR ${col} GLOB '*-[0-9][0-9]:[0-9][0-9]' ` +
+  `OR ${col} GLOB '*+[0-9][0-9]:[0-9][0-9]')`;
 
 function up(db, { now }) {
   // 1. REAL dust → INTEGER ms.
@@ -53,27 +71,32 @@ function up(db, { now }) {
       WHERE typeof(next_occurrence_at) = 'real'`
   ).run();
 
-  // 2. Parseable TEXT dates → ms instant.
+  // 2. Zone-qualified TEXT instants → ms instant (#838 C2-7: the suffix is
+  //  required — see header; ambiguous wall-clock text falls to step 3).
   db.prepare(
     `UPDATE events SET start_at = ${parseableMs("start_at")}
-      WHERE typeof(start_at) = 'text' AND ${parsesToMs("start_at")}`
+      WHERE typeof(start_at) = 'text' AND ${parsesToMs("start_at")}
+        AND ${zoneSuffixed("start_at")}`
   ).run();
   for (const col of ["end_at", "post_at", "cutoff_at"]) {
     db.prepare(
       `UPDATE events SET ${col} = ${parseableMs(col)}
-        WHERE typeof(${col}) = 'text' AND ${parsesToMs(col)}`
+        WHERE typeof(${col}) = 'text' AND ${parsesToMs(col)}
+          AND ${zoneSuffixed(col)}`
     ).run();
   }
   db.prepare(
     `UPDATE event_reminder_offsets SET fire_at = ${parseableMs("fire_at")}
-      WHERE typeof(fire_at) = 'text' AND ${parsesToMs("fire_at")}`
+      WHERE typeof(fire_at) = 'text' AND ${parsesToMs("fire_at")}
+        AND ${zoneSuffixed("fire_at")}`
   ).run();
   db.prepare(
     `UPDATE event_series SET next_occurrence_at = ${parseableMs("next_occurrence_at")}
-      WHERE typeof(next_occurrence_at) = 'text' AND ${parsesToMs("next_occurrence_at")}`
+      WHERE typeof(next_occurrence_at) = 'text' AND ${parsesToMs("next_occurrence_at")}
+        AND ${zoneSuffixed("next_occurrence_at")}`
   ).run();
 
-  // 3. Unparseable junk.
+  // 3. Unparseable or zone-less (ambiguous) TEXT.
   //  events.start_at (NOT NULL): fall back to the row's created_at so the
   //  event still lands on a real day; created_at itself broken ⇒ epoch.
   db.prepare(
