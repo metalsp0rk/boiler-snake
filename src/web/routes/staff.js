@@ -467,8 +467,8 @@ function registerStaffRoutes(app, options = {}) {
         changes: [
           roleChangeLine(roleId),
           existing
-            ? `Level: **${levelLabel(existing.level)}** → **${level}**`
-            : `Level: **${level}**`,
+            ? `**Level:** ${levelLabel(existing.level)} → ${level}`
+            : `**Level:** ${level}`,
         ],
       },
     });
@@ -541,7 +541,7 @@ function registerStaffRoutes(app, options = {}) {
         command: "/staff role setlevel",
         changes: [
           roleChangeLine(roleId),
-          `Level: **${levelLabel(existing.level)}** → **${level}**`,
+          `**Level:** ${levelLabel(existing.level)} → ${level}`,
         ],
       },
     });
@@ -597,8 +597,8 @@ function registerStaffRoutes(app, options = {}) {
         command: "/leveltorole set",
         changes: [
           roleChangeLine(role.roleId),
-          `Level required: **${level}**`,
-          `Drop grace: **${dropDays}** day(s)`,
+          `**Level required:** ${level}`,
+          `**Drop grace:** ${dropDays} day(s)`,
         ],
       },
     });

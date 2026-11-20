@@ -1015,7 +1015,7 @@ describe("/automod refer — slash intake wiring (#726)", () => {
     });
     assert.equal(
       String(submit.replies[0]?.content ?? ""),
-      `Case: **A-1** — recorded.\nRecommendations will post in <#${REFER_AMOD_CH}>.`,
+      `**Case:** A-1 — recorded.\nRecommendations will post in <#${REFER_AMOD_CH}>.`,
     );
     assert.ok(submit.replies[0]?.flags != null, "the ack stays ephemeral");
 
@@ -1110,7 +1110,7 @@ describe("/automod refer — slash intake wiring (#726)", () => {
       read_after: "9999",
     });
     const ack = String(submit.replies[0]?.content ?? "");
-    assert.match(ack, /Case: \*\*A-1\*\* — recorded\./);
+    assert.match(ack, /\*\*Case:\*\* A-1 — recorded\./);
     assert.match(ack, /`Messages before` was above the 500 cap — clamped to 500\./);
     assert.match(ack, /`Messages after` was above the 500 cap — clamped to 500\./);
     const row = db.listAutomodCases(communityId)[0];

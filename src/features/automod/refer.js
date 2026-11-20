@@ -230,7 +230,7 @@ function parseMessageLink(link) {
  */
 function buildReferAck(caseNumber, automodChannelId) {
   return (
-    `Case: **A-${caseNumber}** — recorded.\n` +
+    `**Case:** A-${caseNumber} — recorded.\n` +
     `Recommendations will post in <#${automodChannelId}>.`
   );
 }

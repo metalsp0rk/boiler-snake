@@ -1507,7 +1507,7 @@ actually work: the master switch is on, the queue channel is set and postable,
 `rules` is set, and the daily budget is neither blocked (`-1`) nor exhausted —
 each refusal names its specific cause and records nothing (full copy table in
 [Staff referral intake and refusals](../automod.md#staff-referral-intake-and-refusals)).
-Success replies `Case: **A-n** — recorded.` plus the promise that
+Success replies `**Case:** A-n — recorded.` plus the promise that
 recommendations will post in the case-card channel — no recommendation is
 produced at intake. Recommendations land as the interactive **case card**
 (#730): one post per case whose Approve/Dismiss buttons execute pending

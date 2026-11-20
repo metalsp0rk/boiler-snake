@@ -83,14 +83,17 @@ const {
   MODAL_REPORT_DELETE_OPTION_YES,
 } = require("./constants");
 
-/**
- * Shared reply for a refused snapshot put (error rule 3: the invoker learns
- * nothing was recorded and what to do — run the command again). The store
- * reports failure as `null` and never a reason (error rule 6), so this is
- * the honest truth, not an invented generic.
- */
-const PUT_FAILED_REPLY =
-  "Could not start that report — nothing was recorded. Run the command again.";
+// #840 (D2-5): the store reports { ok:false, error:"<cause>" } now, so the
+// refusal QUOTES the cause (error rule 3 — a structurally unusable snapshot
+// is not fixed by "run it again"). putRefusedReply builds the one honest
+// shape both report lanes share.
+function putRefusedReply(error) {
+  return (
+    "Could not start that report — nothing was recorded" +
+    (error ? `: ${String(error).replace(/\.$/, "")}` : " (the report store gave no reason)") +
+    "."
+  );
+}
 
 /**
  * Never-throwing field reader for the failure logs (error rule 2 wants
@@ -235,15 +238,20 @@ async function handleReportMessage(interaction, ctx) {
       return;
     }
 
-    const token = putReport(buildMessageSnapshot(interaction, message));
-    if (!token) {
-      // Error rule 3: the invoker gets the truth BEFORE any modal — a modal
-      // built from a refused put could only ever dead-end at submit time.
-      await replyEphemeral(interaction, PUT_FAILED_REPLY);
+    const putRes = putReport(buildMessageSnapshot(interaction, message));
+    if (!putRes?.ok) {
+      // Error rule 3: the invoker gets the truth (and the CAUSE, D2-5)
+      // BEFORE any modal — a modal built from a refused put could only ever
+      // dead-end at submit time.
+      await replyEphemeral(interaction, putRefusedReply(putRes?.error));
       return;
     }
 
-    await presentReportModal(interaction, buildReportMessageModal(token), "post");
+    await presentReportModal(
+      interaction,
+      buildReportMessageModal(putRes.key),
+      "post",
+    );
   } catch (err) {
     console.error(
       "[tickets] report invoke failed:",
@@ -293,18 +301,18 @@ async function handleReportUser(interaction, ctx) {
       return;
     }
 
-    const token = putReport({
+    const putRes = putReport({
       kind: REPORT_KINDS.USER,
       guildId: interaction.guildId ?? null,
       reporterUserId: interaction.user?.id ?? null,
       subjectUserId: target.id ?? null,
     });
-    if (!token) {
-      await replyEphemeral(interaction, PUT_FAILED_REPLY);
+    if (!putRes?.ok) {
+      await replyEphemeral(interaction, putRefusedReply(putRes?.error));
       return;
     }
 
-    await presentReportModal(interaction, buildReportUserModal(token), "user");
+    await presentReportModal(interaction, buildReportUserModal(putRes.key), "user");
   } catch (err) {
     console.error(
       "[tickets] report invoke failed:",

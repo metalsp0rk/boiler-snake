@@ -16,7 +16,7 @@
  *    accept-time seam) and the breaker PAUSE is never a refusal (contract-
  *    explicit pin);
  *  - the referrer's note is case input: staff_notes stays at zero rows;
- *  - the ack's exact shape — 'Case: **A-n** — recorded.' + where
+ *  - the ack's exact shape — '**Case:** A-n — recorded.' + where
  *    recommendations will post — and never claims one was produced.
  *
  * Deps fakes per the service's ReferDeps seam; the context-menu arm uses a
@@ -365,7 +365,7 @@ describe("/automod refer — intake shapes and the ack", () => {
     assert.equal(res.automodChannelId, AMOD_CH);
     assert.equal(
       res.ack,
-      `Case: **A-1** — recorded.\nRecommendations will post in <#${AMOD_CH}>.`,
+      `**Case:** A-1 — recorded.\nRecommendations will post in <#${AMOD_CH}>.`,
     );
     assert.doesNotMatch(
       res.ack,
@@ -630,7 +630,7 @@ describe('"Refer to automod" context menu (#726 intake — #771: modal first)', 
 
     assert.equal(
       String(submit.replies[0]?.content ?? ""),
-      `Case: **A-1** — recorded.\nRecommendations will post in <#${AMOD_CH}>.`,
+      `**Case:** A-1 — recorded.\nRecommendations will post in <#${AMOD_CH}>.`,
     );
 
     const row = rowsFor(communityId)[0];
@@ -673,7 +673,7 @@ describe('"Refer to automod" context menu (#726 intake — #771: modal first)', 
       staffRoleIds: ["role-726-junior"],
     });
     const submit = await menuFlow(interaction);
-    assert.match(String(submit.replies[0]?.content ?? ""), /Case: \*\*A-1\*\* — recorded\./);
+    assert.match(String(submit.replies[0]?.content ?? ""), /\*\*Case:\*\* A-1 — recorded\./);
     assert.equal(rowsFor(communityId).length, 1);
   });
 

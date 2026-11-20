@@ -287,8 +287,12 @@ function createPendingReportStore(options = {}) {
    *   `guildId` and `reporterUserId` are required, `capturedAt` defaults to the
    *   clock at put
    * @param {{ now?: number|(() => number) }} [opts] clock override (tests)
-   * @returns {string|null} lowercase hex token for the modal customId, or null
-   *   when the snapshot is incomplete/unusable (never throws)
+   * @returns {{ ok: true, key: string } | { ok: false, error: string }}
+   *   the rule-6 shape (#839/#840 D2-5): the store KNOWS why a put failed —
+   *   the old null-flatten collapsed distinct branches into one sentinel and
+   *   forced the handler into a cause-less "run it again" reply that
+   *   re-running cannot fix. Success carries the lowercase hex token for the
+   *   modal customId under `key`; every failure names its cause. Never throws.
    */
   function put(snapshot, opts = {}) {
     try {
@@ -299,7 +303,14 @@ function createPendingReportStore(options = {}) {
       const guildId = toId(snapshot?.guildId);
       const reporterUserId = toId(snapshot?.reporterUserId);
       if (!VALID_REPORT_KINDS.has(kind) || !guildId || !reporterUserId) {
-        return null; // error rule 6: the handler turns null into a specific reply
+        const missing = [
+          !VALID_REPORT_KINDS.has(kind) ? `report kind ${JSON.stringify(kind)}` : null,
+          !guildId ? "guildId" : null,
+          !reporterUserId ? "reporterUserId" : null,
+        ]
+          .filter(Boolean)
+          .join(", ");
+        return { ok: false, error: `Incomplete report snapshot (missing/invalid: ${missing})` };
       }
 
       const stamped = Number(snapshot.capturedAt);
@@ -314,21 +325,23 @@ function createPendingReportStore(options = {}) {
         const candidate = crypto.randomBytes(TOKEN_BYTES).toString("hex");
         if (!pending.has(candidate)) token = candidate;
       }
-      if (token === null) return null;
+      if (token === null) {
+        return { ok: false, error: "no unique report token survived the collision budget" };
+      }
 
       pending.set(token, {
         snapshot: buildSnapshot(snapshot, capturedAt),
         expiresAt: capturedAt + PENDING_REPORT_TTL_MS,
       });
-      return token;
+      return { ok: true, key: token };
     } catch (err) {
       // Never a silent drop (error rule 2) and never a throw into the handler
-      // (error rule 6).
+      // (error rule 6) — and since D2-5, never a cause-less sentinel either.
       console.error(
         `[tickets] pending report put failed (${idHint(snapshot)}):`,
         err?.message || err,
       );
-      return null;
+      return { ok: false, error: `report store failed: ${err?.message || err}` };
     }
   }
 

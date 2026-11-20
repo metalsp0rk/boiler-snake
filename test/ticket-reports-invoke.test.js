@@ -406,7 +406,7 @@ describe("report invoke — handleReportMessage (Report Post)", () => {
     assert.equal(pendingReports.pendingReportCountForTests(), 0);
   });
 
-  it("store-refused put (null token): specific reply, NEVER showModal with a dead token", async () => {
+  it("store-refused put: specific reply QUOTING THE CAUSE, NEVER showModal with a dead token", async () => {
     // A guildless invoke is the natural null-guildId path (the router
     // normally drops these first — the handler still refuses to show a modal
     // whose token the store never kept).
@@ -427,7 +427,11 @@ describe("report invoke — handleReportMessage (Report Post)", () => {
     assert.deepEqual(interaction.modals, [], "no modal without a stored token");
     assert.equal(interaction.replies.length, 1);
     assert.match(lastReplyContent(interaction), /could not start that report/i);
-    assert.match(lastReplyContent(interaction), /run the command again/i);
+    assert.match(
+        lastReplyContent(interaction),
+        /Incomplete report snapshot/i,
+        "#840 D2-5: the refusal names WHY the store said no",
+      );
     assert.ok(lastReplyEphemeral(interaction));
     assert.equal(pendingReports.pendingReportCountForTests(), 0);
   });

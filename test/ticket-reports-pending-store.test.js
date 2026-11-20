@@ -93,10 +93,21 @@ function withClock(startMs = T0) {
   return { store, advance: (ms) => (nowMs += ms), at: () => nowMs };
 }
 
+/**
+ * #840 (D2-5): put() answers { ok:true, key } | { ok:false, error }.
+ * Success paths read the token loudly through this helper — a refused put
+ * fails the assertion with its CAUSE, not a downstream "unknown token".
+ */
+function putOk(store, snapshot, opts) {
+  const res = store.put(snapshot, opts);
+  assert.equal(res.ok, true, `put should succeed: ${res?.error}`);
+  return res.key;
+}
+
 describe("pending-report store: snapshot round-trip (decision 3)", () => {
   it("put→take returns the snapshot and consumes the token", () => {
     const { store } = withClock();
-    const token = store.put(messageSnapshot());
+    const token = putOk(store, messageSnapshot());
     assert.ok(token, "a complete snapshot mints a token");
 
     const snap = store.take(token);
@@ -134,7 +145,7 @@ describe("pending-report store: snapshot round-trip (decision 3)", () => {
 
   it("stores attachment METADATA only — bytes and foreign objects are dropped", () => {
     const { store } = withClock();
-    const token = store.put(
+    const token = putOk(store, 
       messageSnapshot({
         attachments: [
           {
@@ -180,7 +191,7 @@ describe("pending-report store: snapshot round-trip (decision 3)", () => {
 
   it("user-variant defaults: no message fields, empty metadata arrays", () => {
     const { store } = withClock();
-    const token = store.put({
+    const token = putOk(store, {
       kind: REPORT_KINDS.USER,
       guildId: "1000",
       reporterUserId: "2000",
@@ -202,7 +213,7 @@ describe("pending-report store: snapshot round-trip (decision 3)", () => {
 
   it("non-array metadata is not invented, and text lists keep strings", () => {
     const { store } = withClock();
-    const token = store.put(
+    const token = putOk(store, 
       messageSnapshot({
         attachments: "https://cdn.example/not-an-array.png",
         embedUrls: ["https://a.example", { name: "Named embed", url: "https://b.example" }, null, {}],
@@ -218,10 +229,10 @@ describe("pending-report store: snapshot round-trip (decision 3)", () => {
 
   it("capturedAt from the caller wins, and garbage falls back to the clock", () => {
     const { store } = withClock();
-    const stamped = store.put(messageSnapshot({ capturedAt: T0 - 60_000 }));
+    const stamped = putOk(store, messageSnapshot({ capturedAt: T0 - 60_000 }));
     assert.equal(store.take(stamped).capturedAt, T0 - 60_000, "caller timestamp respected");
 
-    const junk = store.put(messageSnapshot({ capturedAt: "yesterday" }));
+    const junk = putOk(store, messageSnapshot({ capturedAt: "yesterday" }));
     assert.equal(store.take(junk).capturedAt, T0, "unparseable stamps fall back to now");
   });
 });
@@ -229,7 +240,7 @@ describe("pending-report store: snapshot round-trip (decision 3)", () => {
 describe("pending-report store: token semantics (decision 3)", () => {
   it("unknown, empty, and malformed tokens take to null without throwing", () => {
     const { store } = withClock();
-    store.put(messageSnapshot());
+    putOk(store, messageSnapshot());
     for (const junk of [null, undefined, "", "   ", 42, {}, [], "tk:rep:m:deadbeef"]) {
       assert.equal(store.take(junk), null, `take(${JSON.stringify(junk)})`);
     }
@@ -238,14 +249,14 @@ describe("pending-report store: token semantics (decision 3)", () => {
 
   it("is still live one millisecond before the TTL", () => {
     const { store, advance } = withClock();
-    const token = store.put(messageSnapshot());
+    const token = putOk(store, messageSnapshot());
     advance(TTL - 1);
     assert.ok(store.take(token), "the window is inclusive of its last ms");
   });
 
   it("expires at exactly the TTL and drops the entry", () => {
     const { store, advance } = withClock();
-    const token = store.put(messageSnapshot());
+    const token = putOk(store, messageSnapshot());
     advance(TTL);
     assert.equal(store.take(token), null, "expiry is inclusive, like the gork gate window");
     assert.equal(store.size(), 0, "an expired take removes the entry, not just reads it");
@@ -254,16 +265,16 @@ describe("pending-report store: token semantics (decision 3)", () => {
 
   it("TTL runs from capture time, so a late snapshot expires early", () => {
     const { store, advance } = withClock();
-    const token = store.put(messageSnapshot({ capturedAt: T0 - 9 * 60_000 }));
+    const token = putOk(store, messageSnapshot({ capturedAt: T0 - 9 * 60_000 }));
     advance(60_000); // 10 minutes since the CAPTURE, 1 minute since the put
     assert.equal(store.take(token), null, "touching an entry never extends its TTL");
   });
 
   it("explicit sweep drops only expired entries", () => {
     const { store, advance } = withClock();
-    const oldToken = store.put(messageSnapshot({ messageId: "3001" }));
+    const oldToken = putOk(store, messageSnapshot({ messageId: "3001" }));
     advance(1000);
-    const liveToken = store.put(messageSnapshot({ messageId: "3002" }));
+    const liveToken = putOk(store, messageSnapshot({ messageId: "3002" }));
     advance(TTL - 1000); // the first is exactly at its TTL; the second has 1s left
 
     assert.equal(store.sweep(), 1, "one expired entry swept");
@@ -275,11 +286,11 @@ describe("pending-report store: token semantics (decision 3)", () => {
 
   it("put and take sweep lazily — the store holds no timers", () => {
     const { store, advance } = withClock();
-    store.put(messageSnapshot({ messageId: "3003" }));
+    putOk(store, messageSnapshot({ messageId: "3003" }));
     advance(TTL);
     assert.equal(store.size(), 1, "nothing has touched the store since the put");
 
-    store.put(messageSnapshot({ messageId: "3004" }));
+    putOk(store, messageSnapshot({ messageId: "3004" }));
     assert.equal(store.size(), 1, "the new put swept the expired one");
   });
 
@@ -287,7 +298,7 @@ describe("pending-report store: token semantics (decision 3)", () => {
     const { store } = withClock();
     const tokens = new Set();
     for (let i = 0; i < 500; i += 1) {
-      const token = store.put(messageSnapshot({ messageId: String(10_000 + i) }));
+      const token = putOk(store, messageSnapshot({ messageId: String(10_000 + i) }));
       assert.match(token, /^[0-9a-f]+$/, "lowercase hex only");
       assert.equal(token.length, TOKEN_BYTES * 2, "16 random bytes → 32 hex chars");
       tokens.add(token);
@@ -307,7 +318,7 @@ describe("pending-report store: token semantics (decision 3)", () => {
 });
 
 describe("pending-report store: put guards (error rule 6)", () => {
-  it("an incomplete or unusable snapshot returns null and stores nothing", () => {
+  it("an incomplete or unusable snapshot is refused with a CAUSE and stores nothing (D2-5)", () => {
     const { store } = withClock();
     const cases = [
       ["missing kind", { guildId: "1000", reporterUserId: "2000" }],
@@ -322,7 +333,12 @@ describe("pending-report store: put guards (error rule 6)", () => {
       ["array snapshot", []],
     ];
     for (const [label, input] of cases) {
-      assert.equal(store.put(input), null, label);
+      const res = store.put(input);
+      // #840 (D2-5): rule-6 shape — no null sentinel, and the refusal says
+      // WHAT is missing (the old flatten forced the handler to tell staff
+      // "run it again" for failures re-running cannot fix).
+      assert.equal(res.ok, false, label);
+      assert.match(res.error, /Incomplete report snapshot/, `${label}: names the cause`);
     }
     assert.equal(store.size(), 0, "a rejected put stores nothing");
   });
@@ -357,12 +373,13 @@ describe("pending-report singleton (process-wide store)", () => {
   beforeEach(() => resetPendingReportsForTests());
 
   it("putReport→takeReport round-trips and consumes", () => {
-    const token = putReport(messageSnapshot());
-    assert.ok(token);
+    const res = putReport(messageSnapshot());
+    assert.equal(res.ok, true, res.error);
+    assert.ok(res.key);
     assert.equal(pendingReportCountForTests(), 1);
 
-    assert.equal(takeReport(token).messageId, "3000");
-    assert.equal(takeReport(token), null, "second take is null");
+    assert.equal(takeReport(res.key).messageId, "3000");
+    assert.equal(takeReport(res.key), null, "second take is null");
     assert.equal(pendingReportCountForTests(), 0);
   });
 
@@ -370,13 +387,15 @@ describe("pending-report singleton (process-wide store)", () => {
     assert.equal(put, putReport);
     assert.equal(take, takeReport);
 
-    const token = put(messageSnapshot());
+    const token = put(messageSnapshot()).key;
+    assert.ok(token, "the alias answers the {ok,key} shape too");
     assert.equal(take(token).reporterUserId, "2000");
     assert.equal(take(token), null);
   });
 
   it("singleton expiry is testable without waiting ({ now } override)", () => {
-    const token = putReport(messageSnapshot(), { now: T0 });
+    const token = putReport(messageSnapshot(), { now: T0 }).key;
+    assert.ok(token);
     assert.equal(pendingReportCountForTests(), 1);
     assert.equal(takeReport(token, { now: T0 + TTL }), null, "forced expiry");
     assert.equal(pendingReportCountForTests(), 0, "the forced take swept it out");

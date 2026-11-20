@@ -164,7 +164,7 @@ the anchor), lands one `automod.refer` row in the admin audit trail, and
 acks ephemerally:
 
 ```text
-Case: **A-3** — recorded.
+**Case:** A-3 — recorded.
 Recommendations will post in <#1234567890123456789>.
 ```
 

@@ -249,7 +249,7 @@ async function handleGithub(commandCtx, featureCtx) {
       command: "/github watch",
       actor: commandCtx.user,
       changes: [
-        `Repository: **${check.fullName}**`,
+        `**Repository:** ${check.fullName}`,
         channel
           ? `Channel: <#${channel.id}>`
           : "Channel: unchanged / *not set*",
@@ -331,7 +331,7 @@ async function handleGithub(commandCtx, featureCtx) {
       title: "GitHub watch removed",
       command: "/github remove",
       actor: commandCtx.user,
-      changes: [`Repository: **${found.repo_display}**`],
+      changes: [`**Repository:** ${found.repo_display}`],
     }).catch(() => {});
 
     await commandCtx.reply({
@@ -396,7 +396,7 @@ async function handleGithub(commandCtx, featureCtx) {
       command: "/github channel",
       actor: commandCtx.user,
       changes: [
-        `Repository: **${found.repo_display}**`,
+        `**Repository:** ${found.repo_display}`,
         found.channel_id
           ? `Channel: <#${found.channel_id}> → <#${ch.id}>`
           : `Channel: *none* → <#${ch.id}>`,
@@ -441,7 +441,7 @@ async function handleGithub(commandCtx, featureCtx) {
       command: "/github role",
       actor: commandCtx.user,
       changes: [
-        `Repository: **${found.repo_display}**`,
+        `**Repository:** ${found.repo_display}`,
         `Role: ${beforeLabel} → ${afterLabel}`,
       ],
     }).catch(() => {});
@@ -612,7 +612,7 @@ async function handleGithubTokenModal(interaction, ctx) {
         title: "GitHub token cleared",
         command: "/github token",
         actor: interaction.user,
-        changes: [`Repository: **${existing.repo_display}**`, "Token: *cleared*"],
+        changes: [`**Repository:** ${existing.repo_display}`, `**Token:** *cleared*`],
       },
     ).catch(() => {});
     await interaction.editReply(
@@ -669,10 +669,10 @@ async function handleGithubTokenModal(interaction, ctx) {
       command: "/github token",
       actor: interaction.user,
       changes: [
-        `Repository: **${check.fullName}**`,
+        `**Repository:** ${check.fullName}`,
         existing
-          ? "Token: *updated* (validated)"
-          : "Watch created — Token: *set* (validated)",
+          ? `**Token:** *updated* (validated)`
+          : `Watch created — **Token:** *set* (validated)`,
       ],
     },
   ).catch(() => {});

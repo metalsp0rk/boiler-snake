@@ -749,7 +749,7 @@ test("queued bystander notes drop at commit; the #731 reconciler hook replaces t
     cap.restore();
   }
   assert.equal(r2.state, "complete", "a dead reconciler never kills the run");
-  assert.match(decisionField(w2.edits[0]), /note reconciliation: \*\*failed\*\* — reconciler exploded/);
+  assert.match(decisionField(w2.edits[0]), /\*\*note reconciliation:\*\* failed — reconciler exploded/);
   assert.ok(cap.lines.some((l) => l.includes("note reconciliation") && l.includes("reconciler exploded")));
 });
 
@@ -1190,7 +1190,7 @@ test("the refer handler fires the harness detached after the ack - issue #728", 
 
     // The ack ships on SUBMIT — the run is detached behind it.
     const submit = await drive();
-    assert.match(String(submit.replies[0]?.content ?? ""), /Case: \*\*A-1\*\* — recorded\./);
+    assert.match(String(submit.replies[0]?.content ?? ""), /\*\*Case:\*\* A-1 — recorded\./);
     assert.ok(submit.replies[0]?.flags != null, "the submit ack is ephemeral");
 
     const ran = await waitFor(() => {

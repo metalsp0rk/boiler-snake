@@ -104,7 +104,7 @@ async function runWarnExpiryTick(supervisor, opts = {}) {
         actor: client?.user || { id: botId, username: "Boiler Snake" },
         changes: [
           `${ref} on <@${row.user_id}>`,
-          `Remaining active: **${activeCount}**`,
+          `**Remaining active:** ${activeCount}`,
           "Reason: expiry date reached",
         ],
       }).catch(() => {});

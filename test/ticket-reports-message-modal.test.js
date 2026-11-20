@@ -244,7 +244,7 @@ function spyDelete(message, order, failWith = null) {
 
 /** Seed a message-variant snapshot (the invoke-time snapshot) + token. */
 function putMessageReport(env, overrides = {}) {
-  return pendingReports.putReport({
+  const res = pendingReports.putReport({
     kind: "message",
     guildId: env.guildId,
     reporterUserId: env.reporter.id,
@@ -257,6 +257,8 @@ function putMessageReport(env, overrides = {}) {
     subjectUserId: env.subject.id,
     ...overrides,
   });
+  assert.equal(res.ok, true, `seed put failed: ${res?.error}`); // #840 D2-5 shape
+  return res.key;
 }
 
 /** Modal submit carrying tk:rep:m:<token> + context + delete-select fields.
@@ -461,7 +463,7 @@ describe("report message submit — token lifecycle (decision 3)", () => {
       guildId: env.guildId,
       reporterUserId: env.reporter.id,
       subjectUserId: env.subject.id,
-    });
+    }).key;
 
     const interaction = makeSubmit({ env, token });
     await report.handleReportMessageModal(interaction, RUN_CTX(env), {

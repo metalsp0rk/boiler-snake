@@ -105,8 +105,8 @@ async function handleLevelToRole(commandCtx, featureCtx) {
       actor: commandCtx.user,
       changes: [
         `Role: <@&${role.id}> (\`${role.id}\`)`,
-        `Level required: **${level}**`,
-        `Drop grace: **${dropdays}** day(s)`,
+        `**Level required:** ${level}`,
+        `**Drop grace:** ${dropdays} day(s)`,
       ],
     }).catch((err) =>
       // #472 (XE-9): logged, never silent (rule 2) — audit-line loss must be visible.

@@ -198,7 +198,7 @@ describe("/staff role handlers (added_by + audit embeds)", () => {
         changes.includes("<@&role-new>") && changes.includes("role-new"),
         changes,
       );
-      assert.ok(changes.includes("**senior**"), changes);
+      assert.ok(changes.includes("**Level:** senior"), changes); // #840: label-bold style
     });
 
     it("re-adding an existing role audits 'Staff role level updated'", async () => {
@@ -220,7 +220,7 @@ describe("/staff role handlers (added_by + audit embeds)", () => {
       assert.equal(embeds[1].title, "Staff role level updated");
       assert.match(
         fieldValue(embeds[1], "Changes"),
-        /Level: \*\*junior\*\* → \*\*senior\*\*/,
+        /\*\*Level:\*\* junior → senior/,
       );
       assert.equal(
         envApi.getStaffRole(communityKey(G), "role-x").added_by,
@@ -287,7 +287,7 @@ describe("/staff role handlers (added_by + audit embeds)", () => {
       assert.equal(fieldValue(embeds[0], "Command"), "`/staff role setlevel`");
       assert.match(
         fieldValue(embeds[0], "Changes"),
-        /Level: \*\*senior\*\* → \*\*junior\*\*/,
+        /\*\*Level:\*\* senior → junior/,
       );
     });
   });
