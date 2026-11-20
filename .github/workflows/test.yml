@@ -39,6 +39,15 @@ jobs:
           node-version: ${{ matrix.node-version }}
           cache: npm
       - run: npm ci
+      # #833: the runtime dependency chain ships in the Docker image, so
+      # runtime-chain highs gate every PR — package.json `overrides` keep
+      # undici/qs/body-parser patched inside the parents' majors. Dev-chain
+      # advisories (vitepress toolchain: vite, esbuild, vue) are ACCEPTED
+      # risk: they never ship in the image and have no fixAvailable within
+      # the pinned majors (tracked in #833; a vitepress major is the exit).
+      - name: Runtime dependency audit (fail on runtime-chain highs, #833)
+        if: matrix.node-version == '22.x'
+        run: npm audit --omit=dev --audit-level=high
       - name: Build forge console assets
         run: npm run assets:build
       # #620 ambient-DB canary: every db-aware test must bind a PRIVATE temp
