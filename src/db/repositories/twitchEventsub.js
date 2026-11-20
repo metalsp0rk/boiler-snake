@@ -25,7 +25,7 @@ function getTwitchEventsubSubs() {
   return db
     .prepare(
       `SELECT type, broadcaster_id, subscription_id, status, last_error,
-              created_at, updated_at
+              callback_url, secret_fingerprint, created_at, updated_at
        FROM twitch_eventsub_subs
        ORDER BY broadcaster_id, type`,
     )
@@ -37,7 +37,7 @@ function getTwitchEventsubSubsForBroadcaster(broadcasterId) {
   return db
     .prepare(
       `SELECT type, broadcaster_id, subscription_id, status, last_error,
-              created_at, updated_at
+              callback_url, secret_fingerprint, created_at, updated_at
        FROM twitch_eventsub_subs
        WHERE broadcaster_id=?
        ORDER BY type`,
@@ -50,7 +50,7 @@ function getTwitchEventsubSub(type, broadcasterId) {
   const row = db
     .prepare(
       `SELECT type, broadcaster_id, subscription_id, status, last_error,
-              created_at, updated_at
+              callback_url, secret_fingerprint, created_at, updated_at
        FROM twitch_eventsub_subs
        WHERE type=? AND broadcaster_id=?`,
     )
@@ -63,8 +63,14 @@ function getTwitchEventsubSub(type, broadcasterId) {
  * the current subscription id / status. Used by the reconciler after
  * POST /eventsub/subscriptions and after a 409-conflict GET.
  *
+ * #824: `callbackUrl` + `secretFingerprint` are the BINDING the row was
+ * created with — the only way the reconciler can ever notice a secret
+ * rotation. COALESCE keeps the previous binding when a later call omits
+ * it (status-only refreshes must not erase the proof).
+ *
  * @param {{ type: string, broadcasterId: string, subscriptionId?: string|null,
- *   status?: string, lastError?: string|null }} sub
+ *   status?: string, lastError?: string|null,
+ *   callbackUrl?: string|null, secretFingerprint?: string|null }} sub
  */
 function upsertTwitchEventsubSub({
   type,
@@ -72,19 +78,23 @@ function upsertTwitchEventsubSub({
   subscriptionId = null,
   status = "pending",
   lastError = null,
+  callbackUrl = null,
+  secretFingerprint = null,
 }) {
   if (!isValidType(type) || !broadcasterId) return null;
   const t = now();
   db.prepare(`
   INSERT INTO twitch_eventsub_subs
-    (type, broadcaster_id, subscription_id, status, last_error, created_at, updated_at)
-  VALUES (?, ?, ?, ?, ?, ?, ?)
+    (type, broadcaster_id, subscription_id, status, last_error, callback_url, secret_fingerprint, created_at, updated_at)
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
   ON CONFLICT(type, broadcaster_id) DO UPDATE SET
     subscription_id=COALESCE(excluded.subscription_id, twitch_eventsub_subs.subscription_id),
     status=excluded.status,
     last_error=excluded.last_error,
+    callback_url=COALESCE(excluded.callback_url, twitch_eventsub_subs.callback_url),
+    secret_fingerprint=COALESCE(excluded.secret_fingerprint, twitch_eventsub_subs.secret_fingerprint),
     updated_at=excluded.updated_at
-  `).run(String(type), String(broadcasterId), subscriptionId, status, lastError, t, t);
+  `).run(String(type), String(broadcasterId), subscriptionId, status, lastError, callbackUrl, secretFingerprint, t, t);
   return getTwitchEventsubSub(type, broadcasterId);
 }
 

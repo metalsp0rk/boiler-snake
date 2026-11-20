@@ -286,7 +286,8 @@ Runs on a minute-aligned interval after login. Each pass: resolve any pending lo
 - `webhook_callback_verification` → replies with the challenge; `notification` → answers 204 **first**, then processes (Twitch revokes subscriptions whose handler is slow); `revocation` → recorded and pruned
 - `stream.online` events are enriched with one `GET /streams` lookup (title/game/thumbnail); if that fetch fails the bot falls back to the event payload — the stream id in the event matches Helix, so the poller still won't duplicate
 - Go-live/offline claims are write-first in SQLite (`claimTwitchStream`/`claimTwitchOffline`), so webhook + poller can never both announce the same session
-- Hourly reconcile: create missing subs, delete subs for untracked broadcasters, enforce `TWITCH_EVENTSUB_MAX_CHANNELS`, and self-heal verification failures
+- Hourly reconcile: create missing subs, delete subs for untracked broadcasters, enforce `TWITCH_EVENTSUB_MAX_CHANNELS`, and self-heal against Twitch's failure views — `webhook_callback_verification_failed`, `notification_failures_exceeded`, and `revoked` (the rotation cases below)
+- **Secret / callback rotation is self-healing (#824):** every subscription row records the callback URL it was created with and a sha256 **fingerprint** of `TWITCH_EVENTSUB_SECRET` (never the secret itself). Changing the secret or the callback URL (`PUBLIC_BASE_URL` / `TWITCH_EVENTSUB_CALLBACK_URL`) makes the next reconcile DELETE the now-dead Twitch-side subs and re-create them with the live config — the fast path rebinds itself instead of dying silently behind an "enabled" status. Rows created before #824 carry no proof and get exactly one rebind, after which they are tracked like any other
 
 ## Troubleshooting
 

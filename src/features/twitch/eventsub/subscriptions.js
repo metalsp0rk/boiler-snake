@@ -20,6 +20,7 @@
  * is fire-and-forget safe: it logs and returns a summary, never throws.
  */
 
+const crypto = require("node:crypto");
 const db = require("../../../db");
 const { getEventsubConfig } = require("./config");
 const {
@@ -31,17 +32,44 @@ const {
 const SUB_TYPES = ["stream.online", "stream.offline"];
 
 /**
+ * #824 (audit B1-1): sha256 hex of the EventSub HMAC secret. The row stores
+ * the FINGERPRINT, never the secret (token-storage law) — a comparison is
+ * all the reconciler needs to notice a rotation.
+ */
+function eventsubSecretFingerprint(secret) {
+  return crypto.createHash("sha256").update(String(secret ?? "")).digest("hex");
+}
+
+/**
+ * #824: a healthy row is STALE when its recorded binding cannot be the one
+ * the live config would create: rotated secret, moved callback URL, or NO
+ * recorded binding at all (pre-#824 rows are UNPROVEN — recreate once and
+ * the proof lands). Only checked when the config actually carries both
+ * halves (an incomplete config never reaches the reconciler anyway).
+ */
+function subBindingIsStale(row, cfg) {
+  if (!row || !cfg || !cfg.secret || !cfg.callbackUrl) return false;
+  if (row.secret_fingerprint !== eventsubSecretFingerprint(cfg.secret)) return true;
+  if (row.callback_url !== cfg.callbackUrl) return true;
+  return false;
+}
+
+/**
  * Whether the next sweep must (re)create this subscription.
  * Healthy/in-flight states (enabled, verification_pending, or a pending row
- * that already captured a subscription id) are left alone. A `pending` row
- * with NO subscription id is a stuck create (Twitch 202 without an id) and
- * gets retried; error / revoked:* / verification_failed / unknown are retried.
+ * that already captured a subscription id) are left alone — UNLESS the
+ * recorded binding is stale (#824: a rotated secret/moved callback strands
+ * the Twitch-side sub silently; the row says `enabled`, Twitch is
+ * 403-ing every delivery, and only the fingerprint comparison can see it).
+ * A `pending` row with NO subscription id is a stuck create (Twitch 202
+ * without an id) and gets retried; error / revoked:* / verification_failed
+ * / unknown are retried.
  */
-function needsCreate(row) {
+function needsCreate(row, cfg = null) {
   if (!row) return true;
   const s = String(row.status || "");
-  if (s === "enabled" || s === "verification_pending") return false;
-  if (s === "pending") return !row.subscription_id;
+  if (s === "enabled" || s === "verification_pending") return subBindingIsStale(row, cfg);
+  if (s === "pending") return !row.subscription_id ? true : subBindingIsStale(row, cfg);
   return true;
 }
 
@@ -78,12 +106,40 @@ function getTrackedBroadcasterIds() {
  */
 async function ensureBroadcasterSubs(broadcasterId, cfg, deps = {}) {
   const create = deps.createEventsubSubscription || createEventsubSubscription;
+  const del = deps.deleteEventsubSubscription || deleteEventsubSubscription;
   let created = 0;
   let failed = 0;
 
+  // #824: the binding a create THIS SWEEP performs carries — recorded on
+  // the row so a future rotation is detectable.
+  const fingerprint = cfg && cfg.secret ? eventsubSecretFingerprint(cfg.secret) : null;
+
   for (const type of SUB_TYPES) {
     const existing = db.getTwitchEventsubSub(type, broadcasterId);
-    if (!needsCreate(existing)) continue;
+    if (!needsCreate(existing, cfg)) continue;
+
+    // #824 rebind: the row proves a Twitch-side sub exists on a binding the
+    // world has moved past (rotated secret / moved callback — or no proof
+    // at all, pre-#824). Best-effort DELETE the old sub FIRST: it is
+    // already dead (deliveries 403), it burns app quota, and Twitch
+    // 409-conflicts the new create while it lives. A failed delete does
+    // NOT block the create — the 409-conflict path keeps the row honest,
+    // and the quota bleed, not the row, is the worst case.
+    if (existing?.subscription_id && subBindingIsStale(existing, cfg)) {
+      try {
+        const dropped = await del(existing.subscription_id);
+        if (!dropped?.ok) {
+          console.error(
+            `[twitch] EventSub rebind delete failed (${type}/${broadcasterId} id=${existing.subscription_id}): HTTP ${dropped?.status ?? "network"} — creating anyway (a conflict keeps the row honest)`,
+          );
+        }
+      } catch (err) {
+        console.error(
+          `[twitch] EventSub rebind delete threw (${type}/${broadcasterId}):`,
+          err?.message || err,
+        );
+      }
+    }
 
     const res = await create({
       type,
@@ -101,6 +157,8 @@ async function ensureBroadcasterSubs(broadcasterId, cfg, deps = {}) {
         subscriptionId: res.subscription?.id ?? null,
         status: mapTwitchStatus(res.subscription?.status, res.conflict),
         lastError: null,
+        callbackUrl: cfg.callbackUrl ?? null,
+        secretFingerprint: fingerprint,
       });
     } else {
       failed += 1;
@@ -116,6 +174,8 @@ async function ensureBroadcasterSubs(broadcasterId, cfg, deps = {}) {
         subscriptionId: res?.subscription?.id ?? null,
         status: "error",
         lastError: String(error).slice(0, 200),
+        callbackUrl: cfg.callbackUrl ?? null,
+        secretFingerprint: fingerprint,
       });
     }
   }
@@ -257,29 +317,41 @@ async function reconcileEventsubSubscriptions(deps = {}) {
       }
     }
 
-    // Self-heal botched challenge round-trips: Twitch's own view of
-    // verification failures marks matching rows for the NEXT sweep.
+    // Self-heal botched round-trips: Twitch's own view marks matching rows
+    // for the NEXT sweep. #824 widened the pull: a rotated secret kills
+    // deliveries with `notification_failures_exceeded`, and the revocation
+    // delivery is itself signed with the OLD secret (403'd, never
+    // recorded) — without this list the local row stays `enabled` forever
+    // even in Twitch's own view. The fingerprint rule catches the same
+    // rows; this makes the LOCAL status honest about what Twitch did.
     const list = deps.listEventsubSubscriptions || listEventsubSubscriptions;
-    try {
-      const failedSubs = await list({
-        status: "webhook_callback_verification_failed",
-      });
-      for (const sub of failedSubs || []) {
-        const bid = sub?.condition?.broadcaster_user_id;
-        if (bid && db.isValidEventsubType(sub?.type)) {
-          db.markTwitchEventsubSubStatus(
-            sub.type,
-            bid,
-            "verification_failed",
-            "challenge never completed",
-          );
+    const SELF_HEAL_STATUSES = [
+      ["webhook_callback_verification_failed", "verification_failed"],
+      ["notification_failures_exceeded", "notification_failures_exceeded"],
+      ["revoked", "revoked"],
+    ];
+    for (const [twitchStatus, localStatus] of SELF_HEAL_STATUSES) {
+      try {
+        const failedSubs = await list({ status: twitchStatus });
+        for (const sub of failedSubs || []) {
+          const bid = sub?.condition?.broadcaster_user_id;
+          if (bid && db.isValidEventsubType(sub?.type)) {
+            db.markTwitchEventsubSubStatus(
+              sub.type,
+              bid,
+              localStatus,
+              twitchStatus === "webhook_callback_verification_failed"
+                ? "challenge never completed"
+                : `twitch status: ${twitchStatus}`,
+            );
+          }
         }
+      } catch (err) {
+        console.error(
+          `[twitch] EventSub ${twitchStatus} sweep failed:`,
+          err?.message || err,
+        );
       }
-    } catch (err) {
-      console.error(
-        "[twitch] EventSub verification-failure sweep failed:",
-        err?.message || err,
-      );
     }
 
     const summary = {
@@ -302,6 +374,9 @@ async function reconcileEventsubSubscriptions(deps = {}) {
 module.exports = {
   SUB_TYPES,
   needsCreate,
+  // #824 pure seams (unit-pinned): the binding proof + the staleness rule.
+  eventsubSecretFingerprint,
+  subBindingIsStale,
   getTrackedBroadcasterIds,
   ensureBroadcasterSubs,
   dropBroadcasterSubs,

@@ -220,6 +220,97 @@ describe("integration: twitch-eventsub", () => {
     assert.equal(env.db.getTwitchEventsubSub("stream.online", "702000"), null);
   });
 
+  it("#824 repo: the binding columns are recorded and COALESCE-survive status-only upserts", () => {
+    const fp = subs.eventsubSecretFingerprint("secret-one");
+    const row = env.db.upsertTwitchEventsubSub({
+      type: "stream.offline",
+      broadcasterId: "702001",
+      subscriptionId: "sub-b",
+      status: "verification_pending",
+      callbackUrl: "https://old.example.com/hooks/twitch",
+      secretFingerprint: fp,
+    });
+    assert.equal(row.callback_url, "https://old.example.com/hooks/twitch");
+    assert.equal(row.secret_fingerprint, fp);
+
+    // A status-only refresh (revocation marks, retry flips) must NOT erase
+    // the proof — the rotation check needs the binding to outlive it.
+    env.db.markTwitchEventsubSubStatus("stream.offline", "702001", "enabled");
+    let stored = env.db.getTwitchEventsubSub("stream.offline", "702001");
+    assert.equal(stored.secret_fingerprint, fp);
+    assert.equal(stored.callback_url, "https://old.example.com/hooks/twitch");
+
+    env.db.upsertTwitchEventsubSub({
+      type: "stream.offline",
+      broadcasterId: "702001",
+      status: "enabled",
+    });
+    stored = env.db.getTwitchEventsubSub("stream.offline", "702001");
+    assert.equal(stored.secret_fingerprint, fp, "omitted binding rides the COALESCE");
+
+    // A rotated create DOES replace it.
+    const fp2 = subs.eventsubSecretFingerprint("secret-two");
+    env.db.upsertTwitchEventsubSub({
+      type: "stream.offline",
+      broadcasterId: "702001",
+      status: "enabled",
+      callbackUrl: "https://new.example.com/hooks/twitch",
+      secretFingerprint: fp2,
+    });
+    stored = env.db.getTwitchEventsubSub("stream.offline", "702001");
+    assert.equal(stored.secret_fingerprint, fp2);
+    assert.notEqual(fp, fp2, "the fingerprint is a hash of the secret, never the secret");
+    assert.ok(!stored.secret_fingerprint.includes("secret"));
+  });
+
+  it("#824 needsCreate/subBindingIsStale: an unproven or superseded binding is never trusted", () => {
+    const cfg = {
+      secret: "secret-live",
+      callbackUrl: "https://bot.example.com/hooks/twitch",
+    };
+    const fpLive = subs.eventsubSecretFingerprint("secret-live");
+    assert.match(fpLive, /^[0-9a-f]{64}$/, "sha256 hex — the secret itself is never stored");
+
+    const fresh = {
+      status: "enabled",
+      subscription_id: "s",
+      callback_url: cfg.callbackUrl,
+      secret_fingerprint: fpLive,
+    };
+    assert.equal(subs.needsCreate(fresh, cfg), false, "a proven binding stays alone");
+
+    assert.equal(subs.needsCreate({ ...fresh, secret_fingerprint: "ff" }, cfg), true, "rotated secret");
+    assert.equal(
+      subs.needsCreate({ ...fresh, callback_url: "https://elsewhere.example/hook" }, cfg),
+      true,
+      "moved callback",
+    );
+    assert.equal(
+      subs.needsCreate({ status: "enabled", subscription_id: "s" }, cfg),
+      true,
+      "pre-#824 row: NO recorded binding = UNPROVEN = recreate once, proof lands",
+    );
+    assert.equal(
+      subs.needsCreate({ ...fresh, status: "verification_pending" }, cfg),
+      false,
+      "in-flight + proven stays alone",
+    );
+    assert.equal(
+      subs.needsCreate({ ...fresh, status: "pending" }, cfg),
+      false,
+      "pending WITH an id and a proven binding waits",
+    );
+    assert.equal(
+      subs.needsCreate({ status: "pending", subscription_id: "s" }, cfg),
+      true,
+      "pending + stale binding rebinds even with an id",
+    );
+    assert.equal(subs.needsCreate({ status: "error", subscription_id: "s" }, cfg), true);
+    assert.equal(subs.needsCreate(fresh, { secret: null, callbackUrl: null }), false,
+      "an incomplete config judges nothing (it never reaches the reconciler)");
+    assert.equal(subs.needsCreate(null, cfg), true, "no row, no mercy");
+  });
+
   it("HMAC: valid passes, tamper/stale/missing fail closed", () => {
     const messageId = "m1";
     const timestamp = new Date().toISOString();
@@ -498,31 +589,241 @@ describe("integration: twitch-eventsub", () => {
     assert.equal(env.db.getTwitchEventsubSub("stream.online", "8880001"), null);
   });
 
-  it("reconciler: create failure keeps subscription id for later prune", async () => {
-    const cfg = {
+  it("#824 reconciler: a rotated secret/URL rebinds (delete-old → create-new → binding recorded)", async () => {
+    const cfgA = {
       enabled: true,
       secret: SECRET,
       callbackUrl: "https://bot.example.com/hooks/twitch",
       maxChannels: 50,
       missing: [],
     };
+    const createdReqs = [];
+    const deletedIds = [];
+    const fakeCreate = async (req) => {
+      createdReqs.push(req);
+      return {
+        ok: true,
+        status: 202,
+        subscription: {
+          id: `sub-${req.type}-${req.condition.broadcaster_user_id}-gen${createdReqs.length}`,
+          status: "webhook_callback_verification_pending",
+        },
+      };
+    };
+    const fakeDelete = async (id) => {
+      deletedIds.push(id);
+      return { ok: true, status: 204 };
+    };
+    const deps = {
+      createEventsubSubscription: fakeCreate,
+      deleteEventsubSubscription: fakeDelete,
+      listEventsubSubscriptions: async () => [],
+    };
+
+    env.db.addTwitchChannel(env.communityId, "777001", "rotguy", "RotGuy", null);
+    try {
+      // 1) First sweep binds the rows with WHAT THEY WERE CREATED WITH.
+      await subs.ensureBroadcasterSubs("777001", cfgA, deps);
+      assert.equal(createdReqs.length, 2);
+      const onA = env.db.getTwitchEventsubSub("stream.online", "777001");
+      assert.equal(onA.secret_fingerprint, subs.eventsubSecretFingerprint(SECRET));
+      assert.equal(onA.callback_url, cfgA.callbackUrl);
+
+      // 2) Same config, same binding → NOTHING happens (idempotence intact).
+      createdReqs.length = 0;
+      const again = await subs.ensureBroadcasterSubs("777001", cfgA, deps);
+      assert.deepEqual([again.created, again.failed], [0, 0], "a proven binding is left alone");
+      assert.equal(createdReqs.length, 0);
+
+      // 3) ROTATION (secret AND URL): the healthy-looking rows are stale.
+      //    The old Twitch subs are DELETEd first (quota + the 409 law),
+      //    fresh ones are created with the new secret/callback, and the
+      //    rows carry the NEW proof.
+      const cfgB = {
+        ...cfgA,
+        secret: "rotated-secret-0123456789-abcd",
+        callbackUrl: "https://newbase.example.com/hooks/twitch",
+      };
+      createdReqs.length = 0;
+      deletedIds.length = 0;
+      const rebound = await subs.ensureBroadcasterSubs("777001", cfgB, deps);
+      assert.deepEqual([rebound.created, rebound.failed], [2, 0]);
+      assert.equal(deletedIds.length, 2, "both dead old subs were dropped first");
+      assert.ok(deletedIds.includes(onA.subscription_id));
+      assert.deepEqual(
+        createdReqs.map((r) => r.secret),
+        [cfgB.secret, cfgB.secret],
+        "creates ride the NEW secret",
+      );
+      const onB = env.db.getTwitchEventsubSub("stream.online", "777001");
+      assert.equal(onB.secret_fingerprint, subs.eventsubSecretFingerprint(cfgB.secret));
+      assert.equal(onB.callback_url, cfgB.callbackUrl);
+
+      // 4) URL-only rotation rebinds too (same secret).
+      createdReqs.length = 0;
+      deletedIds.length = 0;
+      await subs.ensureBroadcasterSubs("777001", {
+        ...cfgB,
+        callbackUrl: "https://moved.example.com/hook",
+      }, deps);
+      assert.equal(createdReqs.length, 2, "callback-only rotation is still rotation");
+      assert.equal(deletedIds.length, 2);
+
+      // 5) A PRE-#824 row (no recorded binding) is UNPROVEN: one rebind,
+      //    then the proof lands and the churn stops. Built by DELETE +
+      //    INSERT (the COALESCE upsert cannot erase a binding — by design).
+      //    cfgC = step 4's live state, so ONLY the legacy row is stale.
+      const cfgC = { ...cfgB, callbackUrl: "https://moved.example.com/hook" };
+      env.db.deleteTwitchEventsubSub("stream.offline", "777001");
+      env.db.upsertTwitchEventsubSub({
+        type: "stream.offline",
+        broadcasterId: "777001",
+        subscriptionId: "legacy-sub",
+        status: "enabled",
+      });
+      createdReqs.length = 0;
+      deletedIds.length = 0;
+      await subs.ensureBroadcasterSubs("777001", cfgC, deps);
+      assert.deepEqual(deletedIds, ["legacy-sub"], "only the unproven row rebinds");
+      assert.equal(createdReqs.length, 1);
+      assert.equal(createdReqs[0].type, "stream.offline");
+      const legacyRebound = env.db.getTwitchEventsubSub("stream.offline", "777001");
+      assert.equal(legacyRebound.secret_fingerprint, subs.eventsubSecretFingerprint(cfgC.secret));
+      createdReqs.length = 0;
+      await subs.ensureBroadcasterSubs("777001", cfgC, deps);
+      assert.equal(createdReqs.length, 0, "and now the row is proven — no repeated churn");
+    } finally {
+      env.db.removeTwitchChannel(env.communityId, "rotguy");
+      env.db.deleteTwitchEventsubSub("stream.online", "777001");
+      env.db.deleteTwitchEventsubSub("stream.offline", "777001");
+    }
+  });
+
+  it("#824 self-heal now pulls Twitch's revoked/notification-failure views too", async () => {
+    // Tracked broadcasters with PROVEN bindings: ensure skips them (no
+    // create), prune leaves them alone, and the widened self-heal list is
+    // all that touches their status this sweep.
+    env.db.addTwitchChannel(env.communityId, "666001", "heal1", "Heal1", null);
+    env.db.addTwitchChannel(env.communityId, "666002", "heal2", "Heal2", null);
     env.db.upsertTwitchEventsubSub({
       type: "stream.online",
-      broadcasterId: "8880009",
-      subscriptionId: "keepme",
-      status: "error",
-      lastError: "earlier transient",
+      broadcasterId: "666001",
+      subscriptionId: "nf-sub",
+      status: "enabled",
+      callbackUrl: "https://bot.example.com/hooks/twitch",
+      secretFingerprint: subs.eventsubSecretFingerprint(SECRET),
     });
-    const r = await subs.ensureBroadcasterSubs("8880009", cfg, {
-      createEventsubSubscription: async ({ type }) =>
-        type === "stream.online"
-          ? { ok: false, status: 503, error: "upstream 503" }
-          : { ok: true, status: 202, subscription: { id: "new-sub", status: "webhook_callback_verification_pending" } },
+    env.db.upsertTwitchEventsubSub({
+      type: "stream.offline",
+      broadcasterId: "666002",
+      subscriptionId: "rev-sub",
+      status: "enabled",
+      callbackUrl: "https://bot.example.com/hooks/twitch",
+      secretFingerprint: subs.eventsubSecretFingerprint(SECRET),
     });
-    assert.deepEqual([r.created, r.failed], [1, 1]);
-    const row = env.db.getTwitchEventsubSub("stream.online", "8880009");
-    assert.equal(row.status, "error");
-    assert.equal(row.subscription_id, "keepme");
+
+    const listed = [];
+    const deps = {
+      getConfig: () => ({
+        enabled: true,
+        secret: SECRET,
+        callbackUrl: "https://bot.example.com/hooks/twitch",
+        maxChannels: 50,
+        missing: [],
+      }),
+      createEventsubSubscription: async () => {
+        throw new Error("ensure must NOT create: the bindings are proven");
+      },
+      deleteEventsubSubscription: async (id) => {
+        // Belt: prune must not run for tracked broadcasters.
+        throw new Error(`unexpected delete of ${id}`);
+      },
+      listEventsubSubscriptions: async ({ status }) => {
+        listed.push(status);
+        if (status === "notification_failures_exceeded") {
+          return [{ type: "stream.online", condition: { broadcaster_user_id: "666001" } }];
+        }
+        if (status === "revoked") {
+          return [{ type: "stream.offline", condition: { broadcaster_user_id: "666002" } }];
+        }
+        return [];
+      },
+    };
+
+    let summary;
+    let nf;
+    let rev;
+    try {
+      summary = await subs.reconcileEventsubSubscriptions(deps);
+      nf = env.db.getTwitchEventsubSub("stream.online", "666001");
+      rev = env.db.getTwitchEventsubSub("stream.offline", "666002");
+    } finally {
+      env.db.deleteTwitchEventsubSub("stream.online", "666001");
+      env.db.deleteTwitchEventsubSub("stream.offline", "666002");
+      env.db.removeTwitchChannel(env.communityId, "heal1");
+      env.db.removeTwitchChannel(env.communityId, "heal2");
+    }
+    assert.equal(summary.error, undefined);
+    assert.equal(summary.created, 0, "proven bindings rode ensure untouched");
+    assert.deepEqual(listed, [
+      "webhook_callback_verification_failed",
+      "notification_failures_exceeded",
+      "revoked",
+    ], "all three of Twitch's failure vocabularies are pulled each sweep");
+
+    assert.equal(nf.status, "notification_failures_exceeded");
+    assert.match(nf.last_error, /twitch status/);
+    assert.equal(rev.status, "revoked");
+    // Either way the rows now NEED a create — the stranding is over even
+    // before the fingerprint rule gets a turn.
+    assert.equal(subs.needsCreate(nf, null), true);
+    assert.equal(subs.needsCreate(rev, null), true);
+  });
+
+  it("#824 one failing self-heal list does not blind the others", async () => {
+    env.db.addTwitchChannel(env.communityId, "666003", "heal3", "Heal3", null);
+    env.db.upsertTwitchEventsubSub({
+      type: "stream.online",
+      broadcasterId: "666003",
+      subscriptionId: "ok-sub",
+      status: "enabled",
+      callbackUrl: "https://bot.example.com/hooks/twitch",
+      secretFingerprint: subs.eventsubSecretFingerprint(SECRET),
+    });
+    const cap = [];
+    const realErr = console.error;
+    console.error = (...a) => cap.push(a.map(String).join(" "));
+    let summary;
+    try {
+      summary = await subs.reconcileEventsubSubscriptions({
+        getConfig: () => ({
+          enabled: true,
+          secret: SECRET,
+          callbackUrl: "https://bot.example.com/hooks/twitch",
+          maxChannels: 50,
+          missing: [],
+        }),
+        createEventsubSubscription: async () => {
+          throw new Error("ensure must NOT create here");
+        },
+        deleteEventsubSubscription: async (id) => {
+          throw new Error(`unexpected delete of ${id}`);
+        },
+        listEventsubSubscriptions: async ({ status }) => {
+          if (status === "revoked") throw new Error("helix 503");
+          return [];
+        },
+      });
+    } finally {
+      console.error = realErr;
+      env.db.deleteTwitchEventsubSub("stream.online", "666003");
+      env.db.removeTwitchChannel(env.communityId, "heal3");
+    }
+    assert.equal(summary.error, undefined, "a partial list is not a failed sweep");
+    assert.ok(
+      cap.some((l) => l.includes("EventSub revoked sweep failed") && l.includes("helix 503")),
+      `the one blind spot is named: ${cap.join(" | ")}`,
+    );
   });
 
   it("clips poller: seeds silently, announces once, caps flood", async () => {
