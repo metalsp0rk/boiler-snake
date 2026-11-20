@@ -25,7 +25,7 @@
     "docs:build": "vitepress build docs",
     "docs:preview": "vitepress preview docs"
   },
-  "//": "test:coverage = Node's built-in runner coverage (no deps) over src/ for BOTH suites in one run; include/exclude keep src/ only in the report. Threshold flags check OVERALL totals (node exits 1 when unmet). Gate raised 2026-10-11 (audit issue #203) from the stale 77/67/77 to 88/76/87. Re-measured 2026-10-19 (#470 G2-8) on the full corpus: all files lines 89.60%, branches 77.61%, funcs 88.68% — margins 1.6/1.6/1.7pt. Re-measured 2026-10-27 (#710, local Node 26): all files lines 90.40%, branches 78.41%, funcs 89.53% — margins 2.40/2.41/2.53pt. CI enforces the gate on the Node 22.x leg of .github/workflows/test.yml (V8 versions can shift totals a little). TIE-BREAKER (#470 G2-8): the gate may only move DOWN when an A/B run proves the drop is instrumentation/V8 drift — run BOTH the merge-base commit and the change on the SAME Node; a coverage regression is fixed by raising coverage, never by lowering the gate to accommodate it (this sentence now decides; it supersedes the old 'actuals-minus-3' re-baseline style, which could be followed while masking a regression). Update the measured actuals here whenever this note is touched. Team targets are critical-paths 100% / high 90%+ (standards) — raise thresholds as coverage improves.",
+  "//": "test:coverage = Node's built-in runner coverage (no deps) over src/ for BOTH suites in one run; include/exclude keep src/ only in the report. Threshold flags check OVERALL totals (node exits 1 when unmet). Gate raised 2026-10-11 (audit issue #203) from the stale 77/67/77 to 88/76/87. Re-measured 2026-10-19 (#470 G2-8) on the full corpus: all files lines 89.60%, branches 77.61%, funcs 88.68% \u2014 margins 1.6/1.6/1.7pt. Re-measured 2026-10-27 (#710, local Node 26): all files lines 90.40%, branches 78.41%, funcs 89.53% \u2014 margins 2.40/2.41/2.53pt. CI enforces the gate on the Node 22.x leg of .github/workflows/test.yml (V8 versions can shift totals a little). TIE-BREAKER (#470 G2-8): the gate may only move DOWN when an A/B run proves the drop is instrumentation/V8 drift \u2014 run BOTH the merge-base commit and the change on the SAME Node; a coverage regression is fixed by raising coverage, never by lowering the gate to accommodate it (this sentence now decides; it supersedes the old 'actuals-minus-3' re-baseline style, which could be followed while masking a regression). Update the measured actuals here whenever this note is touched. Team targets are critical-paths 100% / high 90%+ (standards) \u2014 raise thresholds as coverage improves.",
   "dependencies": {
     "@fluxerjs/core": "3.3.0",
     "@mozilla/readability": "^0.6.0",
@@ -61,5 +61,11 @@
   "allowScripts": {
     "esbuild@0.21.5": true,
     "puppeteer@25.17.0": true
+  },
+  "overrides": {
+    "undici@4 - 6": ">=6.29.1 <7",
+    "undici@7": ">=7.30.2 <8",
+    "qs": ">=6.16.1 <7",
+    "body-parser": ">=2.3.1 <3"
   }
 }
