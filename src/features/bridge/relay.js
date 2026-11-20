@@ -969,11 +969,31 @@ async function enqueueBridgeEdit(message, deps = {}) {
         });
         payload.attachments = descriptors;
         if (notices.length > 0) payload.spoolNotices = notices;
-        const updated = repo.updateOutboxPayloadIfPending(row.id, JSON.stringify(payload));
+        // #831: CAS on MY generation (phase 1 returned it). A newer edit
+        // bumped the seq while this spool ran — its payload stands.
+        const updated = repo.updateOutboxPayloadIfPending(
+          row.id,
+          JSON.stringify(payload),
+          row.payload_seq,
+        );
         if (updated === 0) {
-          // The row left 'pending' mid-spool: that execution owns the payload;
-          // the freshly written bytes are unowned → delete the spool dir.
-          media.deleteSpoolDir(bridge.public_id, messageId);
+          // Two different 0s (#831): the row left 'pending' (claim/done —
+          // this generation's bytes are unowned → drop the dir like ever),
+          // OR a NEWER edit still holds the row pending with its own
+          // generation (its spool owns the shared per-message dir — its
+          // part files live here too; dropping would break its send).
+          // Keep on supersession: my orphaned parts are swept by the
+          // takedown law (delete drops the dir) — bytes bounded, no loss.
+          const live = repo.getBridgeOutboxById(row.id);
+          if (live && live.state === "pending" && live.payload_seq !== row.payload_seq) {
+            console.log(
+              `[bridge] spool: edit row ${row.id} was superseded mid-spool — newer payload kept, spool dir left to its owner (message ${messageId})`,
+            );
+          } else {
+            // The row left 'pending' mid-spool: that execution owns the payload;
+            // the freshly written bytes are unowned → delete the spool dir.
+            media.deleteSpoolDir(bridge.public_id, messageId);
+          }
         }
       }
     }

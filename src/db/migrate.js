@@ -87,6 +87,7 @@ const migrations = [
   require("./migrations/077_expiry_quarantine"),
   require("./migrations/078_notify_retry_valves"),
   require("./migrations/079_twitch_eventsub_binding"),
+  require("./migrations/080_bridge_payload_seq"),
 ];
 
 const helpers = {

@@ -367,6 +367,176 @@ describe("bridge edit/delete relay (PR 6)", () => {
   });
 
   // -------------------------------------------------------------------------
+  // 1a'. #831 / D1-3: the two-phase edit enqueue is a RACE window. E1's
+  // phase-2 media spool runs long; E2 lands meanwhile and REPLACES the
+  // pending row's payload (phase 1). E1's late write used to CAS on
+  // state='pending' alone — still true — and stomped E2's payload back to
+  // stale bytes, invisibly (the snapshot had moved to hash(E2)). Now the
+  // CAS carries E1's payload generation: 0 changes, E2 stands, and the
+  // shared per-message spool dir is left to the newer generation's owner
+  // (its part files live there too). The historical drop (row left
+  // 'pending' mid-spool: bytes unowned) stays intact for that case.
+  // -------------------------------------------------------------------------
+
+  it("#831 a slow E1 spool cannot stomp the newer E2 payload; dir survives for E2", async () => {
+    const { bridge, publicId, channelA } = seedBridge("a_to_b");
+    const msgId = snowflakeNow();
+    repo.addBridgeMessageLink({
+      bridgeId: bridge.id,
+      srcCommunityId: rowA.id,
+      srcMessageId: msgId,
+      partIndex: 0,
+      dstMessageId: "dst-831a",
+    });
+
+    // E1's download gate: held open so E2's phase 1 lands mid-spool.
+    let holdRelease;
+    const hold = new Promise((resolve) => {
+      holdRelease = resolve;
+    });
+    const heldSeam = {
+      fetchImpl: async (url) => {
+        await hold;
+        return {
+          urls: url,
+          ok: true,
+          status: 200,
+          headers: { get: () => null },
+          arrayBuffer: async () => new Uint8Array([1, 2, 3, 4, 5, 6]).buffer,
+        };
+      },
+      resolveHost: async () => ["93.184.216.34"],
+    };
+
+    const e1 = relay.enqueueBridgeEdit(
+      srcMessage(msgId, {
+        channelId: channelA,
+        content: "E1 slow spool",
+        attachments: [
+          {
+            id: "att-e1",
+            name: "e1.png",
+            size: 6,
+            url: "https://cdn.example.test/e1.png",
+            contentType: "image/png",
+          },
+        ],
+      }),
+      { media: heldSeam },
+    );
+    await new Promise((r) => setImmediate(r)); // E1 is inside its held fetch
+    const row = outboxRows(bridge.id, "edit")[0];
+    assert.equal(row.state, "pending");
+    assert.equal(row.payload_seq, 1, "E1 owns generation 1");
+
+    // E2 arrives mid-spool: replaces the SAME slot, bumps the generation.
+    const e2 = await relay.enqueueBridgeEdit(
+      srcMessage(msgId, { channelId: channelA, content: "E2 wins the race" }),
+    );
+    assert.ok(e2?.enqueued);
+    assert.equal(e2.outboxId, row.id, "one pending edit — same slot");
+    const mid = repo.getBridgeOutboxById(row.id);
+    assert.equal(mid.payload_seq, 2, "E2's phase-1 replacement bumped the generation");
+    assert.match(mid.payload_json, /E2 wins the race/);
+
+    // Release E1: its phase 2 completes and its late write must NOT land.
+    const dir = media.spoolDirFor(publicId, msgId);
+    const cap = [];
+    const realLog = console.log;
+    console.log = (...a) => cap.push(a.map(String).join(" "));
+    try {
+      holdRelease();
+      await e1;
+    } finally {
+      console.log = realLog;
+    }
+
+    const after = repo.getBridgeOutboxById(row.id);
+    assert.match(after.payload_json, /E2 wins the race/, "the newer payload STANDS (no stomping)");
+    assert.doesNotMatch(after.payload_json, /E1 slow spool/);
+    assert.equal(after.payload_seq, 2, "a refused write never touches the row — generation intact");
+    assert.ok(
+      cap.some((l) => l.includes("superseded mid-spool")),
+      `the supersession is logged, not swallowed: ${cap.join(" | ")}`,
+    );
+
+    // The spool dir is per-message SHARED state: E1's dropped write must
+    // NOT delete it — the newer generation owns the directory now.
+    assert.ok(
+      fs.existsSync(dir),
+      "a superseded spool never drops the dir the NEWER edit still owns",
+    );
+
+    // And E2's own generation-2 write still lands (the CAS is a fence, not
+    // a ban): a text-only E2 had no spool, so drain-send reads E2's text.
+    assert.equal(after.state, "pending");
+  });
+
+  it("#831 the historical drop stands: a claimed row leaves the late spool's bytes unowned", async () => {
+    const { bridge, publicId, channelA } = seedBridge("a_to_b");
+    const msgId = snowflakeNow();
+    repo.addBridgeMessageLink({
+      bridgeId: bridge.id,
+      srcCommunityId: rowA.id,
+      srcMessageId: msgId,
+      partIndex: 0,
+      dstMessageId: "dst-831b",
+    });
+
+    let holdRelease;
+    const hold = new Promise((resolve) => {
+      holdRelease = resolve;
+    });
+    const heldSeam = {
+      fetchImpl: async (url) => {
+        await hold;
+        return {
+          urls: url,
+          ok: true,
+          status: 200,
+          headers: { get: () => null },
+          arrayBuffer: async () => new Uint8Array([1, 2, 3, 4, 5, 6]).buffer,
+        };
+      },
+      resolveHost: async () => ["93.184.216.34"],
+    };
+
+    const e1 = relay.enqueueBridgeEdit(
+      srcMessage(msgId, {
+        channelId: channelA,
+        content: "E1 claimed mid-spool",
+        attachments: [
+          {
+            id: "att-e1b",
+            name: "e1b.png",
+            size: 6,
+            url: "https://cdn.example.test/e1b.png",
+            contentType: "image/png",
+          },
+        ],
+      }),
+      { media: heldSeam },
+    );
+    await new Promise((r) => setImmediate(r));
+    const row = outboxRows(bridge.id, "edit")[0];
+
+    // NOT supersession — the row is CLAIMED (sending) mid-spool: that
+    // execution owns the payload, the fresh bytes are unowned → drop.
+    db.db.prepare(`UPDATE bridge_outbox SET state = 'sending' WHERE id = ?`).run(row.id);
+
+    const dir = media.spoolDirFor(publicId, msgId);
+    holdRelease();
+    await e1;
+
+    assert.equal(
+      fs.existsSync(dir),
+      false,
+      "row left 'pending': the late spool's bytes are unowned and dropped (law unchanged)",
+    );
+    assert.equal(repo.getBridgeOutboxById(row.id).state, "sending", "the claim stands untouched");
+  });
+
+  // -------------------------------------------------------------------------
   // 1b. Edits AFTER a `done` edit row keep queuing (#375 / BRG-1):
   // UNIQUE(bridge, direction, src, kind) SPANS terminal states — without a
   // terminal-row pre-delete (the delete path's §10.10 precedent), every

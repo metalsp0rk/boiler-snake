@@ -594,7 +594,14 @@ function enqueueBridgeOutbox(bridgeId, { direction, kind = "create", srcMessageI
         .get(bridgeId, direction, srcId);
       if (pending) {
         // One-pending-edit rule: replace in place, keep the queue slot.
-        db.prepare(`UPDATE bridge_outbox SET payload_json = ? WHERE id = ?`).run(body, pending.id);
+        // #831: the replacement BUMBS the payload generation — a phase-2
+        // spool still carrying the OLD generation can no longer stomp this
+        // payload (its CAS matches 0 rows).
+        db.prepare(
+          `UPDATE bridge_outbox
+           SET payload_json = ?, payload_seq = payload_seq + 1
+           WHERE id = ?`,
+        ).run(body, pending.id);
         return getBridgeOutboxById(pending.id);
       }
     } else if (kind === "delete") {
@@ -605,8 +612,8 @@ function enqueueBridgeOutbox(bridgeId, { direction, kind = "create", srcMessageI
     }
     const info = db
       .prepare(`
-        INSERT INTO bridge_outbox (bridge_id, direction, kind, src_message_id, enqueued_at, state, payload_json)
-        VALUES (?, ?, ?, ?, ?, 'pending', ?)
+        INSERT INTO bridge_outbox (bridge_id, direction, kind, src_message_id, enqueued_at, state, payload_json, payload_seq)
+        VALUES (?, ?, ?, ?, ?, 'pending', ?, 1)
       `)
       .run(bridgeId, direction, kind, srcId, ts, body);
     return getBridgeOutboxById(Number(info.lastInsertRowid));
@@ -815,12 +822,29 @@ function clearTerminalEditRows(bridgeId, direction, srcMessageId) {
  * 'pending'. 0 changes means the row left pending mid-spool: that
  * execution's payload is frozen and the freshly written bytes are
  * unowned (the caller drops the spool dir).
+ *
+ * #831: pass `payloadSeq` (the generation this caller's phase-1 enqueue
+ * returned) and the CAS additionally refuses a SUPERSEDED generation: an
+ * edit that landed while this spool was running replaced the payload and
+ * bumped the seq, and its write must survive this stale write. With the
+ * seq omitted the guard stays the historical state-only one (the create
+ * path — a create row's payload is never replaced in place, only the
+ * whole row can go away).
  * @returns {number} 0 or 1
  */
-function updateOutboxPayloadIfPending(outboxId, payloadJson) {
+function updateOutboxPayloadIfPending(outboxId, payloadJson, payloadSeq = null) {
+  if (payloadSeq == null) {
+    return db
+      .prepare(`UPDATE bridge_outbox SET payload_json = ? WHERE id = ? AND state = 'pending'`)
+      .run(String(payloadJson), Number(outboxId)).changes;
+  }
   return db
-    .prepare(`UPDATE bridge_outbox SET payload_json = ? WHERE id = ? AND state = 'pending'`)
-    .run(String(payloadJson), Number(outboxId)).changes;
+    .prepare(
+      `UPDATE bridge_outbox
+       SET payload_json = ?
+       WHERE id = ? AND state = 'pending' AND payload_seq = ?`,
+    )
+    .run(String(payloadJson), Number(outboxId), Number(payloadSeq)).changes;
 }
 
 /**
