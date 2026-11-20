@@ -17,7 +17,9 @@
  * decoration stays with the caller: bridge keeps its handle branches (b_…
  * ids are NOT credentials) and handle minting on top of the shared encoder;
  * linking is a thin naming adapter. What leaves this file is identical for
- * both: 128 random bits → Crockford base32 → canonical 22-char form; the
+ * both: a 128-bit RNG read → Crockford base32 → canonical 22-char form —
+ * which carries 110 bits, not 128 (22 chars x 5 bits; the encoder slices the
+ * tail off; #837 B2-8 — the number a reviewer must be able to TRUST); the
  * display form carries the prefix, the storage form never does; only the
  * SHA-256 digest of the canonical form is ever persisted — the plaintext
  * lives in the minting reply and the redeemer's message and nowhere else.
@@ -32,14 +34,21 @@ const crypto = require("crypto");
 const CROCKFORD_UPPER = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
 const CROCKFORD_LOWER = CROCKFORD_UPPER.toLowerCase();
 
-/** Canonical (uppercase, stripped) pairing-code length: 22 chars, 128-bit seed. */
+/**
+ * Canonical (uppercase, stripped) pairing-code length: 22 chars from a
+ * 16-byte (128-bit) RNG read. The 22-char slice preserves 110 of those
+ * bits (22 x 5) — effective guess space 2^110, NOT 2^128 (#837 B2-8;
+ * plenty, but stated honestly). Changing the format to keep all 128
+ * (26 chars) or 160 (32 chars) is a format-version decision, never a
+ * silent edit.
+ */
 const CODE_SEED_BYTES = 16;
 const CODE_CANONICAL_LEN = 22;
 
 /** Canonical codes contain only Crockford characters (uppercase form). */
 const CROCKFORD_UPPER_RE = /^[0-9A-HJ-KM-NP-TV-Z]+$/;
 
-/** Collision-retry budget for minting (2^128 space; this is paranoia). */
+/** Collision-retry budget for minting (2^110 space; this is paranoia). */
 const MAX_MINT_ATTEMPTS = 16;
 
 /**
@@ -182,9 +191,9 @@ function createPairingCodes({ prefix } = {}) {
   }
 
   /**
-   * Mint a one-time credential: 128 random bits → Crockford base32 → the
-   * canonical 22-char form, its display form, and the at-rest SHA-256
-   * digest.
+   * Mint a one-time credential: a 128-bit RNG read → Crockford base32 →
+   * the canonical 22-char form (carrying 110 of those bits, #837), its
+   * display form, and the at-rest SHA-256 digest.
    *
    * A minted body that happens to start with the display prefix is
    * discarded and re-minted: canonicalize strips a leading prefix, so such
@@ -228,7 +237,9 @@ module.exports = {
   // constants (tests and docs pin the format)
   CROCKFORD_UPPER,
   CROCKFORD_LOWER,
-  CROCKFORD_UPPER_RE,
+  // (CROCKFORD_UPPER_RE stays module-internal — canonicalize is the ONLY
+  // honest validator and it already lives here; #837 B2-8 retired the
+  // export no production or test caller used.)
   CODE_SEED_BYTES,
   CODE_CANONICAL_LEN,
   MAX_MINT_ATTEMPTS,

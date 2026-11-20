@@ -42,6 +42,7 @@ const { snowflakeTimeMs } = require("../../platform/snowflake");
 const { neutralizeContent, NO_PING } = require("./mentions");
 const { buildSupervisorSeams } = require("./supervisorSeams");
 const { sliceSafe } = require("../../core/text");
+const { sleep: coreSleep } = require("../../core/timing"); // #837 (B2-3)
 const media = require("./media");
 const { isBridgeEnabled, buildPausedNotice, createPauseLatch } = require("./config");
 const { createFluxerBridgeOutbound } = require("./fluxerOutbound");
@@ -1639,14 +1640,12 @@ function createRelayWorker(deps = {}) {
   const keyGetter = deps.keyGetter;
   const sendMessage =
     typeof deps.sendMessage === "function" ? deps.sendMessage : async () => ({ ok: true });
+  // #837 (B2-3): the local unref'd sleep is retired — core/timing expresses
+  // the SIGTERM-drain posture ({ unref: true }); the deps seam stays.
   const sleep =
     typeof deps.sleep === "function"
       ? deps.sleep
-      : (ms) =>
-          new Promise((resolve) => {
-            const t = setTimeout(resolve, ms);
-            if (typeof t.unref === "function") t.unref();
-          });
+      : (ms) => coreSleep(ms, { unref: true });
   const mediaOpts = {
     fetchImpl: deps.fetchImpl,
     resolveHost: deps.resolveHost,

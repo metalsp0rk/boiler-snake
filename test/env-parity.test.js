@@ -96,6 +96,12 @@ const STRICT_NAME = new RegExp(`^${NAME}$`);
  * is a deliberate act: the site must be audited and its names pinned (see
  * the header comment).
  */
+// #837 (B2-2): src/core/env.js USED to be listed here for its
+// process.env[name] lookup — after the consolidation it holds NO dynamic
+// process.env read at all (helpers default to `env = process.env` and read
+// the GENERIC parameter `env[name]`, which this guard cannot and need not
+// match: every knob NAME is still pinned at its call site by the shared
+// envPositiveInt/envNonNegInt pattern above).
 const DYNAMIC_READ_FILES = new Map([
   [
     "src/config.js",
@@ -108,14 +114,6 @@ const DYNAMIC_READ_FILES = new Map([
   [
     "src/db/migrations/039_encrypt_third_party_tokens.js",
     "reads process.env[KEY_ENV] (TOKEN_ENCRYPTION_KEY) imported from thirdPartyTokens",
-  ],
-  [
-    "src/core/env.js",
-    "#470 (H1-7): envPositiveInt(name) lives here now; names are still captured at every call site by the shared envPositiveInt/envNonNegInt pattern",
-  ],
-  [
-    "src/features/gork/images.js",
-    "LOCAL envNonNegInt(name) helper (envPositiveInt moved to core/env.js); names captured at the call sites",
   ],
   [
     "src/features/retention/config.js",

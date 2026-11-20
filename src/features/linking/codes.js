@@ -9,8 +9,10 @@
  * canonicalizeLinkCode/hashLinkCode/… from here.
  *
  * Conventions the engine guarantees (bridge §10.1 inherited):
- *  - 128 random bits (crypto.randomBytes(16)) → Crockford base32 (excludes
- *    I, L, O, U) → a canonical 22-character uppercase string.
+ *  - a 128-bit RNG read (crypto.randomBytes(16)) → Crockford base32
+ *    (excludes I, L, O, U) → a canonical 22-character uppercase string,
+ *    which carries 110 of those bits (22 x 5 — effective guess space
+ *    2^110, stated honestly per #837 B2-8).
  *  - The user-facing display form carries an "LNK-" prefix; the canonical
  *    storage/comparison form never does (canonicalize strips it).
  *  - Storage is SHA-256 of the canonical form only. The plaintext exists in

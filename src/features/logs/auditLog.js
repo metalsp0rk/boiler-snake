@@ -5,6 +5,7 @@ const { EmbedBuilder, AuditLogEvent } = require("discord.js");
 const { getGuildSettings } = require("../../db");
 const { discordCommunityId } = require("../../platform/community");
 const { Color } = require("../../core/theme");
+const { sleep } = require("../../core/timing"); // #837 (B2-3): one sleep home, scan-visible
 
 // Embed colors (theme tokens)
 const COLOR_DELETE = Color.danger;
@@ -369,11 +370,11 @@ async function fetchRecentAuditEntry(
   };
 
   if (delayMs > 0) {
-    await new Promise((r) => setTimeout(r, delayMs));
+    await sleep(delayMs); // #837 (B2-3): the drift scan can only see the shared helper
   }
   let entry = await tryFetch();
   if (!entry && delayMs > 0) {
-    await new Promise((r) => setTimeout(r, 400));
+    await sleep(400);
     entry = await tryFetch();
   }
   return entry;

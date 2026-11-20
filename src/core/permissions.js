@@ -81,7 +81,9 @@ function isSeniorStaff(interaction) {
 /**
  * Command-channel gate on raw primitives (the shape the Fluxer dispatcher has:
  * no interaction, no Discord member object). Single source of truth for the
- * {@link commandsAllowed} / {@link commandsAllowedFromContext} variants.
+ * {@link commandsAllowed} variant. (#837 B2-5: the promised *FromContext twin
+ * shipped dead and exported — dispatch.js wires this primitive by hand. It is
+ * deleted, not left as a trap for the next "there must be a ctx variant" caller.)
  *
  * - No rows in `allowed_command_channels` for the community → allow.
  * - Else the channel must be listed.
@@ -125,22 +127,6 @@ function commandsAllowed(interaction) {
     discordCommunityId(interaction.guildId),
     interaction.channelId,
     Boolean(isAdminOrMod(interaction)),
-  );
-}
-
-/**
- * Command-channel gate on a CommandContext (spec § Handler migration rule:
- * gates get *FromContext variants). Same semantics as {@link commandsAllowed}
- * — the interaction variant stays until every Discord handler has moved.
- * @param {object} ctx CommandContext
- * @returns {boolean}
- */
-function commandsAllowedFromContext(ctx) {
-  return commandsAllowedFromIds(
-    ctx.commandName,
-    ctx.communityId,
-    ctx.channelId,
-    isAdminOrModFromContext(ctx),
   );
 }
 
@@ -240,7 +226,6 @@ module.exports = {
   requireSeniorStaff,
   isAdminOrModFromContext,
   isStaffFromContext,
-  commandsAllowedFromContext,
   requireAdminFromContext,
   requireStaffFromContext,
 };

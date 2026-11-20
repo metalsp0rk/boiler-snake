@@ -81,3 +81,35 @@ describe("#466 (C2-2): both transcript renderers drop poisoned hrefs to plain te
     assert.ok(html.includes("https://cdn.example.test/ok.png"), "safe attachments untouched");
   });
 });
+
+// ---------------------------------------------------------------------------
+// #837 (B2-9): dot segments survive URL resolution in DECODED form
+// ---------------------------------------------------------------------------
+
+describe("#837 (B2-9): percent-encoded dot segments refuse", () => {
+  it("refuses %2e%2e traversal (WHATWG decodes segments BEFORE dot-collapse)", () => {
+    for (const evil of [
+      "/assets/%2e%2e/admin",
+      "/%2e%2e/%2e%2e/etc/passwd",
+      "/assets/%2E%2E/x",
+      "/a/%2e/b", // single-dot form traverses too
+      "/a/%2e",
+      "assets/%2e%2e/secret",
+      "/a/%zz", // invalid escape: decode THROWS = refuse (no honest resolution)
+      "/a/%",
+    ]) {
+      assert.equal(safeHref(evil), null, `must refuse ${evil}`);
+    }
+  });
+
+  it("keeps every legitimate encoding: dots inside segments are not dot SEGMENTS", () => {
+    for (const ok of [
+      "/assets/42/a%20b.png",
+      "/assets/a.b%2ec/c.png",
+      "/g/%2e12/staff", // %2e INSIDE a longer segment is harmless
+      "/report%2Fsummary", // %2f is not a separator to URL resolution
+    ]) {
+      assert.equal(safeHref(ok), ok, `must allow ${ok}`);
+    }
+  });
+});

@@ -36,21 +36,11 @@ const { html } = require("../escape");
 const { formatTs, lookupAttrsMixed } = require("../_helpers"); // #470 H1-8 (byte-identical copies unified)
 const { renderLayout } = require("../layout");
 const { userRef } = require("../components");
-
-
-/**
- * @param {string|null|undefined} s
- * @param {number} max
- * @returns {string}
- */
-function snippet(s, max = 80) {
-  const t = String(s || "")
-    .replace(/\s+/g, " ")
-    .trim();
-  if (!t) return "—";
-  if (t.length <= max) return t;
-  return `${t.slice(0, max - 1)}…`;
-}
+// #837 (B2-4): this file kept a near-twin of core/text's snippet with an
+// undocumented empty→"—" fork. Adopted: the truncation is the ONE core
+// helper; the em-dash for empty cells is a VIEW convention and now says so
+// at every call site (`|| "—"`) instead of hiding inside a copy.
+const { snippet } = require("../../../core/text");
 
 /**
  * Index body fragment (everything below the shell h1). Pure view over
@@ -114,7 +104,7 @@ function renderTicketIndexContent({
     const text = String(s?.summary || s?.resolution || "").trim();
     if (!text) return html``;
     const src = s?.source === "ai" ? "AI" : "auto";
-    return html`<div class="row-summary"><span class="badge badge-tiny">${src}</span> ${snippet(text, 160)}</div>`;
+    return html`<div class="row-summary"><span class="badge badge-tiny">${src}</span> ${snippet(text, 160) || "—"}</div>`;
   };
   const rows = (tickets || []).map((t) => {
     const href = `/t/${encodeURIComponent(t.transcript_token)}`;
@@ -146,8 +136,8 @@ function renderTicketIndexContent({
           <div class="who sub">owner ${owner}</div>
         </td>
         <td data-label="Closed">${formatTs(t.closed_at)}</td>
-        <td class="reason" data-label="Subject">${snippet(t.reason, 100)}${summaryNote(t.ai_summary_json)}</td>
-        <td class="reason" data-label="Close reason">${snippet(t.close_reason, 80)}</td>
+        <td class="reason" data-label="Subject">${snippet(t.reason, 100) || "—"}${summaryNote(t.ai_summary_json)}</td>
+        <td class="reason" data-label="Close reason">${snippet(t.close_reason, 80) || "—"}</td>
         <td data-label="Transcript"><a href="${href}">View</a></td>
       </tr>`;
   });

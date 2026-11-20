@@ -63,4 +63,41 @@ function resolveOutbound(supervisor, communityId, { label = "outbound" } = {}) {
   );
 }
 
-module.exports = { resolveDiscordClient, resolveOutbound };
+/**
+ * The SANCTIONED single-client supervisor adapter (#837 B2-6).
+ *
+ * Web-mounted webhook paths (Twitch EventSub) hold the live discord.js
+ * client — never the boot supervisor — and tickers speak supervisor only
+ * (#462). Callers used to hand-forge `{ discord, clientForCommunity: () =>
+ * … }`, and the non-supervisor guard's signal rotted: ANY object with that
+ * key satisfied it, forged or not. This factory is now the only legal
+ * forgery, and it keeps the shape honest:
+ *  - the communityId is ASSERTED present — a caller that forgets it is
+ *    exactly the sloppiness the guard exists to catch;
+ *  - one client serves every community BY CONSTRUCTION (the truth for a
+ *    single-Discord-app deployment today); a second app must route through
+ *    the real boot supervisor instead of copying this adapter.
+ *
+ * @param {object} client live discord.js Client
+ * @returns {{discord: object, clientForCommunity: (communityId: number|string) => object|null}}
+ */
+function createSingleClientSupervisor(client) {
+  return {
+    discord: client,
+    clientForCommunity(communityId) {
+      if (communityId === undefined || communityId === null || communityId === "") {
+        throw new Error(
+          "[outbound] createSingleClientSupervisor: clientForCommunity requires a " +
+            "real communityId — the boot supervisor resolves PER community; an " +
+            "argument-less call here is a routing bug waiting for app #2",
+        );
+      }
+      // Lazy require: core must not hard-import the platform layer at module
+      // load (the supervisor contract is what breaks that cycle at boot).
+      const { getDiscordOutbound } = require("../platform/discord/outbound");
+      return getDiscordOutbound(client);
+    },
+  };
+}
+
+module.exports = { resolveDiscordClient, resolveOutbound, createSingleClientSupervisor };

@@ -727,6 +727,34 @@ describe("ssrfGuard DNS pin (#415/BRG-9)", () => {
     assert.equal(await res.text(), "ok");
   });
 
+  // #837 (B2-10): Node THROWS ERR_INVALID_ARG_VALUE the moment servername
+  // carries an IP literal — both callers deliberately pass [] addresses for
+  // IP-literal hosts today, so the old unconditional servername was only
+  // safe by that undocumented invariant. The next hardening step (pinning
+  // literals too) must not silently break IP-literal https downloads.
+  it("pinnedCoreFetch: IP-literal hostnames ship NO servername (names keep SNI)", async () => {
+    const reqOpts = [];
+    await guard.pinnedCoreFetch(
+      "https://203.0.113.9:8443/media.bin",
+      {},
+      ["203.0.113.9"], // the "pin the literal too" shape
+      { httpsImpl: fakeCoreTransport(reqOpts) },
+    );
+    const o = reqOpts[0];
+    assert.equal(o.host, "203.0.113.9", "the literal is still the connect target");
+    assert.equal("servername" in o, false, "an IP servername would throw in Node — omit instead");
+    assert.equal(o.headers.host, "203.0.113.9:8443", "Host still carries the literal + port");
+
+    const named = [];
+    await guard.pinnedCoreFetch(
+      "https://cdn.example.test/x",
+      {},
+      ["203.0.113.7"],
+      { httpsImpl: fakeCoreTransport(named) },
+    );
+    assert.equal(named[0].servername, "cdn.example.test", "named hosts keep SNI (unchanged law)");
+  });
+
   it("pinnedCoreFetch: prefers a validated IPv4, accepts an all-v6 pin list", async () => {
     const reqOpts = [];
     await guard.pinnedCoreFetch("https://v6.test/", {}, ["2606:4700:4700::1111", PUBLIC_IP], {

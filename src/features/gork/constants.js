@@ -7,6 +7,8 @@ const CONTEXT_MAX = 50;
 const COOLDOWN_MIN = 0;
 const COOLDOWN_MAX = 3600;
 const RULES_MAX = 500;
+const { envPositiveInt } = require("../../core/env"); // #837 (B2-2): knob parsing lives in core/env (this module used to keep a fourth copy as positiveIntIn)
+
 /** Max banned users listed by `/gork bans` (rest summarized). */
 const BANS_LIST_MAX = 25;
 /** Max memory rows listed by `/gork memory show` (guild view). */
@@ -186,13 +188,6 @@ const TOOL_TIMEOUT_PER_ROUND_MS = 40_000;
  * per-guild queue job can hold its slot (queue headroom, #705). */
 const TOOL_TIMEOUT_CAP_MS = 45 * 60_000;
 
-/** envPositiveInt with an injectable env (test seam; same semantics). */
-function positiveIntIn(env, name, fallback) {
-  const raw = env?.[name];
-  if (raw === undefined || raw === null || String(raw).trim() === "") return fallback;
-  const n = Number(raw);
-  return Number.isFinite(n) && n > 0 ? Math.floor(n) : fallback;
-}
 
 /**
  * Effective tool rounds for one community (read-side clamp, the
@@ -212,7 +207,7 @@ function resolveMaxToolRounds(guildValue, env = process.env) {
       return Math.min(TOOL_ROUNDS_MAX, Math.max(TOOL_ROUNDS_MIN, Math.trunc(n)));
     }
   }
-  return positiveIntIn(env, "GORK_LLM_MAX_TOOL_ROUNDS", TOOL_ROUNDS_DEFAULT);
+  return envPositiveInt("GORK_LLM_MAX_TOOL_ROUNDS", TOOL_ROUNDS_DEFAULT, env);
 }
 
 /**
@@ -225,14 +220,14 @@ function resolveMaxToolRounds(guildValue, env = process.env) {
  * @returns {number} deadline ms for the whole chatWithTools loop
  */
 function deriveToolTimeoutMs(rounds, env = process.env) {
-  const explicit = positiveIntIn(env, "GORK_LLM_TIMEOUT_MS", 0);
+  const explicit = envPositiveInt("GORK_LLM_TIMEOUT_MS", 0, env);
   if (explicit > 0) return explicit;
-  const perRound = positiveIntIn(
-    env,
+  const perRound = envPositiveInt(
     "GORK_LLM_TIMEOUT_PER_ROUND_MS",
     TOOL_TIMEOUT_PER_ROUND_MS,
+    env,
   );
-  const cap = positiveIntIn(env, "GORK_LLM_TIMEOUT_CAP_MS", TOOL_TIMEOUT_CAP_MS);
+  const cap = envPositiveInt("GORK_LLM_TIMEOUT_CAP_MS", TOOL_TIMEOUT_CAP_MS, env);
   const safeRounds = Math.max(0, Math.trunc(Number(rounds) || 0));
   const grown = TOOL_TIMEOUT_BASE_MS + perRound * safeRounds;
   return Number.isFinite(grown) ? Math.min(grown, cap) : cap;
@@ -266,7 +261,6 @@ module.exports = {
   GORK_TOKEN_CHAR_RATIO,
   GORK_SUMMARIZE_PROMPT_RESERVE_CHARS,
   GORK_SUMMARIZE_TRANSCRIPT_CHAR_FLOOR,
-  positiveIntIn,
   resolveMaxToolRounds,
   deriveToolTimeoutMs,
   TOOL_ROUNDS_MIN,
