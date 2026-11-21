@@ -5,6 +5,8 @@ const {
   sweepCooldownMap,
   isOnCooldown,
   markCooldown,
+  reserveCooldown,
+  releaseCooldownReservation,
 } = require("../src/core/cooldowns");
 
 describe("key", () => {
@@ -84,5 +86,50 @@ describe("sweep horizon vs max configurable cooldown (#429)", () => {
     // Sanity: prove the old horizon was the bug — same entry dies there.
     sweepCooldownMap(map, 6 * 3_600_000);
     assert.ok(!map.has("k"), "the retired 6h maxAge evicted mid-window (the bug)");
+  });
+});
+
+// #894 (audit r4 F2): reserve-before-the-await closes the burst race the
+// XE-7 stamp-after-award opened; the release half keeps the XE-7 fairness.
+describe("reserveCooldown + releaseCooldownReservation — #894 reserve/settle", () => {
+  it("reserve stamps immediately: a concurrent runner sees the window", () => {
+    const map = new Map();
+    const t0 = Date.now();
+    assert.equal(isOnCooldown(map, "u", 60, t0), false, "gate opens");
+    reserveCooldown(map, "u", t0);
+    assert.equal(
+      isOnCooldown(map, "u", 60, t0 + 5),
+      true,
+      "the SECOND concurrent pipeline is gated while the first awaits",
+    );
+  });
+
+  it("a SUCCESSFUL release keeps the reservation as the window", () => {
+    const map = new Map();
+    const held = reserveCooldown(map, "u", 1_000);
+    releaseCooldownReservation(map, "u", held, true);
+    assert.equal(map.get("u"), 1_000);
+  });
+
+  it("a FAILED release restores the previous stamp (XE-7: no pay, no window)", () => {
+    const map = new Map([["u", 500]]);
+    const held = reserveCooldown(map, "u", 1_000);
+    releaseCooldownReservation(map, "u", held, false);
+    assert.equal(map.get("u"), 500, "the earlier live window is restored, not deleted");
+  });
+
+  it("a FAILED release with no previous stamp frees the key entirely", () => {
+    const map = new Map();
+    const held = reserveCooldown(map, "u", 1_000);
+    releaseCooldownReservation(map, "u", held, false);
+    assert.equal(map.has("u"), false, "a fresh user whose award failed keeps the gate open");
+  });
+
+  it("a losing rollback never wipes a newer reservation", () => {
+    const map = new Map();
+    const loser = reserveCooldown(map, "u", 1_000);
+    reserveCooldown(map, "u", 2_000); // a newer reservation owns the slot now
+    releaseCooldownReservation(map, "u", loser, false);
+    assert.equal(map.get("u"), 2_000, "the winner's window survives the loser's rollback");
   });
 });
