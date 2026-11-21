@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.41.1](https://github.com/metalsp0rk/boiler-snake/compare/v1.41.0...v1.41.1) (2026-11-21)
+
+
+### Bug Fixes
+
+* **web:** keep action-table cells in table layout so rows can grow ([3980dff](https://github.com/metalsp0rk/boiler-snake/commit/3980dff65b86d609d3c15c5f829fab59fba3b9c4))
+
 ## [1.41.0](https://github.com/metalsp0rk/boiler-snake/compare/v1.40.0...v1.41.0) (2026-11-20)
 
 
