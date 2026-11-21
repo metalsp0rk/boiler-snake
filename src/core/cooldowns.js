@@ -41,15 +41,11 @@ function isOnCooldown(map, mapKey, cooldownSec, nowMs = Date.now()) {
 }
 
 /**
- * Stamp the window for mapKey (#472 XE-7): check and stamp were once one
- * function, so a check that LED TO a failed unit of work still consumed the
- * window — a transient DB fault during an XP award silently skipped the
- * user's next message even though nothing had been awarded. The stamp now
- * belongs to the caller, executed only after the work actually succeeded:
- *
- *   if (isOnCooldown(map, k, sec)) return;
- *   await doTheThing();          // throwing here leaves the window free
- *   markCooldown(map, k);
+ * Stamp the window for mapKey. For AWAITED work use
+ * {@link reserveCooldown} + {@link releaseCooldownReservation} instead:
+ * stamping after an await re-opened the burst race (#894). The
+ * stamp-after-success shape this documents (#472 XE-7 — a failed unit of
+ * work must not burn the window) is now carried by the release half.
  *
  * @param {Map<string, number>} map
  * @param {string} mapKey
@@ -57,6 +53,53 @@ function isOnCooldown(map, mapKey, cooldownSec, nowMs = Date.now()) {
  */
 function markCooldown(map, mapKey, nowMs = Date.now()) {
   map.set(mapKey, nowMs);
+}
+
+/**
+ * Reserve the window BEFORE the awaited work (#894, audit r4 F2). The
+ * message/reaction pipelines run ONE unit per event CONCURRENTLY (each
+ * event is an independent fire-and-forget run), so the XE-7 idiom's
+ * stamp-after-success let every burst message clear the gate while the
+ * first award was still in flight — the configured cooldown simply did
+ * not bind under rapid-fire spam. Reserve-first closes that window;
+ * XE-7 fairness survives via {@link releaseCooldownReservation}: work
+ * that FAILED puts the window back.
+ *
+ *   if (isOnCooldown(map, k, sec)) return;
+ *   const held = reserveCooldown(map, k);
+ *   const res = await doTheThing();
+ *   releaseCooldownReservation(map, k, held, res.ok !== false);
+ *
+ * @param {Map<string, number>} map
+ * @param {string} mapKey
+ * @param {number} [nowMs]
+ * @returns {{ stamp: number, previous: number|undefined }} reservation token
+ */
+function reserveCooldown(map, mapKey, nowMs = Date.now()) {
+  const previous = map.get(mapKey);
+  map.set(mapKey, nowMs);
+  return { stamp: nowMs, previous };
+}
+
+/**
+ * Settle a {@link reserveCooldown} reservation. Work that SUCCEEDED keeps
+ * the reservation as the window (nothing to do). Work that FAILED (or threw
+ * — the caller finalizes with `false` before rethrowing) restores the stamp
+ * that was live when the reservation was made, but ONLY while this slot
+ * still carries OUR stamp: a losing reservation must never wipe a newer
+ * concurrent winner's window (XE-7: no pay, no window — bounded to the
+ * loser's own).
+ *
+ * @param {Map<string, number>} map
+ * @param {string} mapKey
+ * @param {{ stamp: number, previous: number|undefined }} held reservation token
+ * @param {boolean} worked true when the unit of work actually succeeded
+ */
+function releaseCooldownReservation(map, mapKey, held, worked) {
+  if (worked) return;
+  if (map.get(mapKey) !== held.stamp) return;
+  if (held.previous === undefined) map.delete(mapKey);
+  else map.set(mapKey, held.previous);
 }
 
 // #429 (audit XE-2): cooldown windows are ADMIN-CONFIGURABLE — the memory
@@ -72,6 +115,8 @@ module.exports = {
   sweepCooldownMap,
   isOnCooldown,
   markCooldown,
+  reserveCooldown,
+  releaseCooldownReservation,
   MAX_CONFIG_COOLDOWN_SEC,
   COOLDOWN_SWEEP_MAX_AGE_MS,
 };

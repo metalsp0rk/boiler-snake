@@ -21,7 +21,8 @@ const { scheduleLevelRoleReconcile } = require("../levelRoles/reconcile");
 const {
   key,
   isOnCooldown,
-  markCooldown,
+  reserveCooldown,
+  releaseCooldownReservation,
   sweepCooldownMap,
   MAX_CONFIG_COOLDOWN_SEC,
   COOLDOWN_SWEEP_MAX_AGE_MS,
@@ -736,18 +737,27 @@ async function tryAwardMessageXp(outbound, message, options = {}) {
   const k = key(communityId, authorId);
   if (isOnCooldown(msgCooldown, k, settings.msg_cooldown_sec)) return;
 
-  const res = await awardXp(outbound, {
-    communityId,
-    externalGuildId,
-    userId: authorId,
-    delta: gain,
-    activityKind: "message",
-    levelXpFactor: settings.level_xp_factor,
-  });
-  // #472 (XE-7 + XE-11): the award reports failures now; an un-paid user
-  // keeps their window (the service logged the cause for the logs alone).
-  if (res.ok === false) return;
-  markCooldown(msgCooldown, k);
+  // #894 (audit r4 F2): reserve the window BEFORE the awaited award —
+  // pipeline events for one author run CONCURRENTLY, and the XE-7
+  // stamp-after-award let every burst message clear the gate while the
+  // first award was still in flight. The release keeps XE-7 fairness: a
+  // failed (or throwing) award puts the window back.
+  const held = reserveCooldown(msgCooldown, k);
+  let res;
+  try {
+    res = await awardXp(outbound, {
+      communityId,
+      externalGuildId,
+      userId: authorId,
+      delta: gain,
+      activityKind: "message",
+      levelXpFactor: settings.level_xp_factor,
+    });
+  } catch (err) {
+    releaseCooldownReservation(msgCooldown, k, held, false);
+    throw err;
+  }
+  releaseCooldownReservation(msgCooldown, k, held, res.ok !== false);
 }
 
 /**
@@ -772,16 +782,24 @@ async function tryAwardReactionXp(outbound, guild, user) {
   const k = key(communityId, user.id);
   if (isOnCooldown(reactionCooldown, k, settings.reaction_cooldown_sec)) return;
 
-  const res = await awardXp(outbound, {
-    communityId,
-    externalGuildId: guild.id,
-    userId: user.id,
-    delta: gain,
-    activityKind: "reaction",
-    levelXpFactor: settings.level_xp_factor,
-  });
-  if (res.ok === false) return; // #472 (XE-11); XE-7: no pay, no window
-  markCooldown(reactionCooldown, k);
+  // #894 + #472 XE-7 semantics as at the message site: reserve before the
+  // await; no pay, no window (the release restores it on failure).
+  const held = reserveCooldown(reactionCooldown, k);
+  let res;
+  try {
+    res = await awardXp(outbound, {
+      communityId,
+      externalGuildId: guild.id,
+      userId: user.id,
+      delta: gain,
+      activityKind: "reaction",
+      levelXpFactor: settings.level_xp_factor,
+    });
+  } catch (err) {
+    releaseCooldownReservation(reactionCooldown, k, held, false);
+    throw err;
+  }
+  releaseCooldownReservation(reactionCooldown, k, held, res.ok !== false); // XE-11: failures report
 }
 
 /**
@@ -825,17 +843,25 @@ async function tryAwardReactionXpFluxer(outbound, normalizedReaction) {
   const k = key(communityId, normalizedReaction.userId);
   if (isOnCooldown(reactionCooldown, k, settings.reaction_cooldown_sec)) return;
 
-  const res = await awardXp(outbound, {
-    communityId,
-    externalGuildId: normalizedReaction.externalGuildId ?? null,
-    userId: String(normalizedReaction.userId),
-    delta: gain,
-    activityKind: "reaction",
-    member: null,
-    levelXpFactor: settings.level_xp_factor,
-  });
-  if (res.ok === false) return; // #472 (XE-11); XE-7: no pay, no window
-  markCooldown(reactionCooldown, k);
+  // #894 + #472 XE-7 semantics as at the Discord reaction site (the same
+  // community-scoped map; the reserve keeps concurrent bursts honest).
+  const held = reserveCooldown(reactionCooldown, k);
+  let res;
+  try {
+    res = await awardXp(outbound, {
+      communityId,
+      externalGuildId: normalizedReaction.externalGuildId ?? null,
+      userId: String(normalizedReaction.userId),
+      delta: gain,
+      activityKind: "reaction",
+      member: null,
+      levelXpFactor: settings.level_xp_factor,
+    });
+  } catch (err) {
+    releaseCooldownReservation(reactionCooldown, k, held, false);
+    throw err;
+  }
+  releaseCooldownReservation(reactionCooldown, k, held, res.ok !== false); // XE-11: failures report
 }
 
 function registerEvents(client, ctx) {
