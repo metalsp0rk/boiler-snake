@@ -963,17 +963,28 @@ function markOutboxDone(outboxId) {
  * @param {string|null} [lastError] reason recorded for status
  * @param {object} [opts]
  * @param {number} [opts.maxAttempts=5]
- * @returns {object|null} the updated row, null when the id does not exist
+ * @returns {object|null} the updated row — or the UNTOUCHED live row when it
+ *   is already settled (`done`/`failed`, #893); null when the id does not exist
  */
 function recordOutboxFailure(outboxId, lastError = null, { maxAttempts = BRIDGE_OUTBOX_MAX_ATTEMPTS } = {}) {
   const tx = db.transaction(() => {
     const row = getBridgeOutboxById(outboxId);
     if (!row) return null;
+    // #893 (audit r4 F1): settled rows are TERMINAL for this transition.
+    // The relay's catch-all wraps the post-ack side effects too, so a throw
+    // AFTER markOutboxDone used to write `state='pending'` over a DELIVERED
+    // row — re-claiming it re-POSTed copied traffic. The guard mirrors
+    // markOutboxDone's CAS; a lost CAS reports the live row unchanged (the
+    // caller sees the settled state, never a reschedule).
     const attempts = Number(row.attempts) + 1;
     const parked = attempts >= maxAttempts;
-    db
-      .prepare(`UPDATE bridge_outbox SET attempts = ?, state = ?, last_error = ? WHERE id = ?`)
+    const info = db
+      .prepare(
+        `UPDATE bridge_outbox SET attempts = ?, state = ?, last_error = ?
+         WHERE id = ? AND state IN ('pending', 'sending')`,
+      )
       .run(attempts, parked ? "failed" : "pending", lastError == null ? row.last_error : String(lastError), outboxId);
+    if (info.changes !== 1) return row;
     return getBridgeOutboxById(outboxId);
   });
   return tx();
