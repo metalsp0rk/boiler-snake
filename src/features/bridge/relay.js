@@ -2529,6 +2529,11 @@ function createRelayWorker(deps = {}) {
    */
   async function runRow(row) {
     let publicId = `bridge ${row.bridge_id}`;
+    // #893 (audit r4 F1): flips true the moment this row's DELIVERY is
+    // acked. The catch-all below wraps the post-ack side effects too; once
+    // acked, a throw there is a side-effect failure and must NEVER route
+    // into the reschedule path (a re-execution would re-POST copied traffic).
+    let acked = false;
     try {
       const bridge = repo.getBridgeById(row.bridge_id);
       if (!bridge) {
@@ -2777,6 +2782,7 @@ function createRelayWorker(deps = {}) {
         repo.annotateOutboxError(row.id, sliceSafe(`partial: ${resolveErrors.join("; ")}`, 480));
       }
       const done = repo.markOutboxDone(row.id);
+      acked = done === true;
       if (done && resolveErrors.length === 0) repo.setBridgeLastError(bridge.id, null);
 
       // §10.10: create SUCCESS records the canonical content hash in
@@ -2808,6 +2814,19 @@ function createRelayWorker(deps = {}) {
       if (done) media.deleteSpoolDir(payload.publicId, payload.srcMessageId);
     } catch (err) {
       logWorkerThrow(publicId, row, err);
+      if (acked) {
+        // #893: the message was DELIVERED (markOutboxDone acked it) — this
+        // throw came from a post-ack side effect. Annotate the row with the
+        // side-effect failure; rescheduling would re-POST copied traffic.
+        try {
+          repo.annotateOutboxError(row.id, sliceSafe(`post-ack: ${err?.message || err}`, 480));
+        } catch (innerErr) {
+          console.error(
+            `[bridge] worker: post-ack annotation of outbox ${row.id} failed: ${innerErr?.message || innerErr}`,
+          );
+        }
+        return;
+      }
       try {
         repo.recordOutboxFailure(row.id, String(err?.message || err)); // → pending, rescheduled
       } catch (innerErr) {

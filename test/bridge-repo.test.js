@@ -546,6 +546,36 @@ describe("bridge repo (PR 2)", () => {
       assert.equal(api.markOutboxDone(queued.id), false, "done rows are final");
       assert.deepEqual(api.countOutboxDepth(bridge.id), { a_to_b: 0, b_to_a: 0 });
     });
+
+    it("#893: failure writes are CAS'd — a settled (done/failed) row is never resurrected", () => {
+      const bridge = makeBridge({ endAChannelId: "400000000000000011" });
+      const row = api.enqueueBridgeOutbox(bridge.id, { direction: "a_to_b", srcMessageId: "m-cas-1" });
+
+      // A failure write against a DELIVERED row is a no-op: claim and ack
+      // are CAS'd; the failure primitive honours the same law (audit r4 F1
+      // — a post-ack throw used to flip done → pending and re-relay copies).
+      api.claimNextOutboxRow(bridge.id, "a_to_b");
+      assert.equal(api.markOutboxDone(row.id), true);
+      const afterAck = api.getBridgeOutboxById(row.id);
+      const late = api.recordOutboxFailure(row.id, "SQLITE_BUSY (post-ack write)");
+      assert.equal(late.state, "done", "a done row stays done");
+      assert.equal(late.attempts, afterAck.attempts, "delivered traffic never accrues attempts");
+      assert.equal(late.last_error, afterAck.last_error, "no error is written onto a delivered row");
+
+      // Same law for parked rows: re-failing a failed row never returns it
+      // to the ladder.
+      const row2 = api.enqueueBridgeOutbox(bridge.id, { direction: "a_to_b", srcMessageId: "m-cas-2" });
+      for (let attempt = 1; attempt <= 5; attempt++) api.recordOutboxFailure(row2.id, `boom ${attempt}`);
+      assert.equal(api.getBridgeOutboxById(row2.id).state, "failed");
+      const refail = api.recordOutboxFailure(row2.id, "late boom");
+      assert.equal(refail.state, "failed");
+      assert.equal(refail.attempts, 5, "attempts do not climb past the poison limit");
+
+      // Pending rows still ladder normally — the guard is not a block.
+      const row3 = api.enqueueBridgeOutbox(bridge.id, { direction: "a_to_b", srcMessageId: "m-cas-3" });
+      assert.equal(api.recordOutboxFailure(row3.id, "boom").state, "pending");
+      assert.equal(api.recordOutboxFailure(999999, "nope"), null);
+    });
   });
 
   describe("links, snapshots, state flags", () => {
