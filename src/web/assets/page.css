@@ -1024,11 +1024,17 @@ th {
 /* ---- ticket actions (Phase 3, §8.6) --------------------------------------------
    Inline claim/close controls inside the open-ticket table cells; the close
    form's optional reason field stays compact so rows scan fast. */
-.ticket-action-cells {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: var(--space-2);
+/* The Actions <td> must STAY a real table-cell on desktop. The
+   display:flex this class used to set unconditionally opted the cell out of
+   the table layout, turning the compact-density 34px row height
+   (primitives.css, meant as a MINIMUM) into a hard cap — the 44px buttons and
+   the stacked Reason label+input then painted ~18px over the next row at
+   every ≥720px viewport. Real cells treat that height as a min and grow.
+   Phones are unaffected: the .table-stack phone block overrides this cell to
+   display:grid via higher specificity. The forms flow inline side-by-side;
+   the sibling margin replaces the old flex gap. */
+.ticket-inline-form + .ticket-inline-form {
+  margin-left: var(--space-2);
 }
 .ticket-inline-form {
   display: inline-flex;
@@ -1465,6 +1471,12 @@ p.panel-foot {
     gap: var(--space-2);
     border-bottom: 1px dashed var(--line);
     padding: 0.35rem 0;
+    /* The card is no longer a table-cell, so the base .bs-table height would
+       act as a HARD cap (primitives.css keeps it as `height`) — the Actions
+       cards spilled ~90px into the card below. auto + min-height keeps the
+       44px row rhythm for short cells and lets tall ones grow. */
+    height: auto;
+    min-height: var(--bs-row);
   }
 
   .table-stack > tbody > tr > td::before {
