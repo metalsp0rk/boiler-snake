@@ -123,7 +123,7 @@ function registerDashboardApiRoutes(app, options = {}) {
       // Cache-only display names for the bar labels (same seam the SSR
       // dashboard uses; miss ⇒ the raw id label, never a fetch here).
       const ids = series.leaders.map((l) => l.userId).filter(Boolean);
-      const names = resolveMemberNames(getClient, guildId, ids);
+      const names = resolveMemberNames(getClient, communityId, ids);
       json200(res, {
         api: API_VERSION,
         series: "xp_leaders",

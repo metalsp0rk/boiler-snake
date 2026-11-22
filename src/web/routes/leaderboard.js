@@ -72,9 +72,9 @@ function registerLeaderboardRoutes(app, options = {}) {
   // ---- staff: paginated top-XP leaderboard ---------------------------------
   app.get("/g/:guildId/leaderboard", requireTier("staff"), async (req, res) => {
     const params = rawParams(req.url);
-    const guildId = req.guildAccess.guildId;
-    // Fluxer PR 2: data builders take the integer community id; the member
-    // cache seam (resolveMemberNames) keeps the external snowflake.
+    // #899: the INTEGER community id feeds data builders AND the display
+    // seams — resolveMemberNames routes per platform itself (Fluxer name
+    // cache / Discord member cache by the row's external snowflake).
     const communityId = req.guildAccess.communityId;
     const board = buildLeaderboardPage(communityId, {
       page: params.get("page"),
@@ -82,7 +82,7 @@ function registerLeaderboardRoutes(app, options = {}) {
     });
     const names = resolveMemberNames(
       options.getClient,
-      guildId,
+      communityId,
       board.rows.map((r) => r.user_id)
     );
     const guilds = await shellGuilds(resolver, req);
@@ -104,9 +104,8 @@ function registerLeaderboardRoutes(app, options = {}) {
       respondGenericNotFound(res);
       return;
     }
-    const guildId = req.guildAccess.guildId;
-    // Fluxer PR 2: data builder takes the integer community id; the member
-    // cache seam keeps the external snowflake.
+    // #899: the display seams take the INTEGER community id too (the seam
+    // resolves the external snowflake for the Discord member cache itself).
     const communityId = req.guildAccess.communityId;
 
     const summary = buildUserXpSummary(communityId, userId);
@@ -121,7 +120,7 @@ function registerLeaderboardRoutes(app, options = {}) {
       return;
     }
 
-    const names = resolveMemberNames(options.getClient, guildId, [userId]);
+    const names = resolveMemberNames(options.getClient, communityId, [userId]);
     const document = renderShellPage(req, {
       title: `XP · ${userId}`,
       heading: "User XP",

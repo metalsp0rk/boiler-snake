@@ -358,7 +358,7 @@ function registerXpActionsRoutes(app, options = {}) {
     }
 
     // Slash parity: `if (target.bot)` refusal — refusal only on PROVEN bot.
-    if (isProvenBot(client, guildId, userId)) {
+    if (isProvenBot(client, communityId, userId)) {
       respondGrantRedirect(res, communityId, "error", "bot_target");
       return;
     }

@@ -353,8 +353,7 @@ function registerModerationRoutes(app, options = {}) {
 
   // ---- staff: guild-wide warnings list -------------------------------------
   app.get(WARNINGS_PAGE, requireTier("staff"), async (req, res) => {
-    const guildId = req.guildAccess.guildId; // external snowflake (member-cache seam)
-    const communityId = req.guildAccess.communityId; // data key (PR 2: integer)
+    const communityId = req.guildAccess.communityId; // data + seam key (PR 2 / #899: integer)
     const params = rawParams(req.url);
     const page = buildWarningsPage(communityId, {
       u: params.get("u"),
@@ -364,7 +363,7 @@ function registerModerationRoutes(app, options = {}) {
     });
     const names = resolveMemberNames(
       options.getClient,
-      guildId,
+      communityId,
       collectRowUserIds(page.rows, ["user_id", "issuer_id"])
     );
     const document = renderShellPage(req, {
@@ -388,8 +387,7 @@ function registerModerationRoutes(app, options = {}) {
 
   // ---- staff: guild-wide staff-notes list ----------------------------------
   app.get(NOTES_PAGE, requireTier("staff"), async (req, res) => {
-    const guildId = req.guildAccess.guildId; // external snowflake (member-cache seam)
-    const communityId = req.guildAccess.communityId; // data key (PR 2: integer)
+    const communityId = req.guildAccess.communityId; // data + seam key (PR 2 / #899: integer)
     const params = rawParams(req.url);
     const page = buildNotesPage(communityId, {
       u: params.get("u"),
@@ -399,7 +397,7 @@ function registerModerationRoutes(app, options = {}) {
     });
     const names = resolveMemberNames(
       options.getClient,
-      guildId,
+      communityId,
       collectRowUserIds(page.rows, ["user_id", "author_id"])
     );
     const document = renderShellPage(req, {
@@ -526,8 +524,10 @@ function registerModerationRoutes(app, options = {}) {
     }
 
     // Slash parity: `if (target.bot)` refusal ("Warnings are for human
-    // members, not bots.") — refusal only on PROVEN bot evidence.
-    if (isProvenBot(client, guildId, userId)) {
+    // members, not bots.") — refusal only on PROVEN bot evidence. #899:
+    // the INTEGER cid routes the proof per platform (Fluxer name-cache
+    // bot flag; Discord member/user caches via the row's snowflake).
+    if (isProvenBot(client, communityId, userId)) {
       warnFlash(res, communityId, "error", "bot_target");
       return;
     }
@@ -773,7 +773,7 @@ function registerModerationRoutes(app, options = {}) {
       client = null;
     }
     // Slash parity: "Staff notes are for human members, not bots."
-    if (isProvenBot(client, guildId, rawUser)) {
+    if (isProvenBot(client, communityId, rawUser)) {
       noteFlash(res, communityId, "error", "bot_target");
       return;
     }
