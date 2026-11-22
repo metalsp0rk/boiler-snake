@@ -2030,3 +2030,84 @@ test("breaker E2E: six auto kicks across six cases trip the pause and the trip l
     executor.clearBreakerWindow(cid);
   }
 });
+
+// ── #904 (audit r4 F13): the consume-refused path is a GATE, not a footnote ─
+
+test("#904: cap 1 with two concurrent accepted runs — the race loser FAILS and commits nothing", async () => {
+  const A = await seededCommunity("race-a");
+  settingsService.setDailyBudget(A.cid, 1);
+  // A second referral for a second subject in the SAME community (the
+  // spam-wave shape: two staff refer at once). Built through the repo so
+  // intake dedupe on the same anchor is out of the way.
+  const made = db.createAutomodCase({
+    communityId: A.cid,
+    referrerUserId: REF,
+    messageId: MSG,
+    channelId: SRC_CH,
+    targetUserId: BYS,
+    note: "same wave, second staff report",
+  });
+  assert.equal(made.ok, true, made.error);
+  const caseB = made.case;
+
+  // Run A parks INSIDE the provider call (the whole race window) — on
+  // release it records a warn intent through the REAL dispatcher, the
+  // exact shape the pre-fix loser committed beyond the cap.
+  let releaseA;
+  const chatA = async (_cfg, opts) =>
+    new Promise((resolve) => {
+      releaseA = async () => {
+        await opts.executeTool("warn", { user_id: SUB, reason: "harassment" });
+        resolve({
+          ok: true,
+          content: "decision summary",
+          reason: null,
+          status: null,
+          error: null,
+          finishReason: "stop",
+          rounds: 1,
+          toolCalls: 1,
+        });
+      };
+    });
+  const runA = harness.runAutomodCase({
+    communityId: A.cid,
+    guildId: GUILD,
+    caseId: A.caseRow.id,
+    deps: A.w.deps({ chat: chatA }),
+  });
+  for (let i = 0; i < 8; i += 1) await new Promise((r) => setImmediate(r));
+
+  // Run B starts while A is mid-flight: BOTH passed the pre-gate on the
+  // same `remaining: 1`. B's chat commits a warn through the dispatcher.
+  const chatB = scripted([
+    { tools: [{ name: "warn", args: { user_id: BYS, reason: "harassment" } }] },
+  ]);
+  const runB = await harness.runAutomodCase({
+    communityId: A.cid,
+    guildId: GUILD,
+    caseId: caseB.id,
+    deps: A.w.deps({ chat: chatB }),
+  });
+  assert.equal(runB.state, "complete", runB.error);
+  assert.equal(runB.ok, true);
+
+  // A reaches acceptance now — its consume LOSES the race (exhausted).
+  await releaseA();
+  const resA = await runA;
+  assert.equal(resA.ok, false);
+  assert.equal(resA.state, "failed");
+  assert.match(resA.error, /daily budget refused the run mid-flight/, `cause: ${resA.error}`);
+  assert.match(resA.error, /exhausted \(1\/1 today\)/);
+  assert.match(resA.error, /does NOT re-fire — re-refer/, "no phantom-retry copy (#902 doctrine)");
+
+  // THE PIN: the loser committed NOTHING (pre-fix it committed the full
+  // intent set beyond the cap, logged-only).
+  assert.equal(actionRows(A.cid, A.caseRow.id).length, 0,
+    "#903 shape preserved: the refused run left zero ledger rows");
+  assert.equal(db.getAutomodCaseById(A.caseRow.id).status, "failed");
+  assert.equal(db.getAutomodCaseById(caseB.id).status, "complete");
+  const warns = actionRows(A.cid, caseB.id).filter((r) => r.action === "warn");
+  assert.equal(warns.length, 1, "exactly one sanctioned case across the race");
+  assert.equal(db.getAutomodBudget(A.cid).used, 1, "the counter stayed truthful");
+});
