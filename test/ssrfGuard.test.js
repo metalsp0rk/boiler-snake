@@ -120,6 +120,35 @@ describe("ssrfGuard.isDisallowedAddress", () => {
     }
   });
 
+  it("#905 (F10g): IPv4-mapped in EVERY spelling unrolls through the v4 classifier", () => {
+    // The old recognizers demanded the literal "::ffff:" TEXT; the
+    // uncompressed hextet spellings a raw address string can carry
+    // classified PUBLIC — loopback with a coat on.
+    for (const ip of [
+      "::ffff:7f00:1", // compressed hex (regression anchor)
+      "0:0:0:0:0:ffff:7f00:1", // fully uncompressed
+      "0::ffff:7f00:1", // partially compressed
+      "::ffff:127.0.0.1", // dotted quad (compressed)
+      "0:0:0:0:0:ffff:127.0.0.1", // dotted quad, uncompressed hextets
+      "::ffff:a9fe:a9fe",
+      "0:0:0:0:0:ffff:a9fe:a9fe", // 169.254.169.254 metadata, uncompressed
+      "::ffff:0a00:0001",
+      "0:0:0:0:0:ffff:0a00:0001", // 10.0.0.1
+      "::ffff:1:1", // unrolls to 0.0.1.1 — in the blocked 0.0.0.0/8 arm
+    ]) {
+      assert.equal(guard.isDisallowedAddress(ip), true, `must refuse ${ip}`);
+    }
+    // The unroll CLASSIFIES: a mapped PUBLIC quad stays public (and the
+    // hextet math is exact — the leading zeros matter nowhere).
+    for (const ip of [
+      "::ffff:8.8.8.8",
+      "0:0:0:0:0:ffff:808:808", // ::ffff:8.8.8.8 uncompressed
+      "0::ffff:0101:0101", // ::ffff:1.1.1.1
+    ]) {
+      assert.equal(guard.isDisallowedAddress(ip), false, `must allow ${ip}`);
+    }
+  });
+
   it("refuses empty and unparseable addresses", () => {
     assert.equal(guard.isDisallowedAddress(""), true);
     assert.equal(guard.isDisallowedAddress("  "), true);
