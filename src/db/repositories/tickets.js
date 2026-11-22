@@ -823,15 +823,27 @@ function claimTicketArchive(ticketId, at = now()) {
  * content got lost. Crash semantics stay sticky on purpose (#197): only the
  * explicit pre-destructive abort path calls this. `archived` untouched.
  *
+ * #897 (audit r4 F5): the claim is deliberately STEALABLE after the lease
+ * matures, so the release is STAMP-SCOPED — an aborting caller may clear
+ * only the stamp IT wrote, never a newer holder's live claim (a long
+ * archive run exceeding the 30-min lease used to unset the thief's claim
+ * and admit a third, concurrent archive). Same law as
+ * releaseTicketCreateSlot ("release only ever removes the caller's own
+ * stamp").
+ *
  * @param {number} ticketId
- * @returns {boolean} true when a claim was released
+ * @param {number} stamp the `archive_claimed_at` value THIS caller's claim
+ *   wrote (from the claim's live row)
+ * @returns {boolean} true only when the CALLER'S OWN stamp was removed
  */
-function releaseTicketArchiveClaim(ticketId) {
+function releaseTicketArchiveClaim(ticketId, stamp) {
+  const ts = Number(stamp);
+  if (!Number.isFinite(ts)) return false;
   const info = db
     .prepare(
-      "UPDATE tickets SET archive_claimed_at=NULL WHERE id=? AND archived=0"
+      "UPDATE tickets SET archive_claimed_at=NULL WHERE id=? AND archived=0 AND archive_claimed_at=?"
     )
-    .run(ticketId);
+    .run(ticketId, ts);
   return info.changes === 1;
 }
 

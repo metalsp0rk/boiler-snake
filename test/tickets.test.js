@@ -442,6 +442,43 @@ describe("tickets repository", () => {
     assert.equal(db.claimTicketArchive(t.id, t0 + 2 * LEASE).won, true);
   });
 
+  it("#897: the archive release is stamp-scoped — never another holder's lease", () => {
+    const t = db.createTicket({
+      communityId: communityKey("g-release-owner"),
+      creatorUserId: "u",
+      channelId: "ch-release-owner",
+    });
+    db.markTicketClosed(t.id, { closedBy: "mod", closeReason: "done" });
+
+    const t0 = 1_900_000_000_000;
+    const won = db.claimTicketArchive(t.id, t0);
+    assert.equal(won.won, true);
+    assert.equal(won.ticket.archive_claimed_at, t0, "the claim returns the stamp the caller must thread");
+    assert.equal(db.releaseTicketArchiveClaim(t.id, "junk"), false, "a non-numeric stamp releases nothing");
+    assert.equal(db.releaseTicketArchiveClaim(t.id, t0 + 1), false, "a wrong stamp releases nothing");
+    assert.equal(
+      db.getTicketById(t.id).archive_claimed_at,
+      t0,
+      "a stranger's release must not clear the live holder",
+    );
+
+    // THE repro: A's lease matures, B steals, A aborts late. Pre-fix the
+    // un-stamped release cleared B's claim and admitted a third, concurrent
+    // archive (double transcript/summary/DM).
+    const L = db.ARCHIVE_CLAIM_LEASE_MS;
+    assert.equal(db.claimTicketArchive(t.id, t0 + L).won, true, "B steals the dead lease");
+    assert.equal(db.releaseTicketArchiveClaim(t.id, t0), false, "A's late release matches nothing");
+    assert.equal(
+      db.getTicketById(t.id).archive_claimed_at,
+      t0 + L,
+      "B keeps its LIVE claim across A's late abort",
+    );
+
+    // B releases its own stamp normally.
+    assert.equal(db.releaseTicketArchiveClaim(t.id, t0 + L), true);
+    assert.equal(db.getTicketById(t.id).archive_claimed_at, null, "own-stamp release works");
+  });
+
   it("claimTicketArchive stays sticky after a transcriptless archive", () => {
     // closeTicketArchived with no transcript leaves archived=0 (pinned
     // behavior) — WITHOUT the claim such a ticket could be archived twice.
