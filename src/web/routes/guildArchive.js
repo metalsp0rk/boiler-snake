@@ -50,7 +50,6 @@ function registerGuildArchiveRoutes(app, options = {}) {
     try {
       // Fluxer PR 2: repo reads + view link props use the integer community
       // id; the member-cache seam keeps the external snowflake.
-      const guildId = req.guildAccess.guildId;
       const communityId = req.guildAccess.communityId;
       const url = new URL(req.url || "/", "http://localhost");
       const q = String(url.searchParams.get("q") || "").trim().slice(0, 100);
@@ -76,7 +75,7 @@ function registerGuildArchiveRoutes(app, options = {}) {
           if (id) ids.push(String(id));
         }
       }
-      const names = resolveMemberNames(options.getClient, guildId, ids);
+      const names = resolveMemberNames(options.getClient, communityId, ids);
 
       // Switcher: same cached staffed list the shell uses; the viewed guild
       // ALWAYS renders (shell doctrine), even when the read degraded.

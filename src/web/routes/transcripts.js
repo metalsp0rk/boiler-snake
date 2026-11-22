@@ -289,8 +289,11 @@ async function serveParticipantArchive(req, res, url, ctx) {
     for (const [cid, set] of idsByCommunity) {
       if (set.size === 0) continue;
       const ext = externalGuildOf(cid);
-      if (!ext) continue; // no discord row → raw ids render (degrade honest)
-      namesByGuild.set(cid, resolveMemberNames(ctx.getClient, ext, [...set]));
+      if (!ext) continue; // no communities row → raw ids render (degrade honest)
+      // #899: pass the INTEGER cid — the seam resolves the external id for
+      // the Discord member cache itself AND routes Fluxer rows to the
+      // Fluxer display-name cache (ext alone could never do that).
+      namesByGuild.set(cid, resolveMemberNames(ctx.getClient, cid, [...set]));
     }
   }
 
@@ -395,8 +398,8 @@ async function serveArchiveIndex(req, res, url, ctx) {
     for (const [cid, set] of idsByCommunity) {
       if (set.size === 0) continue;
       const ext = externalGuildOf(cid);
-      if (!ext) continue; // no discord row → raw ids render (degrade honest)
-      namesByGuild.set(cid, resolveMemberNames(ctx.getClient, ext, [...set]));
+      if (!ext) continue; // no communities row → raw ids render (degrade honest)
+      namesByGuild.set(cid, resolveMemberNames(ctx.getClient, cid, [...set])); // #899: cid routes per platform
     }
   }
 
@@ -522,9 +525,10 @@ async function serveTranscriptView(req, res, tokenRaw, ctx) {
   }
   const staff = decision.via === "staff";
   const tier = staff ? decision.tier || null : null;
-  // Fluxer PR 2: the row carries the INTEGER community id; the member-cache
-  // seam and switcher entries are Discord-facing, so resolve the row's
-  // EXTERNAL guild id through the communities registry (null-safe).
+  // Fluxer PR 2: the row carries the INTEGER community id. #899: the display
+  // seam takes the cid itself (it maps the external id for the Discord cache
+  // AND routes Fluxer rows to the Fluxer name cache); the switcher entries
+  // below stay Discord-facing, resolved through the registry (null-safe).
   const communityId = ticket.community_id ?? null;
   const guildId = externalGuildOf(communityId) ?? "";
 
@@ -569,7 +573,7 @@ async function serveTranscriptView(req, res, tokenRaw, ctx) {
     staff,
     tier,
     signedIn: signedInOnce,
-    names: resolveMemberNames(ctx.getClient, guildId, nameIds),
+    names: resolveMemberNames(ctx.getClient, communityId, nameIds),
     guilds,
     degraded,
   });

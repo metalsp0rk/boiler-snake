@@ -120,7 +120,11 @@ hover-text/label), and a quiet background fetcher resolves those misses right
 after; reloading the page usually fills the names in. A member who **left the
 guild** keeps their raw id permanently — that's honest, not a bug. Those ids
 are set in JetBrains Mono, including a short id that renders as code. Inline
-code on these pages uses that same face.
+code on these pages uses that same face. On a **Fluxer** community the same
+doctrine runs on the platform's own display-name cache instead of the Discord
+member cache (the first render shows ids, the background warm fills the next
+one; bot-target checks read the Fluxer bot flag there) — the two platforms
+never read each other's caches.
 
 ## Type-ahead & friendly identifiers
 

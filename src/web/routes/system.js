@@ -347,8 +347,7 @@ function registerSystemRoutes(app, options = {}) {
 
   // ---- admin: admin_audit viewer (§8.6 System row, Phase 1 read-only) ------
   app.get("/g/:guildId/audit", requireTier("admin"), async (req, res) => {
-    const guildId = req.guildAccess.guildId; // external snowflake (member-cache seam)
-    const communityId = req.guildAccess.communityId; // data key (PR 2: integer)
+    const communityId = req.guildAccess.communityId; // data + seam key (PR 2 / #899: integer)
     const params = rawParams(req.url);
     const page = buildAuditPage(communityId, {
       origin: params.get("origin"),
@@ -361,7 +360,7 @@ function registerSystemRoutes(app, options = {}) {
     const actorIds = [...new Set(
       page.rows.map((row) => row.actor_user_id).filter(Boolean).map(String)
     )].slice(0, 200);
-    const names = resolveMemberNames(options.getClient ?? null, guildId, actorIds);
+    const names = resolveMemberNames(options.getClient ?? null, communityId, actorIds);
     const document = renderShellPage(req, {
       title: "Audit log",
       heading: "Audit log",
@@ -457,15 +456,14 @@ function registerSystemRoutes(app, options = {}) {
 
   // ---- global-operator: live-session list (System area, #405) --------------
   app.get("/g/:guildId/system/sessions", requireTier("admin"), requireGlobalSessionsAdmin, async (req, res) => {
-    const guildId = req.guildAccess.guildId; // external snowflake (member-cache seam)
-    const communityId = req.guildAccess.communityId; // view link id (PR 2: integer)
+    const communityId = req.guildAccess.communityId; // view link + seam key (PR 2 / #899: integer)
     const sessions = sessionPolicy.listLiveSessions();
     // §8.15-15.11 names from the member cache ONLY (misses show ids; the
     // sessions are global so many owners are legitimately unknown here).
     const userIds = [...new Set(sessions.map((s) => s.userId))]
       .filter((id) => /^[0-9]{5,20}$/.test(String(id)))
       .slice(0, 200);
-    const names = resolveMemberNames(options.getClient ?? null, guildId, userIds);
+    const names = resolveMemberNames(options.getClient ?? null, communityId, userIds);
     const document = renderShellPage(req, {
       title: "Web sessions",
       heading: "Web sessions",

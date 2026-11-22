@@ -206,7 +206,7 @@ function registerDashboardRoutes(app, options = {}) {
         "Live guild overview — open tickets, activity, background jobs, now-playing.",
       content: renderDashboardContent(data, {
         guildId: communityId,
-        names: resolveMemberNames(options.getClient, guildId, nameIds),
+        names: resolveMemberNames(options.getClient, communityId, nameIds),
       }),
       guilds,
     });

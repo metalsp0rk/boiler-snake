@@ -129,14 +129,14 @@ function registerUsersRoutes(app, options = {}) {
     // Fluxer PR 2: data-layer reads key by the integer community id.
     const search = searchGuildUsers(req.guildAccess.communityId, q, { nameMatchIds });
     // #647: label the rows with cached display names — ONE batched,
-    // cache-only read of the ids this page already has (zero SQL: the
-    // Discord seam takes the EXTERNAL snowflake, never the integer
-    // communityId, so communityRowSafe never runs; a miss renders the raw
-    // id and warms off-path, exactly like routes/moderation.js).
+    // cache-only read of the ids this page already has (zero SQL). #899:
+    // the seam takes the INTEGER community id and routes per platform
+    // itself (Fluxer display cache / Discord member cache via the row's
+    // external snowflake); a miss renders the raw id and warms off-path,
+    // exactly like routes/moderation.js.
     const names = resolveMemberNames(
       options.getClient,
-      // Discord seam: member cache keys by the EXTERNAL snowflake.
-      req.guildAccess.guildId,
+      req.guildAccess.communityId,
       search.results.map((r) => r.user_id)
     );
     // Which truth the empty copy tells (views/users renderUserSearchPage).
@@ -197,10 +197,10 @@ function registerUsersRoutes(app, options = {}) {
 
     // #647: label the identity card + warning issuer + note author cells
     // with cached names — ONE batched cache-only read of the ids already
-    // on this page (deduped, empty-safe). The seam takes the EXTERNAL
-    // snowflake (guildId above), so communityRowSafe never runs and the
-    // 19/19 profile statement floor stays byte-identical; a miss renders
-    // the raw id.
+    // on this page (deduped, empty-safe). #899: the seam takes the INTEGER
+    // community id and routes per platform itself — the one extra
+    // communities-row read per call is the routing cost (ratchet raised).
+    // A miss renders the raw id.
     const nameIds = [
       ...new Set([
         profile.userId,
@@ -208,7 +208,7 @@ function registerUsersRoutes(app, options = {}) {
         ...profile.notes.rows.map((n) => n.author_id),
       ]),
     ].filter((id) => typeof id === "string" && /^[0-9]{5,20}$/.test(id));
-    const names = resolveMemberNames(options.getClient, guildId, nameIds);
+    const names = resolveMemberNames(options.getClient, communityId, nameIds);
 
     const document = renderShellPage(req, {
       title: `User ${userId}`,
@@ -241,8 +241,10 @@ function registerUsersRoutes(app, options = {}) {
       const member = guild?.members?.cache?.get?.(userId) ?? null;
 
       // Cache miss ⇒ background warm-up (self-healing cards, zero API on
-      // this path). resolveMemberNames enqueues exactly this id.
-      resolveMemberNames(options.getClient ?? null, guildId, [userId]);
+      // this path). resolveMemberNames enqueues exactly this id. #899: the
+      // seam gets the INTEGER cid so it routes per platform itself (the
+      // direct guild/member cache reads above stay Discord-keyed).
+      resolveMemberNames(options.getClient ?? null, req.guildAccess.communityId, [userId]);
 
       const user = member?.user ?? null;
       let avatar = null;

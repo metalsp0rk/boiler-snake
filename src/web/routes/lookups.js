@@ -91,7 +91,8 @@ function registerLookupRoutes(app, options = {}) {
       // background member-fetch queue on a cache miss.
       const exact = normalizeUserId(q);
       if (exact) {
-        const name = resolveMemberNames(getClient, guildId, [exact]).get(exact) ?? null;
+        const name =
+          resolveMemberNames(getClient, req.guildAccess.communityId, [exact]).get(exact) ?? null;
         return json200(res, {
           users: [{ id: exact, name }],
           exact: true,

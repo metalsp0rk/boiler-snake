@@ -345,9 +345,8 @@ function registerTicketActionsRoutes(app, options = {}) {
   // surfaces (/t index + transcripts, staff-or-participant §8.4) are
   // untouched by this module.
   app.get(ACTIONS_PAGE, requireTier("senior"), async (req, res) => {
-    const guildId = req.guildAccess.guildId;
-    // Fluxer PR 2: data reads + view link prop use the integer community id;
-    // the member-cache seam keeps the external snowflake.
+    // #899: data reads, view link prop and the display seam all take the
+    // integer community id (the seam routes per platform itself).
     const communityId = req.guildAccess.communityId;
     const tickets = facade.listOpenTickets(communityId, { limit: OPEN_LIST_LIMIT });
     // UX v1.1 (§8.15): display names for creator + current claimant.
@@ -358,7 +357,7 @@ function registerTicketActionsRoutes(app, options = {}) {
           .filter((v) => typeof v === "string" && /^[0-9]{5,20}$/.test(v))
       ),
     ];
-    const names = resolveMemberNames(options.getClient, guildId, nameIds);
+    const names = resolveMemberNames(options.getClient, communityId, nameIds);
     const document = renderShellPage(req, {
       title: "Ticket actions",
       heading: "Ticket actions",
