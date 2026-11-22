@@ -81,6 +81,7 @@ const {
   isAutomodPaused,
   revealAutomodCaseReporter,
   resolveAutomodCase,
+  settleOrphanedSuggestionsUnderResolvedCases, // #903 live mid-loop abort cleanup
   MAX_NOTE_CONTENT,
 } = require("../../db");
 const {
@@ -1876,6 +1877,13 @@ async function resolveCaseCore(interaction, ctx, resolution, prefix, verbLabel) 
     (r) => r.state === "suggested" && r.action !== "no_action",
   );
 
+  // #903 (audit r4 F12): a mid-loop THROW (throwing pre-gate / action read)
+  // used to escape to the router wrap — case resolved, rows 2..N silently
+  // `suggested`, and NONE of the durable records (queue entry, audit, card)
+  // ever ran. The arms now run guarded: cleanup + the honest records always
+  // ship, and a restart (the other abort shape) is covered by the boot
+  // sweep's matching settle.
+  try {
   if (resolution === "recommended") {
     if (pending.length === 0 && !lines.length) {
       lines.push("Nothing was pending — the case is closed without running anything.");
@@ -1983,6 +1991,32 @@ async function resolveCaseCore(interaction, ctx, resolution, prefix, verbLabel) 
       if (!recorded.ok) {
         noteWarnings.push(`**Staff note N-${note.note_number}:** ${recorded.error}`);
       }
+    }
+  }
+
+  } catch (err) {
+    console.error(
+      `[automod] case ${caseRef} resolve execution aborted ${idTag(ids)} (${resolution}):`,
+      err?.message || err,
+    );
+    lines.push(
+      `**Interrupted:** the resolution stopped early (${sliceSafe(String(err?.message ?? err), 200)}) — anything not listed here was NOT run.`,
+    );
+    try {
+      const settled = settleOrphanedSuggestionsUnderResolvedCases({ caseId: fresh.id });
+      if (settled.changed > 0) {
+        lines.push(
+          `**Cleanup:** ${settled.changed} never-executed suggestion(s) settled as refused.`,
+        );
+      }
+    } catch (settleErr) {
+      console.error(
+        `[automod] case ${caseRef} interrupt cleanup failed ${idTag(ids)}:`,
+        settleErr?.message || settleErr,
+      );
+      lines.push(
+        "**Cleanup:** the never-executed suggestions could not be settled — the boot sweep will finish it.",
+      );
     }
   }
 

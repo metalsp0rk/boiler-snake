@@ -479,6 +479,68 @@ function settleInterruptedAutomodActions({ nowMs } = {}) {
   return { changed: info.changes };
 }
 
+/**
+ * #903 (audit r4 F12): `suggested` rows left under a RESOLVED case.
+ *
+ * The case-level "resolve as recommended" flow claims the case FIRST and
+ * executes the suggestion loop after — a restart (or a throwing pre-gate)
+ * mid-loop used to strand rows 2..N `suggested` forever: the boot sweep
+ * only takes `processing` cases, #823's settle only fixes `approved`
+ * orphans, and a resolved case's card buttons are disabled, so the intent
+ * could never complete AND no durable record of the drop-off existed.
+ *
+ * This settle closes the loop: every still-`suggested`, executable row
+ * (`action <> 'no_action'` — that one is a consideration marker, never
+ * run by the recommended arm by design) under a case whose `resolved_at`
+ * is set becomes `refused` with a cause that names BOTH honest reasons
+ * (gated-skipped or interrupted — the row cannot tell them apart, so the
+ * text does not claim one). `caseId` scopes it to one case for the live
+ * mid-loop cleanup; default scope is the whole DB (boot).
+ *
+ * Returns the affected cases (with the resolving staff id) so the boot
+ * sweep can append the per-case `_queue_resolution` entry the interrupted
+ * live path never wrote.
+ *
+ * @param {{ nowMs?: number, caseId?: number|null }} [opts]
+ * @returns {{ changed: number, cases: Array<{ caseId: number, staffUserId: string|null, pending: number }> }}
+ */
+function settleOrphanedSuggestionsUnderResolvedCases({ nowMs, caseId = null } = {}) {
+  const at = Number.isFinite(Number(nowMs)) ? Number(nowMs) : now();
+  const cause =
+    "Case was resolved while this suggestion was pending (gated or interrupted) — never executed; re-apply manually if it is still wanted.";
+  const scoped = caseId != null;
+  const id = Number(caseId);
+  if (scoped && (!Number.isInteger(id) || id < 1)) return { changed: 0, cases: [] };
+
+  const where = `a.state='suggested' AND a.action <> 'no_action' AND c.resolved_at IS NOT NULL${
+    scoped ? " AND a.case_id=?" : ""
+  }`;
+  const params = scoped ? [id] : [];
+
+  const affected = db
+    .prepare(
+      `SELECT a.case_id AS caseId, c.resolved_by_user_id AS staffUserId, COUNT(*) AS pending
+         FROM automod_case_actions a
+         JOIN automod_cases c ON c.id = a.case_id
+        WHERE ${where}
+        GROUP BY a.case_id, c.resolved_by_user_id`,
+    )
+    .all(...params);
+  if (affected.length === 0) return { changed: 0, cases: [] };
+
+  const info = db
+    .prepare(
+      `UPDATE automod_case_actions
+         SET state='refused', error_text=?, updated_at=?
+       WHERE rowid IN (
+         SELECT a.rowid FROM automod_case_actions a
+           JOIN automod_cases c ON c.id = a.case_id
+          WHERE ${where})`,
+    )
+    .run(cause, at, ...params);
+  return { changed: info.changes, cases: affected };
+}
+
 // ── Reads ──────────────────────────────────────────────────────────────────
 
 /**
@@ -593,6 +655,7 @@ module.exports = {
   dismissAutomodSuggestion,
   recordAutomodActionResult,
   settleInterruptedAutomodActions,
+  settleOrphanedSuggestionsUnderResolvedCases,
   getAutomodAction,
   getAutomodActionBySlot,
   listAutomodActionsForCase,

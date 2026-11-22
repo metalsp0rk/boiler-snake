@@ -127,6 +127,7 @@ const {
   createStaffNote,
   listAutomodActionsForCase,
   settleInterruptedAutomodActions: facadeSettleInterruptedActions,
+  settleOrphanedSuggestionsUnderResolvedCases: facadeSettleOrphanedSuggestions,
   MAX_NOTE_CONTENT,
 } = require("../../db");
 const { getAiConfig, chatWithTools } = require("../../core/ai");
@@ -1490,7 +1491,7 @@ function sweepInterruptedRuns({
   postToChannel = null,
   buildCard = null,
 } = {}) {
-  const out = { checked: 0, flipped: 0, actionsSettled: 0, posts: [] };
+  const out = { checked: 0, flipped: 0, actionsSettled: 0, suggestionsSettled: 0, posts: [] };
   const handle = dbHandle ?? facadeDb;
   try {
     const rows = handle
@@ -1622,6 +1623,49 @@ function sweepInterruptedRuns({
     } catch (err) {
       console.error(
         "[automod] boot sweep: settling interrupted case-action claims failed:",
+        err?.message || err,
+      );
+    }
+
+    // #903 (audit r4 F12): the wedge one layer UP. A case resolved as
+    // `recommended` whose execute loop died mid-flight (restart — or a
+    // throwing pre-gate, which the live path cleans in-place) left rows
+    // `suggested` under a RESOLVED case: the processing sweep misses them,
+    // #823 only settles `approved`, and the resolved card's buttons are
+    // disabled — the intent was silently dead AND unrecorded. Settle the
+    // orphans and write the per-case `_queue_resolution` entry the
+    // interrupted loop never got to, so the ledger AND the decision log
+    // both carry the drop-off.
+    try {
+      const settleOrphans =
+        handle === facadeDb
+          ? facadeSettleOrphanedSuggestions
+          : typeof handle.settleOrphanedSuggestionsUnderResolvedCases === "function"
+            ? () => handle.settleOrphanedSuggestionsUnderResolvedCases()
+            : null;
+      if (settleOrphans) {
+        const orphaned = settleOrphans();
+        out.suggestionsSettled = Number(orphaned?.changed ?? 0);
+        for (const entry of orphaned?.cases ?? []) {
+          card.appendQueueResolutionEntry(entry.caseId, {
+            resolution: "recommended (interrupted)",
+            staffUserId: entry.staffUserId ?? "boot-sweep",
+            summary: `Resolution was interrupted mid-loop (restart) — ${entry.pending} suggested action(s) settled as never-executed; re-apply manually if still wanted.`,
+          }, { db: handle });
+        }
+        if (out.suggestionsSettled > 0) {
+          console.log(
+            `[automod] boot sweep: ${out.suggestionsSettled} suggested row(s) under resolved case(s) settled as never-executed (#903).`,
+          );
+        }
+      } else {
+        console.warn(
+          "[automod] boot sweep: the db handle has no settleOrphanedSuggestionsUnderResolvedCases — #903 suggestion settle SKIPPED (stale suggested rows may linger under resolved cases)",
+        );
+      }
+    } catch (err) {
+      console.error(
+        "[automod] boot sweep: settling orphaned suggestions under resolved cases failed:",
         err?.message || err,
       );
     }

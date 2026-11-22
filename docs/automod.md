@@ -565,7 +565,13 @@ suggestions**, the sweep also **rebuilds and posts the case card** from
 the ledger (#834): those rows stay approvable, so staff get the live
 approve/dismiss UI instead of an orphaned paper trail; if the rebuild
 itself fails, the notice names the cause and tells staff to handle the
-case manually — never a silently missing card.
+case manually — never a silently missing card. Since #903 the sweep also
+settles **`suggested` rows stranded under an already-RESOLVED case** (the
+`recommended` loop died mid-flight): each such executable row becomes
+`refused` — "case was resolved while this suggestion was pending… never
+executed" — and the case's `decision_log` gains the `_queue_resolution`
+entry the interrupted loop never wrote, so the drop-off is durable, not a
+silent gap.
 
 **Fluxer: explicit no-parity** (epic decision 8). The harness is Discord-only.
 
@@ -742,6 +748,14 @@ and mutates NOTHING. The claim stamps `resolved_at` / `resolution` /
 disables EVERY button. Row-level Approve/Dismiss on a resolved case answer
 `**Case resolved:** … per-row Approve/Dismiss are retired. Nothing was run.`
 (the belt for an old card whose rebuild failed).
+
+**Mid-loop abort honesty (#903).** If the recommended loop itself dies
+(a throwing dependency — or a restart), the case no longer ends up resolved
+with silently-frozen suggestions and no records: remaining never-executed
+suggestions are settled as `refused` on the spot (a restart leaves them to
+the boot sweep), the reply names the cause with an `**Interrupted:**` line,
+and the durable records — decision-log entry, audit row, card rebuild —
+always ship. What is listed as run was run; everything else says it was not.
 
 **Queue channel.** `/set-moderation-queue set|clear` (admin) is a thin alias
 over the SAME automod-channel setting `/automodconfig channel` writes — see
