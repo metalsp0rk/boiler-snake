@@ -538,7 +538,13 @@ describe("bridge repo (PR 2)", () => {
       const queued = api.enqueueBridgeOutbox(bridge.id, { direction: "b_to_a", srcMessageId: "m-y" });
       api.claimNextOutboxRow(bridge.id, "b_to_a");
       assert.deepEqual(api.countOutboxDepth(bridge.id), { a_to_b: 0, b_to_a: 1 }, "parked rows do not count as depth");
-      assert.equal(api.requeueStaleOutbox(), 1, "sending rows return to pending on restart");
+      assert.equal(
+        // #905 (F10f-a): boot recovery names its crash law explicitly —
+        // the primitive's DEFAULT is now an age floor protecting live sends.
+        api.requeueStaleOutbox({ olderThanMs: 0 }),
+        1,
+        "sending rows return to pending on restart",
+      );
       assert.equal(api.getBridgeOutboxById(queued.id).state, "pending");
 
       assert.equal(api.markOutboxDone(queued.id), true);
@@ -1087,5 +1093,43 @@ describe("bridge repo (PR 2)", () => {
       assert.equal(echoes[0].instance_key, "fluxer.example:8443");
     });
   });
+  });
+
+  describe("#905 (F10f-a): the requeue age floor", () => {
+    it("protects fresh sends; boot law (olderThanMs 0) and NULL-stamp legacy rows heal", () => {
+      const bridge = makeBridge({ endAChannelId: "400000000000000071" });
+      api.enqueueBridgeOutbox(bridge.id, { direction: "a_to_b", srcMessageId: "stale-1", enqueuedAt: T0 });
+      const claimed = api.claimNextOutboxRow(bridge.id, "a_to_b");
+      assert.ok(claimed && claimed.state === "sending");
+      assert.ok(Number.isInteger(claimed.sending_at), "claim stamps the send start");
+      const stateOf = (id) => api.getBridgeOutboxById(id).state;
+
+      // Default floor with the real clock: this row was claimed milliseconds
+      // ago -> PROTECTED (a future live sweeper must never touch an
+      // in-flight send). Row-scoped: other tests' legacy NULL-stamp rows
+      // may lawfully sweep alongside.
+      api.requeueStaleOutbox();
+      assert.equal(stateOf(claimed.id), "sending", "fresh send survives the floored requeue");
+
+      // Legacy NULL stamp (a claim from a pre-migration build): no live
+      // sender can own it — stale by definition.
+      api.db.prepare(`UPDATE bridge_outbox SET sending_at = NULL WHERE id = ?`).run(claimed.id);
+      api.requeueStaleOutbox();
+      assert.equal(stateOf(claimed.id), "pending", "NULL-stamp rows have no live owner");
+
+      // Re-claim, then the boot crash law: age does not matter there.
+      const again = api.claimNextOutboxRow(bridge.id, "a_to_b");
+      assert.ok(again && again.id === claimed.id);
+      api.requeueStaleOutbox({ olderThanMs: 0 });
+      assert.equal(stateOf(claimed.id), "pending", "boot heals regardless of age");
+
+      // Aged past the floor through the default path: genuinely dead.
+      const third = api.claimNextOutboxRow(bridge.id, "a_to_b");
+      api.db.prepare(`UPDATE bridge_outbox SET sending_at = ? WHERE id = ?`)
+        .run(Date.now() - 11 * 60_000, third.id);
+      api.requeueStaleOutbox();
+      assert.equal(stateOf(third.id), "pending", "past the floor the row is dead");
+      assert.equal(api.getBridgeOutboxById(third.id).sending_at, null, "the heal clears the stamp");
+    });
   });
 });

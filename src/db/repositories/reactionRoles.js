@@ -63,28 +63,36 @@ function updateReactionRolePanelText(communityId, messageId, title, description)
 
 function deleteReactionRolePanel(communityId, messageId) {
   assertCommunityId(communityId);
-  const existing = getReactionRolePanel(communityId, messageId);
-  if (!existing) {
-    return { removed: false, channel_id: null };
-  }
-  db.prepare(`
-  DELETE FROM reaction_role_options
-  WHERE community_id=? AND message_id=?
-  `).run(communityId, messageId);
-  // #433: dead options cannot hold claims — prune before the refcount can
-  // ever see them (the join already guards, this keeps the table honest).
-  db.prepare(`
-  DELETE FROM reaction_role_claims
-  WHERE community_id=? AND message_id=?
-  `).run(communityId, messageId);
-  const result = db.prepare(`
-  DELETE FROM reaction_role_panels
-  WHERE community_id=? AND message_id=?
-  `).run(communityId, messageId);
-  return {
-    removed: result.changes > 0,
-    channel_id: existing.channel_id,
-  };
+  // #905 item 6 (audit r4 F10f-c): ONE transaction — three dependent
+  // deletes that leave orphans mid-crash (options gone but the panel and
+  // its claims alive: the panel renders dead emoji rows; claims gone but
+  // options alive: the refcount under-reports). The codebase law for
+  // dependent deletes is one db.transaction() (levelRoles/events/tickets).
+  const run = db.transaction(() => {
+    const existing = getReactionRolePanel(communityId, messageId);
+    if (!existing) {
+      return { removed: false, channel_id: null };
+    }
+    db.prepare(`
+    DELETE FROM reaction_role_options
+    WHERE community_id=? AND message_id=?
+    `).run(communityId, messageId);
+    // #433: dead options cannot hold claims — prune before the refcount can
+    // ever see them (the join already guards, this keeps the table honest).
+    db.prepare(`
+    DELETE FROM reaction_role_claims
+    WHERE community_id=? AND message_id=?
+    `).run(communityId, messageId);
+    const result = db.prepare(`
+    DELETE FROM reaction_role_panels
+    WHERE community_id=? AND message_id=?
+    `).run(communityId, messageId);
+    return {
+      removed: result.changes > 0,
+      channel_id: existing.channel_id,
+    };
+  });
+  return run();
 }
 
 function isReactionRolePanel(communityId, messageId) {
@@ -134,16 +142,21 @@ function upsertReactionRoleOption(
 
 function deleteReactionRoleOption(communityId, messageId, emojiKey) {
   assertCommunityId(communityId);
-  const result = db.prepare(`
-  DELETE FROM reaction_role_options
-  WHERE community_id=? AND message_id=? AND emoji_key=?
-  `).run(communityId, messageId, emojiKey);
-  // #433: prune the option's claims (see panel delete).
-  db.prepare(`
-  DELETE FROM reaction_role_claims
-  WHERE community_id=? AND message_id=? AND emoji_key=?
-  `).run(communityId, messageId, emojiKey);
-  return result.changes > 0;
+  // #905 item 6 (F10f-c): option + its claims die together (same law as
+  // the panel delete above — one transaction for dependent deletes).
+  const run = db.transaction(() => {
+    const result = db.prepare(`
+    DELETE FROM reaction_role_options
+    WHERE community_id=? AND message_id=? AND emoji_key=?
+    `).run(communityId, messageId, emojiKey);
+    // #433: prune the option's claims (see panel delete).
+    db.prepare(`
+    DELETE FROM reaction_role_claims
+    WHERE community_id=? AND message_id=? AND emoji_key=?
+    `).run(communityId, messageId, emojiKey);
+    return result.changes > 0;
+  });
+  return run();
 }
 
 function listReactionRoleOptions(communityId, messageId) {

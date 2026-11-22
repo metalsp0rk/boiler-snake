@@ -90,6 +90,8 @@ const migrations = [
   require("./migrations/080_bridge_payload_seq"),
   // #822: sweep indexes for the moderation-PII erasure family
   require("./migrations/081_retention_moderation_pii"),
+  // #905 (F10f-a): send-start stamp for the bridge outbox (requeue floor)
+  require("./migrations/082_bridge_sending_at"),
 ];
 
 const helpers = {

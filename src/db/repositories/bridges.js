@@ -934,9 +934,14 @@ function claimNextOutboxRow(bridgeId, direction) {
       `)
       .get(bridgeId, direction);
     if (!row) return null;
+    // #905 item 6 (F10f-a): stamp the send start — the ONLY honest witness
+    // of how long a row has been 'sending' (enqueued_at measures queue age,
+    // not send age). The requeue age floor reads this.
     const result = db
-      .prepare(`UPDATE bridge_outbox SET state = 'sending' WHERE id = ? AND state = 'pending'`)
-      .run(row.id);
+      .prepare(
+        `UPDATE bridge_outbox SET state = 'sending', sending_at = ? WHERE id = ? AND state = 'pending'`,
+      )
+      .run(Date.now(), row.id);
     if (result.changes !== 1) return null; // lost the claim race
     return getBridgeOutboxById(row.id);
   });
@@ -990,14 +995,41 @@ function recordOutboxFailure(outboxId, lastError = null, { maxAttempts = BRIDGE_
   return tx();
 }
 
+// Age floor for requeueStaleOutbox's default: any sane live send finishes
+// well inside this (the relay's own timeouts are far shorter); a row older
+// than the floor while still 'sending' is being requeued by default anyway.
+const OUTBOX_SENDING_STALE_MS = 10 * 60_000;
+
 /**
  * Restart recovery: rows abandoned mid-send go back to 'pending' and replay
  * from spool (spec §10.10 "Restart").
+ *
+ * #905 item 6 (audit r4 F10f-a): an age floor, anchored at the claim-time
+ * `sending_at` stamp — the only honest send-age witness. A `sending` row
+ * younger than the floor is a row some worker may be relaying RIGHT NOW;
+ * re-queuing it would double-send real traffic. Boot recovery passes an
+ * explicit `olderThanMs: 0` — its single-process crash law makes every
+ * 'sending' row dead regardless of age, and that law is exactly why this
+ * primitive must never leave the boot path WITHOUT the parameter. Rows
+ * claimed by a pre-migration build carry NULL `sending_at`: no live sender
+ * can own one (that build is gone), so they read as stale.
+ *
+ * @param {{ nowMs?: number, olderThanMs?: number }} [opts]
  * @returns {number} rows returned to pending
  */
-function requeueStaleOutbox() {
-  return db.prepare(`UPDATE bridge_outbox SET state = 'pending' WHERE state = 'sending'`).run()
-    .changes;
+function requeueStaleOutbox({
+  nowMs = Date.now(),
+  olderThanMs = OUTBOX_SENDING_STALE_MS,
+} = {}) {
+  const cutoff = Number(nowMs) - Math.max(0, Number(olderThanMs) || 0);
+  return db
+    .prepare(
+      `UPDATE bridge_outbox
+          SET state = 'pending', sending_at = NULL
+        WHERE state = 'sending'
+          AND (sending_at IS NULL OR sending_at <= ?)`,
+    )
+    .run(cutoff).changes;
 }
 
 /**

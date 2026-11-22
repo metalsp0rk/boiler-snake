@@ -112,13 +112,20 @@ function addFeed(communityId, url, meta = {}) {
 function removeFeed(communityId, url) {
   assertCommunityId(communityId);
   const cleanUrl = normalizeFeedUrl(url);
-  db.prepare(
-    `DELETE FROM rss_seen WHERE community_id=? AND feed_url=?`,
-  ).run(communityId, cleanUrl);
-  const res = db
-    .prepare(`DELETE FROM rss_feeds WHERE community_id=? AND url=?`)
-    .run(communityId, cleanUrl);
-  return res.changes > 0;
+  // #905 item 6 (F10f-c): seen-set and feed row die together — a crash
+  // between the two deletes used to leave a seen-orphan set (or a feed
+  // row with its history gone, free to re-alert every already-read
+  // entry). One transaction, child-first.
+  const run = db.transaction(() => {
+    db.prepare(
+      `DELETE FROM rss_seen WHERE community_id=? AND feed_url=?`,
+    ).run(communityId, cleanUrl);
+    const res = db
+      .prepare(`DELETE FROM rss_feeds WHERE community_id=? AND url=?`)
+      .run(communityId, cleanUrl);
+    return res.changes > 0;
+  });
+  return run();
 }
 
 /**
