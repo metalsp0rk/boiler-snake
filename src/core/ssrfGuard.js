@@ -183,16 +183,6 @@ function isDisallowedAddress(address) {
   if (net.isIPv6(ip)) {
     const lower = ip.toLowerCase();
     if (lower === "::" || lower === "::1") return true; // unspecified + loopback
-    const hexMapped = /^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/i.exec(lower);
-    if (hexMapped) {
-      // IPv4-mapped IPv6 in hex hextet form (::ffff:7f00:1) — unwrap to the
-      // dotted quad and re-classify, so no mapped notation reaches a decision.
-      const hi = parseInt(hexMapped[1], 16);
-      const lo = parseInt(hexMapped[2], 16);
-      return isDisallowedAddress(
-        `${(hi >> 8) & 255}.${hi & 255}.${(lo >> 8) & 255}.${lo & 255}`,
-      );
-    }
     if (/^f[cd][0-9a-f]{2}:/i.test(lower)) return true; // ULA fc00::/7
     if (/^fe[89ab][0-9a-f]:/i.test(lower)) return true; // link-local fe80::/10
     // #836 (audit B1-3): two families EMBED an IPv4 address the literal
@@ -213,6 +203,21 @@ function isDisallowedAddress(address) {
           hextets[3] === 0 && hextets[4] === 0 && hextets[5] === 0) {
         return true; // ::/96 — includes "::" and "::1" (already refused)
       }
+      if (hextets[0] === 0 && hextets[1] === 0 && hextets[2] === 0 &&
+          hextets[3] === 0 && hextets[4] === 0 && hextets[5] === 0xffff) {
+        // #905 item 7 (audit r4 F10g): IPv4-mapped in ANY spelling. The
+        // old recognizers demanded the literal "::ffff:" text, so the
+        // uncompressed forms a raw address string can carry —
+        // "0:0:0:0:0:ffff:7f00:1", "0::ffff:7f00:1" — classified PUBLIC:
+        // an open door to loopback for every caller that classifies
+        // addresses directly (dormant in the shipped paths only because
+        // WHATWG URLs / dns.lookup always emit the compressed form).
+        // Hextet-level unroll — the same law the NAT64 branch below
+        // applies: the embedded v4 decides, never a v6 verdict.
+        return isDisallowedAddress(
+          `${hextets[6] >> 8}.${hextets[6] & 255}.${hextets[7] >> 8}.${hextets[7] & 255}`,
+        );
+      }
       if (hextets[0] === 0x0064 && hextets[1] === 0xff9b &&
           hextets[2] === 0 && hextets[3] === 0 &&
           hextets[4] === 0 && hextets[5] === 0) {
@@ -226,8 +231,6 @@ function isDisallowedAddress(address) {
     }
     const first = /^([0-9a-f]{1,4}):/.exec(lower);
     if (first && (parseInt(first[1], 16) & 0xc000) === 0xc000) return true; // c000::/2 (unassigned; incl. ff00::/8 multicast)
-    const v4 = /^::ffff:(\d+\.\d+\.\d+\.\d+)$/i.exec(lower);
-    if (v4) return isDisallowedAddress(v4[1]);
     return false;
   }
   // Unparseable address: refuse (a resolved name must yield a real address).
