@@ -788,4 +788,63 @@ describe("web events calendar (routes/events.js)", () => {
     assert.ok(actions.includes("events.reminder_add"), actions.join(","));
     assert.ok(actions.includes("events.archive"), actions.join(","));
   });
+
+  // #901 (audit r4 F9): service REFUSALS used to mint audit rows claiming
+  // the mutation happened (publish/duplicate/edit/retry_sync/archive/delete/
+  // signup_*/series audited UNCONDITIONALLY). The audit row must be a fact:
+  // refused ⇒ zero rows for that target.
+  it("#901: service refusals write NOTHING and audit NOTHING", async () => {
+    // Minimal client: the guild resolves (so the route reaches the service),
+    // and the refusals below are decided by the service itself, not the
+    // route's pre-checks — exactly the shape the audit used to launder.
+    fakeClient = {
+      user: { id: "BOT" },
+      guilds: {
+        cache: new Map([
+          [
+            GUILD_A,
+            {
+              id: GUILD_A,
+              members: { cache: new Map() },
+              channels: { cache: new Map() },
+              roles: { cache: new Map() },
+            },
+          ],
+        ]),
+      },
+      channels: { cache: new Map() },
+    };
+
+    const ev = seedEvent({ title: "Refusal Audit", status: "draft" });
+    api.updateEvent(ev.id, { channel_id: null }); // deterministic service refusal: no post channel
+
+    // Refusal 1 — publish: client live, but no post channel (service says no).
+    const pub = await post(`/g/${CID_A}/events/${ev.id}/publish`, "staff", {});
+    assert.match(qsOf(pub.location).err || "", /no post channel/i, "the service's own reason flashes");
+    assert.equal(api.getEventById(ev.id).status, "draft", "no state change");
+
+    // Refusal 2 — organizer signup add on an UNPOSTED event.
+    const add = await post(`/g/${CID_A}/events/${ev.id}/signups/add`, "staff", {
+      user_id: USER_GUEST,
+    });
+    const addErr = qsOf(add.location).err || "";
+    assert.match(
+      addErr,
+      /not posted/i,
+      `service refusal, not a pre-check/throw (got: ${addErr || `loc=${add.location}`})`,
+    );
+
+    // ZERO audit rows for this event (pre-fix: events.publish +
+    // events.signup_add rows for changes that never happened).
+    const rows = api
+      .listAdminAudit(CID_A, { limit: 200 })
+      .filter((a) => a.target_type === "event" && a.target_id === String(ev.id));
+    assert.deepEqual(
+      rows.map((a) => a.action),
+      [],
+      `refused mutations must audit nothing, got: ${rows.map((a) => `${a.action} ${a.details || ""}`).join(", ")}`,
+    );
+
+    fakeClient = null;
+  });
 });

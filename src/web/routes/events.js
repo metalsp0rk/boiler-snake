@@ -482,7 +482,10 @@ function registerEventsCalendarRoutes(app, options = {}) {
         "Discord connection unavailable — posting needs the live client; try again shortly.",
       );
     const out = await service.postEventNow(client, ev, { actorId: req.user.userId });
-    audit(req, "events.publish", ev, { via: "web", ok: !!out?.ok });
+    // #901: audit mirrors the SUCCEEDING mutation only (settings.js:31 /
+    // moderation.js doctrine) — a refused publish must not mint an
+    // admin_audit row claiming events.publish.
+    if (out?.ok) audit(req, "events.publish", ev, { via: "web" });
     outcomeRedirect(res, cid, path, out, out?.reply || "Posted.");
   }
 
@@ -493,7 +496,7 @@ function registerEventsCalendarRoutes(app, options = {}) {
       return bad(res, cid, path, "You don't hold event-edit rights here.");
     const { client } = await actor(req);
     const out = await service.duplicateEvent(client, ev, req.user.userId);
-    audit(req, "events.duplicate", ev, { via: "web" });
+    if (out?.ok) audit(req, "events.duplicate", ev, { via: "web" }); // #901
     if (out?.ok)
       return redirect(res, cid, `/g/${cid}/events/${out.event.id}`, "ok", "Duplicated as a draft.");
     return bad(res, cid, path, out?.error);
@@ -584,7 +587,7 @@ function registerEventsCalendarRoutes(app, options = {}) {
         ],
       };
     }
-    audit(req, "events.edit", ev, { via: "web", fields: Object.keys(patch) });
+    if (out?.ok) audit(req, "events.edit", ev, { via: "web", fields: Object.keys(patch) }); // #901
     outcomeRedirect(res, cid, path, out, "Saved.");
   }
 
@@ -597,8 +600,10 @@ function registerEventsCalendarRoutes(app, options = {}) {
     if (!client) return bad(res, cid, path, "Discord connection unavailable.");
     const fresh = db.getEventById(ev.id);
     const refresh = await service.refreshEventMessages(client, fresh);
-    audit(req, "events.retry_sync", ev, { via: "web" });
+    // #901: the warns path IS the refused outcome (it flashes err) — no
+    // audit row for a refresh the user sees as a failure.
     const warns = (refresh?.warnings || []).filter(Boolean);
+    if (!warns.length) audit(req, "events.retry_sync", ev, { via: "web" });
     redirect(
       res,
       cid,
@@ -615,7 +620,7 @@ function registerEventsCalendarRoutes(app, options = {}) {
       return bad(res, cid, path, "You don't hold event-edit rights here.");
     const { client } = await actor(req);
     const out = await service.archiveEvent(client, ev, { reason: "web-archive" });
-    audit(req, "events.archive", ev, { via: "web" });
+    if (out?.ok) audit(req, "events.archive", ev, { via: "web" }); // #901
     outcomeRedirect(res, cid, path, out, "Archived.");
   }
 
@@ -649,7 +654,7 @@ function registerEventsCalendarRoutes(app, options = {}) {
       actorId: req.user.userId,
       removeDiscord: Boolean(client) && Boolean(ev.message_id),
     });
-    audit(req, "events.delete", ev, { via: "web" });
+    if (out?.ok) audit(req, "events.delete", ev, { via: "web" }); // #901
     if (out?.ok) return ok(res, cid, `/g/${cid}/events`, `Deleted "${ev.title}".`);
     return bad(res, cid, path, out?.error);
   }
@@ -725,7 +730,7 @@ function registerEventsCalendarRoutes(app, options = {}) {
       optionId,
       actorId: req.user.userId,
     });
-    audit(req, "events.signup_add", ev, { via: "web", userId, optionId });
+    if (out?.ok) audit(req, "events.signup_add", ev, { via: "web", userId, optionId }); // #901
     outcomeRedirect(res, cid, path, out, "Signup added.");
   }
 
@@ -752,7 +757,8 @@ function registerEventsCalendarRoutes(app, options = {}) {
       optionId,
       actorId: req.user.userId,
     });
-    audit(req, "events.signup_remove", ev, { via: "web", userId, optionId });
+    if (out?.ok)
+      audit(req, "events.signup_remove", ev, { via: "web", userId, optionId }); // #901
     outcomeRedirect(res, cid, path, out, "Signup removed.");
   }
 
@@ -775,14 +781,15 @@ function registerEventsCalendarRoutes(app, options = {}) {
         roleId,
       },
     ]);
-    if (out?.ok)
+    if (out?.ok) {
       db.logEventActivity({
         eventId: ev.id,
         actorId: req.user.userId,
         action: "reminder_added",
         detail: `${minutes} min before start`,
       });
-    audit(req, "events.reminder_add", ev, { via: "web", minutes });
+      audit(req, "events.reminder_add", ev, { via: "web", minutes }); // #901
+    }
     outcomeRedirect(res, cid, path, out, `Reminder armed for ${minutes} min before start.`);
   }
 
@@ -845,7 +852,8 @@ function registerEventsCalendarRoutes(app, options = {}) {
           action === "skip"
             ? series.skipOccurrence(target)
             : series.stopSeries(target, req.user.userId);
-        audit(req, `events.series_${action}`, target, { via: "web", seriesId: s.id });
+        if (out?.ok)
+          audit(req, `events.series_${action}`, target, { via: "web", seriesId: s.id }); // #901
         if (out?.ok)
           return ok(res, cid, path, action === "skip" ? "Next occurrence skipped." : "Series stopped.");
         return bad(res, cid, path, out?.error);
@@ -946,7 +954,11 @@ function outcomeRedirect(res, cid, path, out, okMsg) {
   return redirect(res, cid, path, "err", out?.error || "Rejected by the service layer.");
 }
 
-/** Staff mutations mirror into admin_audit (same posture as settings.js). */
+/**
+ * Staff mutations mirror into admin_audit (same posture as settings.js:
+ * ONE row per SUCCESSFUL mutation — #901: callers gate on the service
+ * result; a refused mutation writes nothing and audits nothing).
+ */
 function audit(req, action, ev, details = {}) {
   req.audit({
     action,
