@@ -1248,8 +1248,11 @@ function claimDueEventReminders(nowMs, limit = 50) {
     const candidates = db
       .prepare(
         `SELECT * FROM event_notifications
-         WHERE (status = 'pending' AND COALESCE(next_attempt_at, fire_at) <= ?)
-            OR (status = 'sending' AND claimed_at < ?)
+         WHERE sent_at IS NULL
+           AND (
+             (status = 'pending' AND COALESCE(next_attempt_at, fire_at) <= ?)
+             OR (status = 'sending' AND claimed_at IS NOT NULL AND claimed_at < ?)
+           )
          ORDER BY COALESCE(next_attempt_at, fire_at) ASC, id ASC
          LIMIT ?`,
       )
@@ -1260,9 +1263,9 @@ function claimDueEventReminders(nowMs, limit = 50) {
         .prepare(
           `UPDATE event_notifications
            SET status = 'sending', claimed_at = ?
-           WHERE id = ? AND (
+           WHERE id = ? AND sent_at IS NULL AND (
              (status = 'pending' AND COALESCE(next_attempt_at, fire_at) <= ?)
-             OR (status = 'sending' AND claimed_at < ?)
+             OR (status = 'sending' AND claimed_at IS NOT NULL AND claimed_at < ?)
            )`,
         )
         .run(nowMs, row.id, nowMs, nowMs - EVENT_REMINDER_CLAIM_TTL_MS);
@@ -1286,37 +1289,74 @@ function markEventReminderSent(id, messageId, nowMs = now()) {
   return { won: info.changes === 1 };
 }
 
-/** Permanent stop (channel gone, event deleted, muted audience empty…). */
+/**
+ * Permanent stop (channel gone, event deleted, muted audience empty…).
+ * #895: guarded like its siblings — a settled row (`sent`/`failed`/`retired`)
+ * is never rewritten: retiring an already-delivered reminder corrupted the
+ * audit trail, and the organizer-cancel path races deliveries daily.
+ * @returns {boolean} whether this call won the retire
+ */
 function retireEventReminder(id, reason) {
-  db.prepare(
+  const info = db.prepare(
     `UPDATE event_notifications
      SET status = 'retired', last_error = ?, claimed_at = NULL, next_attempt_at = NULL
-     WHERE id = ?`,
+     WHERE id = ? AND status IN ('pending', 'sending')`,
   ).run(String(reason || "").slice(0, 500), id);
-  return true;
+  return info.changes === 1;
 }
 
-/** TRANSIENT: bump attempts, back off; terminal 'failed' at the cap. */
+/**
+ * TRANSIENT: bump attempts, back off; terminal 'failed' at the cap.
+ * #895 (audit r4 F3) mirrors the proven twin
+ * (eventReminders.markReminderRetry): the whole read-settle runs in one
+ * IMMEDIATE transaction, the row must still be 'sending' (the caller's
+ * lease), and every UPDATE re-checks it. A late failure write for a row the
+ * organizer retired/rescheduled — or another writer settled — resolves
+ * `{outcome:'skipped'}` instead of resurrecting it: a cancelled event's
+ * reminder used to fire again (false @role pings) and an edit-cleared
+ * backoff was re-installed by the absolute write.
+ *
+ * @returns {object|null} null for a missing row; otherwise `{ outcome,
+ *   attempts, terminal, nextAttemptAt }` (outcome: skipped|failed|retry)
+ */
 function markEventReminderRetry(id, reason, nowMs = now()) {
-  const row = db.prepare(`SELECT * FROM event_notifications WHERE id = ?`).get(id);
-  if (!row) return null;
-  const attempts = row.attempts + 1;
-  if (attempts >= MAX_EVENT_REMINDER_ATTEMPTS) {
-    db.prepare(
-      `UPDATE event_notifications
-       SET status = 'failed', attempts = ?, last_error = ?, claimed_at = NULL, next_attempt_at = NULL
-       WHERE id = ?`,
-    ).run(attempts, String(reason || "").slice(0, 500), id);
-    return { attempts, terminal: true, nextAttemptAt: null };
-  }
-  const nextAt =
-    nowMs + eventReminderRetryDelayMs(attempts, row.fire_at, nowMs);
-  db.prepare(
-    `UPDATE event_notifications
-     SET status = 'pending', attempts = ?, next_attempt_at = ?, last_error = ?, claimed_at = NULL
-     WHERE id = ?`,
-  ).run(attempts, nextAt, String(reason || "").slice(0, 500), id);
-  return { attempts, terminal: false, nextAttemptAt: nextAt };
+  const errorText = reason == null ? null : String(reason).slice(0, 500);
+  const tx = db.transaction(() => {
+    const row = db
+      .prepare(`SELECT status, attempts, fire_at FROM event_notifications WHERE id = ?`)
+      .get(id);
+    if (!row) return null;
+    if (row.status !== "sending") {
+      return { outcome: "skipped", attempts: Number(row.attempts) || 0, terminal: false, nextAttemptAt: null };
+    }
+    const attempts = (Number(row.attempts) || 0) + 1;
+    if (attempts >= MAX_EVENT_REMINDER_ATTEMPTS) {
+      const info = db
+        .prepare(
+          `UPDATE event_notifications
+           SET status = 'failed', attempts = ?, last_error = ?, claimed_at = NULL, next_attempt_at = NULL
+           WHERE id = ? AND status = 'sending'`,
+        )
+        .run(attempts, errorText, id);
+      if (info.changes !== 1) {
+        return { outcome: "skipped", attempts: Number(row.attempts) || 0, terminal: false, nextAttemptAt: null };
+      }
+      return { outcome: "failed", attempts, terminal: true, nextAttemptAt: null };
+    }
+    const nextAt = nowMs + eventReminderRetryDelayMs(attempts, row.fire_at, nowMs);
+    const info = db
+      .prepare(
+        `UPDATE event_notifications
+         SET status = 'pending', attempts = ?, next_attempt_at = ?, last_error = ?, claimed_at = NULL
+         WHERE id = ? AND status = 'sending'`,
+      )
+      .run(attempts, nextAt, errorText, id);
+    if (info.changes !== 1) {
+      return { outcome: "skipped", attempts: Number(row.attempts) || 0, terminal: false, nextAttemptAt: null };
+    }
+    return { outcome: "retry", attempts, terminal: false, nextAttemptAt: nextAt };
+  });
+  return tx.immediate();
 }
 
 /** Due digest settings (the tick decides daily/weekly windows in JS). */
