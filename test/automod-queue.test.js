@@ -593,3 +593,119 @@ test("queue tail lines: Window renders from the EFFECTIVE pair; Resolved stamps 
   ]);
   assert.equal(card.formatStamp(1700000000000), "2023-11-14 22:13 UTC");
 });
+
+// ── #903 (audit r4 F12): orphaned suggestions under RESOLVED cases ─────────
+
+test("#903: the orphaned-suggestion settle covers resolved cases only", () => {
+  const resolved = seededCase(nextSubject());
+  const openCase = seededCase(nextSubject());
+  db.resolveAutomodCase(CID, resolved.id, "recommended", STAFF, { nowMs: 1700000900000 });
+  const warnRow = suggestRow(resolved, "warn");
+  const kickRow = suggestRow(resolved, "kick");
+  const marker = suggestRow(resolved, "no_action");
+  const live = suggestRow(openCase, "warn");
+
+  // Scoped to the UNRESOLVED case: its queue is untouched (the guard
+  // holds under scoping too — the global arm runs in the boot-sweep test).
+  assert.equal(db.settleOrphanedSuggestionsUnderResolvedCases({ caseId: openCase.id }).changed, 0);
+  assert.equal(db.getAutomodAction(live.id).state, "suggested", "unresolved case: live queue intact");
+
+  const out = db.settleOrphanedSuggestionsUnderResolvedCases({ caseId: resolved.id });
+  assert.equal(out.changed, 2, "the two executable orphans");
+  assert.deepEqual(out.cases.map((c) => c.caseId), [resolved.id]);
+  assert.equal(out.cases[0].pending, 2);
+  assert.equal(out.cases[0].staffUserId, STAFF, "the queue note needs the resolving staff id");
+  for (const row of [warnRow, kickRow]) {
+    const r = db.getAutomodAction(row.id);
+    assert.equal(r.state, "refused", "settled as never-executed (refused)");
+    assert.match(r.error_text, /never executed/, r.error_text);
+  }
+  assert.equal(db.getAutomodAction(marker.id).state, "suggested",
+    "no_action markers are consideration markers — the recommended arm never runs them either");
+
+  assert.equal(db.settleOrphanedSuggestionsUnderResolvedCases({ caseId: resolved.id }).changed, 0, "idempotent");
+  assert.deepEqual(db.settleOrphanedSuggestionsUnderResolvedCases({ caseId: -7 }), { changed: 0, cases: [] },
+    "junk caseId settles nothing");
+  // Scoping isolation: a SECOND resolved case is untouched by the first's scope.
+  const other = seededCase(nextSubject());
+  db.resolveAutomodCase(CID, other.id, "recommended", STAFF);
+  const otherRow = suggestRow(other, "warn");
+  assert.equal(db.settleOrphanedSuggestionsUnderResolvedCases({ caseId: resolved.id }).changed, 0);
+  assert.equal(db.getAutomodAction(otherRow.id).state, "suggested");
+  assert.equal(db.settleOrphanedSuggestionsUnderResolvedCases({ caseId: other.id }).changed, 1);
+  assert.equal(db.getAutomodAction(otherRow.id).state, "refused");
+});
+
+test("the BOOT SWEEP settles orphans AND writes the _queue_resolution entry the interrupted loop never did", () => {
+    const c = seededCase(nextSubject());
+    db.resolveAutomodCase(CID, c.id, "recommended", STAFF, { nowMs: 1700000950000 });
+    const row = suggestRow(c, "ban");
+
+    const harness = require("../src/features/automod/harness");
+    const out = harness.sweepInterruptedRuns({ client: null });
+    assert.ok(out.suggestionsSettled >= 1, `suggestionsSettled: ${out.suggestionsSettled}`);
+    assert.equal(db.getAutomodAction(row.id).state, "refused");
+
+    const logged = db.db
+      .prepare(`SELECT decision_log FROM automod_cases WHERE id=?`)
+      .get(c.id).decision_log;
+    const entries = JSON.parse(logged || "[]");
+    assert.ok(
+      entries.some(
+        (e) =>
+          e.tool === "_queue_resolution" &&
+          /never-executed/.test(String(e.result_or_error)) &&
+          String(e.args_summary).includes("interrupted"),
+      ),
+      `decision_log carries the drop-off record: ${logged}`,
+    );
+});
+
+test("#903 live: a mid-loop THROW no longer swallows the resolution — cleanup + durable records ship", async () => {
+  settingsService.setEnabled(CID, true); // the master-off test mutates shared settings
+  const subj = nextSubject();
+  const subj2 = nextSubject();
+  const caseRow = seededCase(subj);
+  const ranRow = suggestRow(caseRow, "warn", subj, { reason: "harassment" });
+  const strandedRow = suggestRow(caseRow, "warn", subj2, { reason: "second" });
+  const w = makeWorld();
+  const it = buttonInteraction(w, { customId: `am:case:resolve:recommended:${caseRow.id}` });
+  // The wedge seam: the FIRST `interaction.client` read (row 1's staff-note
+  // branch, AFTER the executor ran it) throws — pre-fix, the router wrap
+  // ate everything: rows 2..N stayed `suggested` under a RESOLVED case with
+  // no cleanup, no queue entry, no audit, no reply.
+  let clientReads = 0;
+  Object.defineProperty(it, "client", {
+    configurable: true,
+    get() {
+      clientReads += 1;
+      if (clientReads === 1) throw new Error("simulated discord handle teardown mid-loop");
+      return w.client;
+    },
+  });
+
+  await card.handleCaseResolveRecommended(it, w.ctx);
+
+  const reply = content(it);
+  assert.match(reply, /resolved\*\* — `recommended`/, "the resolution ack still ships");
+  assert.match(reply, /\*\*Interrupted:\*\*/, `honest interrupted line: ${reply}`);
+  assert.match(reply, /simulated discord handle teardown/, "the cause rides the reply (rule 3)");
+  assert.match(reply, /\*\*Cleanup:\*\* 1 never-executed/, `stranded row cleaned up: ${reply}`);
+
+  assert.equal(db.getAutomodAction(ranRow.id).state, "executed", "row 1 really ran before the throw");
+  const stranded = db.getAutomodAction(strandedRow.id);
+  assert.equal(stranded.state, "refused", "#903: never silently `suggested` under a resolved case");
+  assert.match(stranded.error_text, /never executed/);
+
+  // Durable records: the decision_log entry + audit row the throw used to eat.
+  const logged = JSON.parse(db.getAutomodCaseById(caseRow.id).decision_log ?? "[]");
+  assert.ok(
+    logged.some((e) => e.tool === "_queue_resolution" && /Interrupted/.test(String(e.result_or_error))),
+    `queue resolution entry survived the abort: ${JSON.stringify(logged)}`,
+  );
+  const audits = db
+    .listAdminAudit(CID, { limit: 60 })
+    .filter((r) => r.action === "automod.case_resolve" && String(r.target_id) === String(caseRow.id));
+  assert.equal(audits.length, 1, "the audit row is written despite the throw");
+  assert.equal(w.mutations.kicks.length, 0, "the throw stopped execution at row 1");
+});
