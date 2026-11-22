@@ -262,3 +262,58 @@ describe("memberFetchQueue (§8.15 option C)", () => {
     }
   });
 });
+
+// ── #905 item 4 (audit r4 F10d): the tick is a GATE, not a metronome ───────
+// A drain awaits up to 60 SEQUENTIAL fetches (429 backoff parks discord.js);
+// a drain slower than the 2 s tick used to start OVERLAPPING drains, each
+// enforcing the fetch budget on its own counter — the documented "≤60 ids
+// per tick" became k×60 concurrent fetches. Pin: while one drain is in
+// flight, later ticks are skipped entirely; after the queue empties, a
+// fresh enqueue re-arms the (possibly self-stopped) timer and still drains.
+
+test("#905: a slow drain never overlaps; the ticker re-arms after idle", async (t) => {
+  queue.stopMemberFetchQueue();
+  t.mock.timers.enable({ apis: ["setInterval"] });
+  const settle = async () => {
+    for (let i = 0; i < 25; i += 1) await new Promise((r) => setImmediate(r));
+  };
+
+  let releaseFirst;
+  const firstGate = new Promise((resolve) => {
+    releaseFirst = resolve;
+  });
+  const { client, calls } = makeClient(async (u) => {
+    if (calls.length === 1) await firstGate; // drain #1 parks on id 501
+    return okMember(u);
+  });
+  const get = () => client;
+
+  try {
+    queue.queueMissingMembers(get, GUILD, ["501", "502"]);
+    t.mock.timers.tick(2000); // tick 1: drain #1 starts, fetches 501, parks
+    await settle();
+    assert.equal(calls.length, 1, "drain #1 in flight, parked mid-fetch");
+
+    t.mock.timers.tick(2000 * 5); // five more ticks WHILE drain #1 is parked
+    await settle();
+    assert.equal(
+      calls.length,
+      1,
+      "#905: overlapping drains are skipped (old code: drain #2 grabbed 502 immediately)"
+    );
+
+    releaseFirst();
+    await settle();
+    assert.equal(calls.length, 2, "drain #1 continued to 502 within its OWN budget");
+
+    // Queue is now empty — the timer may have stopped itself. A new
+    // enqueue must still drain on the next tick (re-arm law).
+    queue.queueMissingMembers(get, GUILD, ["503"]);
+    t.mock.timers.tick(2000);
+    await settle();
+    assert.equal(calls.length, 3, "re-armed after idle: fresh ids still drain");
+  } finally {
+    t.mock.timers.reset();
+    queue.stopMemberFetchQueue();
+  }
+});
