@@ -77,6 +77,11 @@ const { getCommunityById } = require("../../platform/community");
 
 const PAGE_SIZE = 50;
 
+// #898: /t scope fan-out bound — mirrors dashboard's MAX_ROOT_GUILDS (the
+// #466 C2-8 cap): at most this many networked tier reads per cold-cache
+// page load, resolved CONCURRENTLY. Keep the two sizes in step.
+const MAX_SCOPED_GUILDS = 30;
+
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
@@ -125,15 +130,17 @@ function ticketLoginNext(pathname) {
 }
 
 /**
- * Guilds where the viewer resolves staff+ (§8.6 Tickets row). Sequential
- * resolver calls against the guildAccess TTL caches (subtask 07) — cheap
- * after the first pass. Any re-auth (token revoked mid-list) aborts into a
- * redirect decision; any unexpected failure fails CLOSED to an empty scope.
- * Entries keep their display names for the shell's guild switcher — the
- * switcher list is EXACTLY this scoped set (never the wider bot∩user list).
- * Fluxer PR 2: tier resolution and row scoping key by the INTEGER community
- * id (listGuilds entries carry it); the external snowflake is kept on the
- * entry for the cache-only name-resolution seams.
+ * Guilds where the viewer resolves staff+ (§8.6 Tickets row). #898 (audit
+ * r4 F6): the fan-out is CAPPED and CONCURRENT — the #466 C2-8 doctrine
+ * already proved on "/" that a sequential loop pays one networked
+ * member-read after another per guild on every cold tier-cache minute.
+ * Any re-auth (token revoked mid-list) aborts into a
+ * redirect decision; any unexpected failure fails CLOSED to an empty
+ * scope. Entries keep their display names for the shell's guild switcher —
+ * the switcher list is EXACTLY this scoped set (never the wider bot∩user
+ * list). Fluxer PR 2: tier resolution and row scoping key by the INTEGER
+ * community id (listGuilds entries carry it); the external snowflake is
+ * kept on the entry for the cache-only name-resolution seams.
  * @param {{resolve: Function, listGuilds: Function}} guildAccess
  * @param {{id: string, userId: string}} session
  * @returns {Promise<{guilds: Array<{id: string, communityId: number|null, name: string|null}>, guildIds: string[], communityIds: number[], reauth: boolean, degraded: boolean}>}
@@ -144,24 +151,32 @@ async function listStaffedGuilds(guildAccess, session) {
     if (listed.reauth) {
       return { guilds: [], guildIds: [], communityIds: [], reauth: true, degraded: false };
     }
-    const guilds = [];
-    for (const guild of listed.guilds || []) {
-      // No communities row → nothing to tier against → not staffed (deny).
-      const access =
+    // Cap then resolve: rows are independent; Promise.all keeps the cap
+    // AND the display order (same as the root page's MAX_ROOT_GUILDS).
+    const scoped = (listed.guilds || []).slice(0, MAX_SCOPED_GUILDS);
+    const accesses = await Promise.all(
+      scoped.map((guild) =>
+        // No communities row → nothing to tier against → not staffed (deny).
         guild.communityId == null
-          ? { status: "deny" }
-          : await guildAccess.resolve(session, guild.communityId);
+          ? Promise.resolve({ status: "deny" })
+          : guildAccess.resolve(session, guild.communityId),
+      ),
+    );
+    for (const access of accesses) {
       if (access.status === "reauth" || access.status === "anon") {
         return { guilds: [], guildIds: [], communityIds: [], reauth: true, degraded: false };
       }
-      if (access.status === "ok") {
+    }
+    const guilds = [];
+    scoped.forEach((guild, i) => {
+      if (accesses[i].status === "ok") {
         guilds.push({
           id: guild.id,
           communityId: guild.communityId,
           name: typeof guild.name === "string" && guild.name.trim() ? guild.name : null,
         });
       }
-    }
+    });
     return {
       guilds,
       guildIds: guilds.map((g) => g.id),
@@ -717,4 +732,8 @@ function registerTranscriptRoutes(app, options = {}) {
 module.exports = {
   registerTranscriptRoutes,
   PAGE_SIZE,
+  // Test seam (#898): the tier fan-out is pinned directly — capped size and
+  // peak concurrency — without booting the app over it.
+  listStaffedGuilds,
+  MAX_SCOPED_GUILDS,
 };
