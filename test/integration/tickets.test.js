@@ -2185,6 +2185,59 @@ describe("integration: tickets", () => {
     assert.equal(after.channel_id, null);
   });
 
+  it("#900: re-archiving a consumed sensitive ticket says already-archived and posts NOTHING", async () => {
+    const ticket = await openViaStaff({ reason: "sens-consumed-900" });
+    env.db.setTicketSensitive(ticket.id, IDS.admin);
+    const channel = env.guild.channels.cache.get(ticket.channel_id);
+    await env.runCommand({
+      commandName: "ticket",
+      subcommand: "close",
+      admin: true,
+      channelId: ticket.channel_id,
+      options: { reason: "handled off-channel" },
+    });
+
+    const { archiveTicketPipeline } = require("../../src/features/tickets/close");
+    const first = await archiveTicketPipeline({
+      client: env.client,
+      channel,
+      ticket: env.db.getTicketById(ticket.id),
+      archivedBy: IDS.admin,
+      guildName: env.guild.name,
+    });
+    assert.ok(!first.skipped, "first archive runs");
+
+    // THE live repro (F8): the stub embed is posted and the row finalized
+    // (closed, channel-less, archived STILL 0 by design); the 30-min lease
+    // matures. Pre-fix the next /ticket archive re-claimed (archived=0 +
+    // aged lease), posted a SECOND stub embed and re-stamped the id.
+    const L = env.db.ARCHIVE_CLAIM_LEASE_MS;
+    env.db.db
+      .prepare("UPDATE tickets SET archive_claimed_at=? WHERE id=?")
+      .run(Date.now() - L - 1000, ticket.id);
+
+    const embedsBefore = env.channels.log.sent.length;
+    const stampId = env.db.getTicketById(ticket.id).archive_message_id;
+    const second = await archiveTicketPipeline({
+      client: env.client,
+      channel,
+      ticket: env.db.getTicketById(ticket.id),
+      archivedBy: IDS.admin,
+      guildName: env.guild.name,
+    });
+    assert.match(
+      second.skipped,
+      new RegExp(`Ticket #${ticket.ticket_number} is already archived\\.`),
+      "honest consumed copy, not the phantom 'another close'",
+    );
+    assert.equal(env.channels.log.sent.length, embedsBefore, "no second stub embed");
+    assert.equal(
+      env.db.getTicketById(ticket.id).archive_message_id,
+      stampId,
+      "archive_message_id never re-stamped",
+    );
+  });
+
   it("archive with a hung summary completion aborts at the deadline and surfaces the timeout (fake timer, #197)", async () => {
     const { ticket, channel } = await closedTicketForArchiveRace(
       "summary-hang-archive"

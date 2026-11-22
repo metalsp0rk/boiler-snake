@@ -795,6 +795,18 @@ function closeTicketArchived(ticketId, opts) {
  * forever. A CLEAN abort before any destructive step still releases
  * immediately ({@link releaseTicketArchiveClaim}, #418).
  *
+ * CONSUMED MARKER (audit r4 #900): the lease self-heals, so for SENSITIVE
+ * rows — whose finalize keeps `archived=0` BY DESIGN and clears
+ * `channel_id` — the lease was the ONLY double-archive guard, and it
+ * decays: a re-run after 30 min posted a SECOND stub embed and re-stamped
+ * archive_message_id on a finished ticket. The claim therefore also skips
+ * rows carrying finalize evidence (`status='closed' AND channel_id IS
+ * NULL`). Every writer that NULLs channel_id (both finalizes + external
+ * dispose) is a FINISHED state; a soft-closed normal ticket keeps its
+ * channel_id and stays claimable. The consumed marker is deliberately
+ * sticky past finalize — exclusion beats recovery, exactly like the
+ * archived=1 crash stickiness #197 pinned for content rows.
+ *
  * @param {number} ticketId
  * @param {number} [at=now()] ms epoch (injectable clock, lease math)
  * @returns {{ won: boolean, ticket: object|null }} `won` true only for the
@@ -808,6 +820,7 @@ function claimTicketArchive(ticketId, at = now()) {
       `
     UPDATE tickets SET archive_claimed_at=?
     WHERE id=? AND archived=0
+      AND NOT (status='closed' AND channel_id IS NULL)
       AND (archive_claimed_at IS NULL OR archive_claimed_at <= ?)
   `
     )
