@@ -755,3 +755,49 @@ describe("reportEvidence output shape", () => {
     }
   });
 });
+
+// ---------- #896: member-influenced footers can't veto the bundle ----------
+
+describe("reportEvidence footer clamp (#896 audit r4 F4)", () => {
+  // sanitizeFilename keeps 120 chars of [a-zA-Z0-9._-]; inlineEscape DOUBLES
+  // every underscore, so `Image evidence: <name>` overflows Discord's real
+  // 200-char footer cap — pre-fix, toEmbed sliced to 2000, the ladder never
+  // demoted (image sections are exempt), and the belt refused the ENTIRE
+  // bundle: "footer is 228 chars (cap 200) — nothing was posted".
+  const U104 = `${"_".repeat(104)}.png`; // sanitize-safe (108 chars), escapes to 212
+
+  it("an underscore-heavy max-length filename still posts, footer clamped to 200", async () => {
+    const url = `https://cdn.example/${encodeURIComponent(U104)}`;
+    const res = await buildEvidenceMessage(
+      snapshot({ attachments: [att({ id: "790", name: U104, url })] }),
+      {
+        fetchImpl: makeFetch({
+          [url]: okResponse(Buffer.from("PNGBYTES"), { contentType: "image/png" }),
+        }),
+        resolveHost: resolvePublic,
+      },
+    );
+    assert.equal(res.ok, true, "the bundle must degrade (clamped footer), not refuse (#896)");
+    const footers = raw(res.embeds)
+      .map((e) => e.footer?.text || "")
+      .filter(Boolean);
+    assert.ok(footers.length > 0, "the image section keeps its footer");
+    for (const f of footers) {
+      assert.ok(f.length <= 200, `footer is ${f.length} chars — over Discord's cap`);
+    }
+  });
+
+  it("short names are unaffected", async () => {
+    const res = await buildEvidenceMessage(snapshot({ attachments: [att()] }), {
+      fetchImpl: makeFetch({
+        "https://cdn.example/proof.png": okResponse(Buffer.from("PNGBYTES"), {
+          contentType: "image/png",
+        }),
+      }),
+      resolveHost: resolvePublic,
+    });
+    assert.equal(res.ok, true);
+    const footer = raw(res.embeds).map((e) => e.footer?.text || "").find((f) => f.startsWith("Image evidence:"));
+    assert.equal(footer, "Image evidence: proof.png");
+  });
+});
