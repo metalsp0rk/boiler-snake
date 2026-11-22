@@ -288,7 +288,7 @@ Refusals (ephemeral, nothing opened): non-staff invoker — standard denial; unr
 
 **Permission**: staff-tier picker — **Manage Server** default hides the entry from regulars; `/staff syncpermissions` adds allow overwrites for configured `staff_roles` (the handler re-checks the staff gate on every invoke — that gate is the source of truth). Discord-only — Fluxer is explicit no-parity (the `/ticket for` arm is itself Discord-only). Full flow: [Staff proxy ticket](../tickets.md#staff-proxy-ticket-open-ticket-for-user-menu).
 
-**Deploy**: re-run `npm run register` after deploy (per-guild PUTs — the Apps entry stays invisible until pushed).
+**Deploy**: re-run `npm run register` after deploy (per-guild PUTs — the Apps entry stays invisible until pushed). The guild list is fully paginated (the CLI follows the `after` cursor past the API's 200-guild page cap), so every guild the bot is in gets the commands.
 
 ### `/settings` - Show Guild Configuration
 
