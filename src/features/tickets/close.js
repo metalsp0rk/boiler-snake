@@ -570,6 +570,10 @@ async function archiveTicketPipeline(opts) {
     return { ticket: live || ticket, warnings: [msg], skipped: msg };
   }
 
+  // #897: the release below is stamp-scoped — this is the value OUR claim
+  // wrote; a late release must never clear a newer holder's lease.
+  const claimStamp = Number(claim.ticket?.archive_claimed_at ?? NaN);
+
   // #419 (audit LT-2): a THROW after the claim is a released claim, not a
   // permanent wedge. Post-claim throws (finalize write, message-id stamp —
   // e.g. the disk-full/busy class migration 034 hardened against) used to
@@ -579,10 +583,10 @@ async function archiveTicketPipeline(opts) {
   // and the lease self-heals even if this process dies mid-run. After a
   // successful finalize the release is a no-op — its `archived=0` guard.
   try {
-    return await archiveTicketWork(opts);
+    return await archiveTicketWork({ ...opts, archiveClaimStamp: claimStamp });
   } catch (err) {
     try {
-      releaseTicketArchiveClaim(ticket.id);
+      releaseTicketArchiveClaim(ticket.id, claimStamp);
     } catch (releaseErr) {
       console.error(
         `[tickets] could not release the archive claim for ticket #${ticket.ticket_number} after a throw:`,
@@ -607,7 +611,7 @@ async function archiveTicketPipeline(opts) {
  * @returns {Promise<{ticket: object, warnings: string[], skipped?: string, error?: string}>}
  */
 async function archiveTicketWork(opts) {
-  const { client, channel, archivedBy } = opts;
+  const { client, channel, archivedBy, archiveClaimStamp } = opts;
   let ticket = opts.ticket;
   const warnings = [];
   const sensitive = Number(ticket.is_sensitive) === 1;
@@ -766,7 +770,7 @@ async function archiveTicketWork(opts) {
       err
     );
     try {
-      releaseTicketArchiveClaim(ticket.id);
+      releaseTicketArchiveClaim(ticket.id, archiveClaimStamp);
     } catch (releaseErr) {
       console.error(
         `[tickets] could not release the archive claim for ticket #${ticket.ticket_number}: ${releaseErr?.message || releaseErr}`,
