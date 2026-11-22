@@ -136,6 +136,23 @@ describe("core/embeds assertEmbedBudget (#837 B2-7: the caps that lived nowhere)
   });
 });
 
+// #896 (audit r4 F4): baseEmbed sliced footers to 2048 — Discord's real cap
+// is 200, so any dynamic footer could drift into the belt and get the WHOLE
+// message refused. baseEmbed now clamps to EMBED_LIMITS.footer itself.
+describe("core/theme baseEmbed footer clamp — #896", () => {
+  it("clamps an over-long footer to Discord's real 200-char cap", () => {
+    const { baseEmbed } = require("../src/core/theme");
+    const embed = baseEmbed({ footer: "f".repeat(2048) }).toJSON();
+    assert.ok(embed.footer.text.length <= 200, `footer was ${embed.footer.text.length} chars`);
+    assert.equal(assertEmbedBudget(embed).ok, true, "a built embed must satisfy the belt");
+  });
+
+  it("leaves short footers byte-identical", () => {
+    const { baseEmbed } = require("../src/core/theme");
+    assert.equal(baseEmbed({ footer: "Image evidence: proof.png" }).toJSON().footer.text, "Image evidence: proof.png");
+  });
+});
+
 describe("core/secrets hideToken", () => {
   it("the token exists but never rides enumeration", () => {
     const handle = hideToken({ url: "w://x" }, "sup3r-s3cret");

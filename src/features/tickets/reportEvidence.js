@@ -66,7 +66,7 @@ const { buildMessageJumpUrl } = require("../../core/jumpUrl");
 const { Color, tsFull, truncateDescription, truncateField } = require("../../core/theme");
 const { joinCapped, safeCutIndex, sliceSafe, splitChunks } = require("../../core/text");
 const { downloadGuarded } = require("../../core/ssrfGuard");
-const { assertEmbedBudget } = require("../../core/embeds"); // #837 B2-7: the total-cap gate
+const { assertEmbedBudget, EMBED_LIMITS } = require("../../core/embeds"); // #837 B2-7: the total-cap gate
 const { sanitizeFilename, mediaKind } = require("./assets");
 
 /** Default per-file copy budget for evidence re-upload (10 MiB). */
@@ -482,7 +482,13 @@ function toEmbed(section) {
   if (section.description) embed.setDescription(section.description);
   if (section.fields?.length) embed.addFields(section.fields);
   if (section.imageName) embed.setImage(`attachment://${section.imageName}`);
-  if (section.footer) embed.setFooter({ text: sliceSafe(section.footer, 2000) });
+  if (section.footer)
+    embed.setFooter({
+      // #896: clamp to Discord's REAL footer cap (200) — the 2000-slice
+      // encoded a wrong model: the ladder never demotes for an over-long
+      // image footer and the shared belt then refuses the whole bundle.
+      text: sliceSafe(section.footer, EMBED_LIMITS.footer),
+    });
   return embed;
 }
 

@@ -7,6 +7,7 @@
 
 const { EmbedBuilder } = require("discord.js");
 const { sliceSafe } = require("./text");
+const { EMBED_LIMITS } = require("./embeds");
 
 /** Semantic embed colors */
 const Color = {
@@ -152,7 +153,10 @@ function baseEmbed(opts = {}) {
     embed.setDescription(String(opts.description).slice(0, 4096));
   }
   if (opts.footer != null && opts.footer !== "") {
-    embed.setFooter({ text: String(opts.footer).slice(0, 2048) });
+    // Discord's real footer cap is 200 (core/embeds EMBED_LIMITS) — a 2048
+    // slice let any dynamic footer drift into assertEmbedBudget's belt
+    // (#896 proved the failure shape: the whole message is refused).
+    embed.setFooter({ text: sliceSafe(String(opts.footer), EMBED_LIMITS.footer) });
   }
   if (opts.timestamp === true) {
     embed.setTimestamp(new Date());
