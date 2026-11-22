@@ -562,7 +562,11 @@ function deleteAutomodCaseActionsOlderThan(cutoffMs, limit = 500) {
         WHERE updated_at < ?
           AND (
             case_id IN (SELECT id FROM automod_cases
-                         WHERE status IN ('complete','failed') AND updated_at < ?)
+                         -- #902: 'recorded' rides the case arm's age test — an
+                         -- abandoned recorded case (refused pre-claim run) would
+                         -- strand its aged actions otherwise; the dual age gates
+                         -- still protect anything live.
+                         WHERE status IN ('complete','failed','recorded') AND updated_at < ?)
             OR (
               -- already-swept parent. The IS NOT NULL guard is load-bearing:
               -- SQLite answers NULL NOT IN (empty subquery) as TRUE, so a

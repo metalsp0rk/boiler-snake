@@ -1117,10 +1117,15 @@ async function runCaseInner({ communityId, guildId, caseId, deps, nowMs }) {
     );
   }
   if (budget.remaining === -1 || budget.limit <= -1) {
-    return refuseRun(ids, "**Daily budget:** blocked (`-1`) — no case can run until an admin opens the budget with `/automodconfig budget`.");
+    // #902: nothing re-fires this case — the copy must not imply a later
+    // automatic run; say what actually revives it (a fresh referral).
+    return refuseRun(ids, "**Daily budget:** blocked (`-1`) — nothing runs until an admin opens the budget with `/automodconfig budget`; this case will NOT run on its own — re-refer the message once the budget is open.");
   }
   if (budget.limit > 0 && budget.remaining === 0) {
-    return refuseRun(ids, `**Daily budget:** exhausted — ${budget.used} of ${budget.limit} cases counted today (UTC day). The case stays recorded; the run retries after the day rolls or an admin raises the cap.`);
+    return refuseRun(
+      ids,
+      `**Daily budget:** exhausted — ${budget.used} of ${budget.limit} cases counted today (UTC day). Nothing re-fires this case automatically — re-refer the message with \`/automod refer\` after the day rolls or an admin raises the cap.`,
+    );
   }
 
   // ── 2. atomic claim (recorded → processing) — the status guard ──────────
