@@ -1353,8 +1353,13 @@ acceptance rule) — a provider failure does not consume budget, and the run
 consumes exactly once per accepted run. A run that starts against a
 blocked/exhausted budget refuses BEFORE mutating anything; the recorded row
 stays as the record of the attempt, but nothing re-fires it — re-refer to run
-after the day rolls (#902 — the refusal notice says exactly this).
-`/automod status` shows the real
+after the day rolls (#902 — the refusal notice says exactly this). The same
+gate is re-armed at ACCEPTANCE (#904): when concurrent runs raced the last
+slot past the pre-gate, the consume loser FAILS its case —
+`daily budget refused the run mid-flight …; nothing was committed` on the
+failure card — and its recorded intents are discarded, so the cap bounds
+behavior, not just the counter. A refused run does not re-fire either:
+re-refer. `/automod status` shows the real
 remaining count; the counter rolls at the UTC day boundary with no ticker.
 
 ## Circuit breaker (trip + gate shipped — #736/#739)

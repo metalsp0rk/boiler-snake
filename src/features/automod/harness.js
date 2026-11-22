@@ -1374,27 +1374,42 @@ async function runCaseInner({ communityId, guildId, caseId, deps, nowMs }) {
   const toolCalls = Number(res?.toolCalls) || 0;
   const accepted =
     res?.ok === true || toolCalls > 0 || res?.reason === "empty" || res?.reason === "cap";
+  // #904 (audit r4 F13): a REFUSED consume is not an accounting footnote —
+  // it is the budget re-gate winning its race. Two runs passing the
+  // pre-gate on one slot used to BOTH commit their full intent sets (the
+  // loser logged the gap and carried on), so the documented cap bounded
+  // the counter but not behavior. The commit is an in-memory intent set
+  // until step 9, so refusing here costs nothing but the run: the loser
+  // FAILS its case naming the cause, and commits NOTHING.
+  let budgetRefused = null;
   if (accepted) {
     try {
       const consumed = d.consume(cid, d.now());
       if (consumed && consumed.ok === false) {
-        // The provider call already happened — surface the accounting gap
-        // loudly (the counter refused on a race: blocked/exhausted between
-        // the pre-gate and acceptance). Never pretend it counted.
-        console.error(
-          `[automod] harness budget consume refused ${idTag(ids)}:`,
-          consumed.reason ?? "unknown",
-        );
+        budgetRefused =
+          consumed.reason === "blocked"
+            ? "the daily budget is blocked (`-1`)"
+            : consumed.reason === "exhausted"
+              ? `the daily budget is exhausted (${consumed.used}/${consumed.limit} today)`
+              : `the budget refused the run (${consumed.reason ?? "no reason recorded"})`;
       }
     } catch (err) {
       logFail("budget consume (after an accepted provider call)", ids, err);
+      // A throwing consume leaves the counter's state UNKNOWN — the cap
+      // cannot be honored from here, so the same refuse path owns it.
+      budgetRefused = `the budget could not be charged (${err?.message || err}) — the cap cannot be verified mid-run`;
     }
   }
 
   // ── 8. status/cause determination (cap commits; errors fail the case) ───
   let status = "complete";
   let runError = null;
-  if (!res?.ok) {
+  if (budgetRefused) {
+    status = "failed";
+    runError =
+      `daily budget refused the run mid-flight — ${budgetRefused}; nothing was committed. ` +
+      "The case does NOT re-fire — re-refer once the budget has room.";
+  } else if (!res?.ok) {
     if (res?.reason === "cap") {
       runError = `tool-round cap (${AUTOMOD_MAX_TOOL_ROUNDS}) reached — the run committed what it had recorded`;
     } else {
@@ -1405,16 +1420,20 @@ async function runCaseInner({ communityId, guildId, caseId, deps, nowMs }) {
 
   // ── 9. TWO-PHASE COMMIT (nothing mutated during the rounds; from here
   //       the executor + the note pre-/post-pass own everything, #733) ────
-  const commit = await commitRunIntents({
-    d,
-    cid,
-    gid,
-    caseRow,
-    referrerUserId,
-    dispatcher,
-    modes,
-    ids,
-  });
+  // #904: the refused-consume shape commits NOTHING — the intent set dies
+  // in memory (the two-phase law is what makes this safe).
+  const commit = budgetRefused
+    ? { lines: [], extraLines: [], actionResults: [], noteResults: [] }
+    : await commitRunIntents({
+        d,
+        cid,
+        gid,
+        caseRow,
+        referrerUserId,
+        dispatcher,
+        modes,
+        ids,
+      });
 
   // ── 10. outcome CARD + metadata ──────────────────────────────────────────
   // Card extras: note refs from the rows the commit actually wrote, the
@@ -1426,7 +1445,9 @@ async function runCaseInner({ communityId, guildId, caseId, deps, nowMs }) {
   // specific failure.
   let summaryTail;
   if (status === "failed") {
-    summaryTail = `provider error: ${formatProviderCause(res)}`;
+    summaryTail = budgetRefused
+      ? budgetRefused
+      : `provider error: ${formatProviderCause(res)}`;
   } else if (runError) {
     summaryTail =
       `partial decision: the run hit the ${runError}. ` +
