@@ -1,5 +1,31 @@
 # Changelog
 
+## [1.41.1](https://github.com/metalsp0rk/boiler-snake/compare/v1.41.0...v1.41.1) (2026-11-22)
+
+
+### Bug Fixes
+
+* **automod:** refused runs surface; no phantom retry ([#902](https://github.com/metalsp0rk/boiler-snake/issues/902)) ([d81d75b](https://github.com/metalsp0rk/boiler-snake/commit/d81d75bf5f0e752020fd8f0a50e3ddc1a8539912))
+* **automod:** resolve-loop aborts settle + record durably ([#903](https://github.com/metalsp0rk/boiler-snake/issues/903)) ([380902e](https://github.com/metalsp0rk/boiler-snake/commit/380902e8dfeec83cef55d711b1c315a5e0f80ee5))
+* **automod:** the budget consume gate actually gates ([#904](https://github.com/metalsp0rk/boiler-snake/issues/904)) ([d08d77a](https://github.com/metalsp0rk/boiler-snake/commit/d08d77ae212934fe50231f2955ac613f2163adbd))
+* **bridge:** CAS-guard recordOutboxFailure; post-ack throws never reschedule a delivered row ([#893](https://github.com/metalsp0rk/boiler-snake/issues/893)) ([8254eaf](https://github.com/metalsp0rk/boiler-snake/commit/8254eaf7c0e3320570977430a735cc5116f9c893))
+* **commands:** paginate the guild list in command registration ([#905](https://github.com/metalsp0rk/boiler-snake/issues/905) item 1) ([caedf3b](https://github.com/metalsp0rk/boiler-snake/commit/caedf3b5c26eb28175dced6f91818047f575aabe))
+* **core:** IPv4-mapped IPv6 refused in EVERY spelling ([#905](https://github.com/metalsp0rk/boiler-snake/issues/905) item 7) ([f49b363](https://github.com/metalsp0rk/boiler-snake/commit/f49b3636a6d3536a60d7757344edd85cde384bbb))
+* **db:** outbox requeue floor + event settle CAS + delete txs ([#905](https://github.com/metalsp0rk/boiler-snake/issues/905) item 6) ([5af86d6](https://github.com/metalsp0rk/boiler-snake/commit/5af86d6f079643122be9c6c4d36f2af5c195d81f))
+* **db:** updateGuildSettings binds only allow-listed keys ([#905](https://github.com/metalsp0rk/boiler-snake/issues/905) item 2) ([1bbcdd1](https://github.com/metalsp0rk/boiler-snake/commit/1bbcdd16dab0764a03c94798c4fb5c795d4dee49))
+* **events:** CAS-guard reminder retry/retire; claim belt mirrors the twin ([#895](https://github.com/metalsp0rk/boiler-snake/issues/895)) ([e9a8f11](https://github.com/metalsp0rk/boiler-snake/commit/e9a8f1161b0d2336fc82a9f0d27e63492c7b5a74))
+* **tickets:** clamp embed footers to Discord's real 200 cap ([#896](https://github.com/metalsp0rk/boiler-snake/issues/896)) ([41fb7f8](https://github.com/metalsp0rk/boiler-snake/commit/41fb7f8885625dfa012425a87c520a554d5b1166))
+* **tickets:** finalize is a consumed archive marker ([#900](https://github.com/metalsp0rk/boiler-snake/issues/900)) ([8369771](https://github.com/metalsp0rk/boiler-snake/commit/8369771ef6874cf7e63dba6d8804a22c18cd95b8))
+* **tickets:** stamp-scope the archive-claim release ([#897](https://github.com/metalsp0rk/boiler-snake/issues/897)) ([b2d14e5](https://github.com/metalsp0rk/boiler-snake/commit/b2d14e5fa45f97d91ab44c4febace67d65d87e4c))
+* **web:** cap + parallelize the /t tier fan-out ([#898](https://github.com/metalsp0rk/boiler-snake/issues/898)) ([2e24aae](https://github.com/metalsp0rk/boiler-snake/commit/2e24aae2cdb5b14c06cbecb3b4d31c4eda5f3195))
+* **web:** cooldown fields validate the 24h slash ceiling ([#905](https://github.com/metalsp0rk/boiler-snake/issues/905) item 3) ([a2c7efd](https://github.com/metalsp0rk/boiler-snake/commit/a2c7efd76cc920093ff7f5606f6c63647c9040a2))
+* **web:** CSRF drain responds 413 BEFORE destroying ([#905](https://github.com/metalsp0rk/boiler-snake/issues/905) item 5) ([970abe7](https://github.com/metalsp0rk/boiler-snake/commit/970abe7af2f92493dfa8b0ab62f516b25febec54))
+* **web:** events audit rows only for SUCCEEDED mutations ([#901](https://github.com/metalsp0rk/boiler-snake/issues/901)) ([b14dba2](https://github.com/metalsp0rk/boiler-snake/commit/b14dba26a54dde6d3fc798278fd75cfb0f982303))
+* **web:** keep action-table cells in table layout so rows can grow ([3980dff](https://github.com/metalsp0rk/boiler-snake/commit/3980dff65b86d609d3c15c5f829fab59fba3b9c4))
+* **web:** one member-fetch drain at a time, stop idle ticker ([#905](https://github.com/metalsp0rk/boiler-snake/issues/905) item 4) ([9c6d470](https://github.com/metalsp0rk/boiler-snake/commit/9c6d4703353477c45b21cf0e72f738fcbf0428bc))
+* **web:** routes feed the display seams the community id ([#899](https://github.com/metalsp0rk/boiler-snake/issues/899)) ([4ff4b2a](https://github.com/metalsp0rk/boiler-snake/commit/4ff4b2ad6d6f083c83fbb83b141d17a73e0b92d3))
+* **xp:** reserve the cooldown window before the awaited award ([#894](https://github.com/metalsp0rk/boiler-snake/issues/894)) ([7d1c0bc](https://github.com/metalsp0rk/boiler-snake/commit/7d1c0bc2450aa69f4c83b6564d3742eb6f2d7173))
+
 ## [1.41.0](https://github.com/metalsp0rk/boiler-snake/compare/v1.40.0...v1.41.0) (2026-11-20)
 
 
