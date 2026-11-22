@@ -30,6 +30,7 @@
  */
 
 const { validateXpValue, MAX_XP_AWARD } = require("../../core/xpMath");
+const { MAX_CONFIG_COOLDOWN_SEC } = require("../../core/cooldowns");
 
 /** Same snowflake gate the web layer uses everywhere (users/leaderboard). */
 const { STRICT_SNOWFLAKE_RE: CHANNEL_ID_RE } = require("../shared/snowflake");
@@ -177,7 +178,16 @@ function buildXpPatch(fields) {
   }
 
   for (const [field, column, label] of cooldownSpecs) {
-    const parsed = parseOptionalInt(fields, field, { min: 0, max: INT_MAX, label });
+    // #905 item 3 (audit r4 F10c): the SAME 24 h ceiling the slash option
+    // and the repository clamp enforce (#429 sweep invariant). Validating
+    // up to INT_MAX made POST 999999 flash success, store 86 400 silently,
+    // and record the PRE-CLAMP value in admin_audit — patch, store and
+    // audit must agree on what the admin actually set.
+    const parsed = parseOptionalInt(fields, field, {
+      min: 0,
+      max: MAX_CONFIG_COOLDOWN_SEC,
+      label,
+    });
     if (!parsed.provided) continue;
     if (parsed.error) {
       errors.push(parsed.error);

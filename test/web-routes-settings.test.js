@@ -1659,3 +1659,30 @@ describe("web settings page (GET /g/:guildId/settings, staff tier, read-only)", 
     });
   });
 });
+
+// ── #905 item 3 (audit r4 F10c): web cooldown validation == slash cap ──────
+// INT_MAX validation + a SILENT repo clamp meant POSTing 999999 flashed
+// success, stored 86 400, and recorded the PRE-CLAMP value in the audit
+// row. patch, store and audit must agree: reject above the #429 ceiling.
+
+describe("#905: web cooldown fields validate MAX_CONFIG_COOLDOWN_SEC", () => {
+  const { buildXpPatch } = require("../src/web/data/settingsWrite");
+  const { MAX_CONFIG_COOLDOWN_SEC } = require("../src/core/cooldowns");
+
+  it("rejects cooldowns above the 24 h slash ceiling with the range named", () => {
+    const bad = buildXpPatch({ msgcooldown: "999999" });
+    assert.equal(bad.ok, false);
+    assert.match(bad.error, /Message cooldown must be a whole number 0–86400/, bad.error);
+    assert.equal(MAX_CONFIG_COOLDOWN_SEC, 86400);
+
+    const bad2 = buildXpPatch({ reactioncooldown: String(MAX_CONFIG_COOLDOWN_SEC + 1) });
+    assert.equal(bad2.ok, false);
+    assert.match(bad2.error, /Reaction cooldown/);
+  });
+
+  it("accepts the boundary and honest in-range values (patch == stored == audited)", () => {
+    const edge = buildXpPatch({ msgcooldown: "86400", reactioncooldown: "0" });
+    assert.equal(edge.ok, true, edge.error);
+    assert.deepEqual(edge.patch, { msg_cooldown_sec: 86400, reaction_cooldown_sec: 0 });
+  });
+});
