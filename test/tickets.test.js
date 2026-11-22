@@ -479,6 +479,57 @@ describe("tickets repository", () => {
     assert.equal(db.getTicketById(t.id).archive_claimed_at, null, "own-stamp release works");
   });
 
+  it("#900: a sensitive finalize is a CONSUMED marker — the lease never re-admits", () => {
+    const t = db.createTicket({
+      communityId: communityKey("g-sensitive-900"),
+      creatorUserId: "u",
+      channelId: "ch-sensitive-900",
+    });
+    db.markTicketClosed(t.id, { closedBy: "mod", closeReason: "done" });
+
+    const t0 = 2_000_000_000_000;
+    assert.equal(db.claimTicketArchive(t.id, t0).won, true, "live channel: claim as usual");
+
+    const fin = db.closeTicketSensitive(t.id, { closedBy: "mod", closeReason: "done" });
+    assert.equal(Number(fin.archived), 0, "sensitive finalize keeps archived=0 BY DESIGN");
+    assert.equal(fin.channel_id, null, "…and carries finalize evidence instead");
+
+    // THE repro: after the 30-min lease matures the claim used to be
+    // winnable again on these rows — a second stub embed + a re-stamped
+    // archive_message_id on a content-wise finished ticket.
+    const L = db.ARCHIVE_CLAIM_LEASE_MS;
+    const late = db.claimTicketArchive(t.id, t0 + L);
+    assert.equal(late.won, false, "closed + channel-less = finished, forever unclaimable");
+    assert.equal(
+      db.getTicketById(t.id).archive_claimed_at,
+      t0,
+      "the loser does not re-stamp the dead claim",
+    );
+
+    // And an untouched-but-externally-disposed row behaves the same.
+    const t2 = db.createTicket({
+      communityId: communityKey("g-sensitive-900"),
+      creatorUserId: "u",
+      channelId: "ch-gone-900",
+    });
+    db.markTicketClosedByChannelDelete(communityKey("g-sensitive-900"), "ch-gone-900");
+    assert.equal(db.claimTicketArchive(t2.id, t0).won, false, "a disposed row never archives");
+  });
+
+  it("#900: a soft-closed NORMAL ticket (channel alive) stays claimable", () => {
+    const t = db.createTicket({
+      communityId: communityKey("g-soft-900"),
+      creatorUserId: "u",
+      channelId: "ch-soft-900",
+    });
+    db.markTicketClosed(t.id, { closedBy: "mod", closeReason: "done" });
+    assert.equal(
+      db.claimTicketArchive(t.id, 2_000_000_000_500).won,
+      true,
+      "closed_at alone is NOT finalize evidence — the channel is still live",
+    );
+  });
+
   it("claimTicketArchive stays sticky after a transcriptless archive", () => {
     // closeTicketArchived with no transcript leaves archived=0 (pinned
     // behavior) — WITHOUT the claim such a ticket could be archived twice.

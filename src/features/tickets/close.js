@@ -10,6 +10,7 @@ const {
   closeTicketArchived,
   claimTicketArchive,
   releaseTicketArchiveClaim,
+  ARCHIVE_CLAIM_LEASE_MS, // #900: live-vs-consumed copy split (archive-loser message)
   saveTicketMessages,
   generateTranscriptToken,
   getTicketSettings,
@@ -560,10 +561,23 @@ async function archiveTicketPipeline(opts) {
   if (!claim.won) {
     const live = claim.ticket || getTicketById(ticket.id) || ticket;
     const ref = formatTicketRef(live.ticket_number ?? ticket.ticket_number);
+    // #900: a sensitive row finalizes with archived=0 BY DESIGN — "closed
+    // with no channel" is its finalize evidence. Tell the three honest
+    // states apart instead of blaming a phantom close: finished WITH a
+    // stub/transcript id = archived; finished with a LIVE claim = another
+    // close is mid-run (the id is stamped last); finished with no id and
+    // no live claim = the channel died without an archive.
+    const finished =
+      Number(live.archived) === 1 || (live.status === "closed" && live.channel_id == null);
+    const claimLive =
+      live.archive_claimed_at != null &&
+      Date.now() - Number(live.archive_claimed_at) < ARCHIVE_CLAIM_LEASE_MS;
     const msg =
-      Number(live.archived) === 1
+      Number(live.archived) === 1 || (finished && live.archive_message_id)
         ? `Ticket ${ref} is already archived.`
-        : `Ticket ${ref} is already being archived by another close — nothing was done here.`;
+        : finished && !claimLive
+          ? `Ticket ${ref} is closed and its channel is gone — there is nothing left to archive.`
+          : `Ticket ${ref} is already being archived by another close — nothing was done here.`;
     console.warn(
       `[tickets] archive skipped for ${ref} (by ${archivedBy}): ${msg}`
     );
