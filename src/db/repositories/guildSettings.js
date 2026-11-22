@@ -471,11 +471,21 @@ function updateGuildSettings(communityId, patch) {
   if (!finalKeys.length) return getGuildSettings(communityId);
 
   const sets = finalKeys.map((k) => `${k}=@${k}`).join(", ");
+  // #905 item 2 (audit r4 F10b): bind ONLY the sanitized finalKeys plus the
+  // scope columns — NOT the raw patch. The old `{ ..., ...safePatch }`
+  // spread let a caller-supplied `community_id`/`updated_at` key OVERWRITE
+  // the scope bind (better-sqlite3: last bind wins for a duplicate name),
+  // retargeting the UPDATE at another community's row while returning the
+  // caller's own — a cross-tenant write the first body-forwarding caller
+  // would trigger. finalKeys ⊆ allow-list, which never contains either
+  // scope column, so the loop provably cannot touch the scope binds.
+  const bind = { community_id: communityId, updated_at: now() };
+  for (const k of finalKeys) bind[k] = safePatch[k];
   db.prepare(`
   UPDATE guild_settings
   SET ${sets}, updated_at=@updated_at
   WHERE community_id=@community_id
- `).run({ community_id: communityId, updated_at: now(), ...safePatch });
+ `).run(bind);
 
   // #360: this used to end with cleanupMalformedYoutubeChannels() — a
   // pre-split one-time migration firing on EVERY settings write from EVERY
