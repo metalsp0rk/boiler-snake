@@ -564,20 +564,55 @@ function setRunCaseHook(hook) {
  * Fire the installed hook DETACHED (never awaited by the handler — the
  * ack already shipped). Its own `.catch` names the ids (rule 1). Sync
  * throws from the hook installation path are caught too.
+ *
+ * #902 (audit r4 F11): a PRE-CLAIM refusal RESOLVES with
+ * {ok:false,state:"refused"} and used to be swallowed here — the ack had
+ * just promised "Recommendations will post", then the case died silently
+ * with zero staff-visible cause. The resolved value is now CONSUMED: a
+ * refusal surfaces through `notifyRefused` (ephemeral to the referrer at
+ * the modal seam). Mid-run {state:"failed"} results are NOT notified —
+ * finishRun already cards those with the cause.
  */
-function scheduleAutomodRun({ communityId, guildId, caseRow, referrerUserId }) {
+function scheduleAutomodRun({
+  communityId,
+  guildId,
+  caseRow,
+  referrerUserId,
+  notifyRefused = null,
+}) {
   const hook = runCaseHook;
   if (typeof hook !== "function") return;
   if (caseRow?.id == null) return; // nothing to run without the row id
   const ids =
     `(community ${communityId ?? "?"} guild ${guildId ?? "?"} case ${caseRow?.id ?? "?"})`;
   try {
-    const p = Promise.resolve().then(() =>
-      hook({ communityId, guildId, case: caseRow, referrerUserId }),
-    );
-    p.catch((err) =>
-      console.error(`[automod] automod run crashed ${ids}:`, err?.message || err),
-    );
+    Promise.resolve()
+      .then(() => hook({ communityId, guildId, case: caseRow, referrerUserId }))
+      .then((res) => {
+        if (!res || res.ok || res.state !== "refused") return undefined;
+        const cause = String(res.error || "the run was refused");
+        if (typeof notifyRefused !== "function") {
+          console.error(
+            `[automod] run refused ${ids} with no notice seam — the referrer was told recommendations would post: ${cause}`,
+          );
+          return undefined;
+        }
+        return Promise.resolve()
+          .then(() =>
+            notifyRefused(
+              `**Automod run refused** (A-${caseRow?.case_number ?? "?"}): ${cause}`,
+            ),
+          )
+          .catch((err) =>
+            console.error(
+              `[automod] refusal notice failed ${ids}:`,
+              err?.message || err,
+            ),
+          );
+      })
+      .catch((err) =>
+        console.error(`[automod] automod run crashed ${ids}:`, err?.message || err),
+      );
   } catch (err) {
     console.error(`[automod] automod run crashed ${ids}:`, err?.message || err);
   }

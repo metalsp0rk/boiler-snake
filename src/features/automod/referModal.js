@@ -44,7 +44,7 @@ const {
   TextInputStyle,
 } = require("discord.js");
 const { requireStaff } = require("../../core/permissions");
-const { replyEphemeral, safeErrorReply } = require("../../core/interaction");
+const { replyEphemeral, replyOrFollowUpEphemeral, safeErrorReply } = require("../../core/interaction");
 const { sliceSafe } = require("../../core/text");
 const {
   MODAL_REFER_PREFIX,
@@ -356,11 +356,19 @@ async function handleReferModal(interaction, ctx) {
     });
 
     // #728 law: trigger AFTER the ack reply resolves — detached, own catch.
+    // #902: a pre-claim refusal (budget blocked/exhausted, DB read error)
+    // must not silently contradict the ack — the referrer gets the cause
+    // ephemeral (mid-run failures already card themselves in-channel).
     refer.scheduleAutomodRun({
       communityId: entry.communityId,
       guildId: entry.guildId ?? null,
       caseRow: result.case,
       referrerUserId: entry.referrerUserId ?? null,
+      notifyRefused: (message) =>
+        replyOrFollowUpEphemeral(interaction, {
+          content: sliceSafe(message, 2000),
+          allowedMentions: { parse: [] },
+        }),
     });
   } catch (err) {
     // Rule 1/6: name the ids; the router's wrap stays the last resort.

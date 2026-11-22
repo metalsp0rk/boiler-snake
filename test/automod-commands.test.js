@@ -924,7 +924,15 @@ async function submitReferModal(ctx, manageGuild, fields = { problem: "targeted 
     },
     fields: { getTextInputValue: (id) => fields[id] ?? "" },
     replies,
+    // #902: Discord-shaped lifecycle — after the ack, follow-ups (the
+    // refusal notice) are the ONLY channel; the fake honors that.
+    replied: false,
     reply: async (payload) => {
+      submit.replied = true;
+      replies.push(typeof payload === "string" ? { content: payload } : payload);
+      return payload;
+    },
+    followUp: async (payload) => {
       replies.push(typeof payload === "string" ? { content: payload } : payload);
       return payload;
     },
@@ -1202,5 +1210,69 @@ describe("/automod refer — slash intake wiring (#726)", () => {
       // Last writer wins on the ONE column — no second queue exists.
       assert.equal(service.readSettings(communityId).settings.channelId, REFER_AMOD_CH);
     });
+  });
+});
+
+// ── #902 (audit r4 F11): the refer → hook → notice CHAIN ───────────────────
+//
+// The ack promises "Recommendations will post"; a PRE-CLAIM refusal resolves
+// {ok:false,state:"refused"} and used to be swallowed by the detached-fire
+// seam — silent death, no cause anywhere (error rules 2/3). The chain test
+// below installs the hook (what unit tests never did) and asserts the
+// REFERRER sees the cause. state:"failed" must NOT double-notify — finishRun
+// already cards those in-channel.
+
+describe("#902: refused detached runs reach the referrer (real chain)", () => {
+  it("pre-claim refusal → ephemeral notice with the cause; ok and failed runs stay quiet", async () => {
+    const refer = require("../src/features/automod/refer");
+    const communityId = readyReferCommunity();
+    let hookReturn = {
+      ok: false,
+      state: "refused",
+      error: "**Daily budget:** blocked (`-1`) — re-refer once the budget is open.",
+    };
+    const runs = [];
+    refer.setRunCaseHook(async (input) => {
+      runs.push(input);
+      return hookReturn;
+    });
+    try {
+      const openAndSubmit = async () => {
+        const { ctx } = makeCtx({
+          commandName: "automod",
+          communityId,
+          sub: "refer",
+          options: { message: referLink() },
+          raw: makeReferRaw(),
+        });
+        await automod.handlers.automod(ctx, {});
+        return await submitReferModal(ctx, true);
+      };
+
+      // — refused run: ack THEN the notice (order = the real lifecycle) —
+      const first = await openAndSubmit();
+      await new Promise((r) => setImmediate(r)); // drain the detached chain
+      assert.equal(runs.length, 1, "the hook fired once");
+      assert.ok(runs[0]?.case?.id != null, "the hook received the recorded row");
+      const ack = String(first.replies[0]?.content ?? "");
+      const notice = String(first.replies[1]?.content ?? "");
+      assert.match(ack, /Recommendations will post/);
+      assert.match(notice, /\*\*Automod run refused\*\*/, `notice expected, replies: ${JSON.stringify(first.replies)}`);
+      assert.match(notice, /blocked \(`-1`\)/, "the service's own cause rides along (rule 3)");
+
+      // — succeeding run: ack only, nothing else —
+      hookReturn = { ok: true, state: "complete" };
+      const second = await openAndSubmit();
+      await new Promise((r) => setImmediate(r));
+      assert.equal(second.replies.length, 1, "a succeeding run adds no follow-up");
+
+      // — mid-run failure: finishRun CARDS it; the referrer is not spammed —
+      hookReturn = { ok: false, state: "failed", error: "provider exploded" };
+      const third = await openAndSubmit();
+      await new Promise((r) => setImmediate(r));
+      assert.equal(third.replies.length, 1, "state:failed is NOT re-notified to the referrer");
+    } finally {
+      refer.setRunCaseHook(null);
+    }
   });
 });

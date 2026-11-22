@@ -197,16 +197,21 @@ describe("#822: the family is opt-in — unset knobs never delete anything", () 
 
 // ── 2. automod cases + actions ──────────────────────────────────────────────
 
-describe("#822: automod_cases + case_actions (one knob, terminal-only)", () => {
+describe("#822: automod_cases + case_actions (one knob; terminal + abandoned)", () => {
   before(clearFamily);
 
-  it("terminal cases + their actions die past the window; the live queue cannot", () => {
+  it("aged terminal AND abandoned-recorded cases die past the window; live states cannot", () => {
     const gone = seedCase("complete", T - 400 * DAY);
     const goneAction = seedAction(gone, T - 400 * DAY);
     const boundary = seedCase("failed", T - 365 * DAY); // EXACTLY at cutoff
     const boundaryAction = seedAction(boundary, T - 365 * DAY);
-    const liveQueue = seedCase("recorded", T - 4000 * DAY); // ancient but live
+    // #902: an ancient `recorded` row is NOT a live queue — a refused
+    // pre-claim run (or a never-wired harness) abandoned it; retention is
+    // its only exit. `processing` stays protected (the boot sweep owns it).
+    const abandonedRecorded = seedCase("recorded", T - 4000 * DAY);
+    const abandonedAction = seedAction(abandonedRecorded, T - 4000 * DAY);
     const processing = seedCase("processing", T - 4000 * DAY);
+    const freshRecorded = seedCase("recorded", T - 10 * DAY); // never-claimed but in-window
     const recentTerminal = seedCase("complete", T - 10 * DAY);
     const liveActionOnOldCase = seedAction(
       seedCase("complete", T - 400 * DAY),
@@ -219,15 +224,19 @@ describe("#822: automod_cases + case_actions (one knob, terminal-only)", () => {
     });
     const caseRow = rows.find((r) => r.table === "automod_cases");
     const actionRow = rows.find((r) => r.table === "automod_case_actions");
-    assert.equal(caseRow.deleted, 2, "both terminal cases past the window (the recently-claimed action's parent is one of them)");
+    assert.equal(caseRow.deleted, 3, "two terminal cases + the ABANDONED recorded row past the window");
     assert.ok(sql("SELECT 1 FROM automod_cases WHERE id=?").get(boundary),
       "a case at EXACTLY the cutoff survives (strict <)");
-    for (const id of [liveQueue, processing, recentTerminal, boundary]) {
+    for (const id of [processing, freshRecorded, recentTerminal, boundary]) {
       assert.ok(sql("SELECT 1 FROM automod_cases WHERE id=?").get(id), `case ${id} lives`);
     }
-    assert.equal(actionRow.deleted, 1, "only the action whose case + row both aged out");
+    assert.equal(sql("SELECT 1 FROM automod_cases WHERE id=?").get(abandonedRecorded), undefined,
+      "#902: the abandoned recorded row is gone — nothing else will ever fire or free it");
+    assert.equal(actionRow.deleted, 2, "the old action whose case + row both aged out, terminal or abandoned-recorded");
     assert.equal(sql("SELECT 1 FROM automod_case_actions WHERE id=?").get(goneAction), undefined,
       "the old action died with its terminal case");
+    assert.equal(sql("SELECT 1 FROM automod_case_actions WHERE id=?").get(abandonedAction), undefined,
+      "#902: actions on an abandoned recorded case die in the SAME sweep");
     assert.ok(sql("SELECT 1 FROM automod_case_actions WHERE id=?").get(boundaryAction),
       "an action at EXACTLY the cutoff survives too");
     assert.ok(sql("SELECT 1 FROM automod_case_actions WHERE id=?").get(liveActionOnOldCase),

@@ -462,9 +462,18 @@ function resolveAutomodCase(communityId, caseId, resolution, staffUserId, { nowM
  * (complete/failed) whose row stopped changing before the cutoff are erased.
  * A terminal case carries no queue or run state; its note, required_context
  * and message_snippet are retained PII (referral prose + a content excerpt of
- * the reported message). Recorded/processing cases are NEVER touched — the
- * live queue stays whole. Opt-in via RETENTION_AUTOMOD_CASES_DAYS; the
+ * the reported message). Processing cases are NEVER touched — the boot
+ * sweep owns that state. Opt-in via RETENTION_AUTOMOD_CASES_DAYS; the
  * companion automod_case_actions prune rides the same knob.
+ *
+ * #902 (audit r4 F11): ABANDONED `recorded` rows join the purge. A run that
+ * refused BEFORE its claim leaves the row `recorded` with nothing left to
+ * fire it — the modal submit is the only re-firer, the boot sweep takes
+ * `processing` only, and the claim never re-arms — so retention was the
+ * only exit these rows never had (they accumulated forever, invisible to
+ * every sweep). A row still `recorded` past the (days-scale) cutoff is by
+ * definition abandoned: a real run claims it within the same second, and
+ * the claim bumps `updated_at` out of scope anyway.
  * @param {number} cutoffMs deleted strictly before (epoch ms)
  * @param {number} [limit]
  * @returns {number} rows deleted
@@ -483,7 +492,7 @@ function deleteTerminalAutomodCasesOlderThan(cutoffMs, limit = 500) {
   return db
     .prepare(
       `DELETE FROM automod_cases
-        WHERE status IN ('complete','failed') AND updated_at < ?
+        WHERE status IN ('complete','failed','recorded') AND updated_at < ?
         LIMIT ?`,
     )
     .run(cutoffMs, limit).changes;

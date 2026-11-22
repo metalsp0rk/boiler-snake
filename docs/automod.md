@@ -448,7 +448,10 @@ unchanged — it still only says where recommendations will post.
 **Run lifecycle:**
 
 1. Budget **pre-gate** (blocked/exhausted refuses before anything mutates —
-   the case stays `recorded` and is re-runnable after the UTC day rolls).
+   the case stays `recorded` and NOTHING re-fires it: re-refer the message
+   after the UTC day rolls or the cap changes. A refusal always reaches the
+   referrer as an ephemeral naming the cause (#902) — the ack's promise is
+   honestly retracted, never silently broken).
 2. **Atomic claim** `recorded → processing` (a conditional UPDATE — one
    referral, one run; a second attempt refuses naming the current status).
 3. A **reviewing placeholder** posts to the automod channel naming the
@@ -1334,8 +1337,10 @@ One counter per community per **UTC day** (`automod_cases_today` +
 provider call is accepted** (see [Harness](#harness) for the exact
 acceptance rule) — a provider failure does not consume budget, and the run
 consumes exactly once per accepted run. A run that starts against a
-blocked/exhausted budget refuses BEFORE mutating anything, so the recorded
-case survives to run after the day rolls. `/automod status` shows the real
+blocked/exhausted budget refuses BEFORE mutating anything; the recorded row
+stays as the record of the attempt, but nothing re-fires it — re-refer to run
+after the day rolls (#902 — the refusal notice says exactly this).
+`/automod status` shows the real
 remaining count; the counter rolls at the UTC day boundary with no ticker.
 
 ## Circuit breaker (trip + gate shipped — #736/#739)
@@ -1422,14 +1427,18 @@ join the opt-in erasure bus alongside voided warnings and erased notes:
 `RETENTION_AUTOMOD_CASES_DAYS` (default **off** — unset keeps every row,
 reported as an honest `disabled` skip by every sweep run).
 
-The sweep is state-qualified: only cases whose status is TERMINAL
-(`complete`/`failed`, per `updated_at`) older than the window die — the
-`recorded`/`processing` queue is structurally outside the WHERE. A re-armed
-case (the harness's `complete → recorded` path) is live again and untouchable;
-past the opt-in window a terminal case is simply no longer re-armable — the
-documented trade. `automod_case_actions` rows ride the SAME knob and die
-when their case is terminal-and-aged (or the case row is already swept);
-an action row touched recently survives even under an old terminal case,
+The sweep is state-qualified: cases whose status is TERMINAL
+(`complete`/`failed`) — or ABANDONED (`recorded`, since #902: a run that
+refused before its claim leaves a row nothing can ever re-fire, and before
+this the row accumulated forever) — are erased per `updated_at` past the
+window; `processing` stays structurally outside (the boot sweep owns it).
+A re-armed case (the harness's `complete → recorded` path) stamps
+`updated_at` and is live again and untouchable; past the opt-in window a
+terminal or abandoned case is simply no longer re-armable — the documented
+trade (in-window, a re-armed case still runs). `automod_case_actions` rows
+ride the SAME knob and die when their case is terminal/abandoned-and-aged
+(or the case row is already swept);
+an action row touched recently survives even under an old case,
 and the dedupe-slot rows without a case are never claimed.
 
 Rows at exactly the cutoff instant survive (strict older-than, the suite-wide
