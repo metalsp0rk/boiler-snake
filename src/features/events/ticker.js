@@ -62,16 +62,24 @@ async function stepReminders(client, nowMs) {
         retired += 1;
       } else {
         const back = repo.markEventReminderRetry(row.id, res.reason || "delivery failed");
-        if (back?.terminal) retired += 1;
-        else retried += 1;
+        // #895: `outcome:"skipped"` means a concurrent writer (organizer
+        // cancel/edit, or another delivery) settled this row mid-flight —
+        // the late failure write changes nothing and is counted neither way.
+        if (back?.outcome !== "skipped") {
+          if (back?.terminal) retired += 1;
+          else retried += 1;
+        }
         console.error(
           `[events] reminder row=${row.id} event=${row.event_id} retry: ${res.reason}`
         );
       }
     } catch (err) {
       const back = repo.markEventReminderRetry(row.id, err?.message || String(err));
-      if (back?.terminal) retired += 1;
-      else retried += 1;
+      if (back?.outcome !== "skipped") {
+        // #895: settled elsewhere — no resurrection, no retry count
+        if (back?.terminal) retired += 1;
+        else retried += 1;
+      }
       console.error(
         `[events] reminder row=${row.id} event=${row.event_id} threw:`,
         err?.message || err
