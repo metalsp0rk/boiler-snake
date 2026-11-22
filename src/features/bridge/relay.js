@@ -2956,7 +2956,10 @@ function startBridgeLoops(supervisor = null, opts = {}) {
 
   // 2. Restart recovery: 'sending' rows (a crash mid-execution) replay.
   try {
-    const requeued = repo.requeueStaleOutbox();
+    // #905 (F10f-a): olderThanMs 0 = the single-process crash law (every
+    // 'sending' row is dead regardless of age). The primitive's DEFAULT
+    // is an age floor — live callers must never requeue in-flight sends.
+    const requeued = repo.requeueStaleOutbox({ olderThanMs: 0 });
     if (requeued > 0) {
       console.log(`[bridge] restart: requeued ${requeued} outbox row(s) from 'sending'`);
     }

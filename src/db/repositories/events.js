@@ -518,14 +518,24 @@ function updateEvent(eventId, patch = {}) {
   }
 }
 
-/** Transition a draft → posted with its Discord coordinates. */
+/** Transition to posted with Discord coordinates.
+ *
+ * #905 item 6 (audit r4 F10f-b): TERMINAL-SCOPED CAS. Reachable from
+ * `draft` (scheduled arm), `pending_confirm` (wizard/manual confirm) and
+ * `posted` (the documented REPOST path re-stamps coordinates) — but a
+ * row that went TERMINAL (`skipped`/`archived`) mid-flight must never be
+ * resurrected to `posted` with its schedule columns rewritten by a post
+ * that raced the staff decision. A lost CAS returns the LIVE row: the
+ * caller sees the terminal status (the Discord side effect that raced is
+ * real and already logged).
+ */
 function markEventPosted(eventId, { channelId, messageId }) {
   db.prepare(
     `UPDATE events
      SET status = 'posted', channel_id = ?, message_id = ?,
          post_at = NULL, next_attempt_at = NULL, post_attempts = 0,
          last_post_error = NULL, updated_at = ?
-     WHERE id = ?`,
+     WHERE id = ? AND status NOT IN ('skipped', 'archived')`,
   ).run(String(channelId), String(messageId), now(), eventId);
   return getEventById(eventId);
 }
@@ -574,17 +584,41 @@ function claimDueScheduledPosts(nowMs, limit = 20) {
 
 /** Record a failed post attempt; at MAX_POST_ATTEMPTS the draft carries last_post_error. */
 function recordEventPostFailure(eventId, errorText, nowMs = now()) {
-  const row = db.prepare(`SELECT post_attempts FROM events WHERE id = ?`).get(eventId);
-  if (!row) return null;
-  const attempts = row.post_attempts + 1;
-  const failed = attempts >= MAX_POST_ATTEMPTS;
-  const backoff = failed ? null : nowMs + Math.min(60_000 * 2 ** (attempts - 1), 6 * 3_600_000);
-  db.prepare(
-    `UPDATE events
-     SET post_attempts = ?, next_attempt_at = ?, last_post_error = ?, updated_at = ?
-     WHERE id = ?`,
-  ).run(attempts, backoff, String(errorText || "").slice(0, 500), nowMs, eventId);
-  return { attempts, failed, nextAttemptAt: backoff };
+  // #905 item 6 (audit r4 F10f-b): ATOMIC increment (was read-modify-write:
+  // concurrent failures collapsed to the same absolute value) and DRAFT-
+  // scoped (this is the SCHEDULED arm's counter — its claim CAS is draft-
+  // scoped; a row that left draft mid-flight gets an honest skip, no
+  // resurrected retry schedule). One transaction; a lost CAS reports the
+  // live counter untouched.
+  const bump = db.transaction(() => {
+    const info = db
+      .prepare(
+        `UPDATE events SET post_attempts = post_attempts + 1, updated_at = ?
+         WHERE id = ? AND status = 'draft'`,
+      )
+      .run(nowMs, eventId);
+    const row = db
+      .prepare(`SELECT post_attempts, status FROM events WHERE id = ?`)
+      .get(eventId);
+    if (!row) return { missing: true };
+    if (info.changes === 0) return { skipped: true, attempts: row.post_attempts };
+    const attempts = row.post_attempts;
+    const failed = attempts >= MAX_POST_ATTEMPTS;
+    const backoff = failed
+      ? null
+      : nowMs + Math.min(60_000 * 2 ** (attempts - 1), 6 * 3_600_000);
+    db.prepare(
+      `UPDATE events SET next_attempt_at = ?, last_post_error = ?, updated_at = ?
+       WHERE id = ? AND status = 'draft'`,
+    ).run(backoff, String(errorText || "").slice(0, 500), nowMs, eventId);
+    return { attempts, failed, nextAttemptAt: backoff };
+  });
+  const out = bump();
+  if (out.missing) return null;
+  if (out.skipped) {
+    return { attempts: out.attempts, failed: false, nextAttemptAt: null, skipped: true };
+  }
+  return out;
 }
 
 /** Delete an event and every child row (child-first, one transaction). */
