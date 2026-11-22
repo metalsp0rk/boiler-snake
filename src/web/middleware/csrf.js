@@ -193,17 +193,25 @@ function drainRawBody(req, maxBytes) {
     const chunks = [];
     let size = 0;
     let settled = false;
+    let dead = false;
     const finish = (value) => {
       if (settled) return;
       settled = true;
       resolve(value);
     };
     req.on("data", (chunk) => {
+      if (dead) return;
       const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
       size += buf.length;
       if (size > maxBytes) {
+        // #905 item 5 (audit r4 F10e): the ORDERING LAW (mirrors
+        // rateLimit.js) — resolve first and let the CALLER write the 413
+        // and only THEN destroy. Destroying here used to kill the socket
+        // under the response the caller was about to write: the client
+        // got a connection reset instead of the documented
+        // "Payload too large". `dead` keeps memory bounded meanwhile.
+        dead = true;
         finish({ tooLarge: true, buffer: null });
-        if (typeof req.destroy === "function") req.destroy();
         return;
       }
       chunks.push(buf);
@@ -343,7 +351,13 @@ function createCsrfGuard({ getSecret, getSessionId, maxBodyBytes }) {
     }
 
     drainRawBody(req, maxBodyBytes).then(({ tooLarge, buffer }) => {
-      if (tooLarge) return denyPayloadTooLarge(res);
+      if (tooLarge) {
+        // #905 item 5: respond FIRST, destroy after — the drain no longer
+        // kills the socket out from under this write (rateLimit.js order).
+        denyPayloadTooLarge(res);
+        if (typeof req.destroy === "function") req.destroy();
+        return;
+      }
       req.rawBody = buffer || Buffer.alloc(0);
       req.bodyFields = formFields(req.rawBody);
       if (req.body === undefined) req.body = req.bodyFields;
