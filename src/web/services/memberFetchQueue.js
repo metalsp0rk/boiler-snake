@@ -329,13 +329,35 @@ function pruneLedgers() {
   }
 }
 
+let draining = false;
+
 function startTicker() {
   if (timer) return;
   timer = setInterval(() => {
+    // #905 item 4 (audit r4 F10d): ONE drain at a time. A drain awaits up
+    // to FETCH_BUDGET_PER_FLUSH SEQUENTIAL fetches and discord.js parks
+    // requests during 429 backoff — any drain slower than the tick used
+    // to start overlapping drains, each enforcing the 60-fetch budget on
+    // its OWN counter: the documented "≤60 ids per tick" throttle became
+    // k×60 concurrent fetches and fairness degraded.
+    if (draining) return;
+    draining = true;
     // Detached async work: own catch (AGENTS.md — one failure can't kill the loop).
-    flushMemberFetchQueue().catch((err) => {
-      console.error("[web] member-fetch tick failed:", err?.message || err);
-    });
+    flushMemberFetchQueue()
+      .catch((err) => {
+        console.error("[web] member-fetch tick failed:", err?.message || err);
+      })
+      .finally(() => {
+        draining = false;
+        // Idle → stop the clock entirely (a later enqueue re-arms via
+        // startTicker). A drain ending while others are pending keeps
+        // the timer; an enqueue landing between the size check and this
+        // line re-arms at worst on the next tick — ids are never lost.
+        if (pending.size === 0 && timer) {
+          clearInterval(timer);
+          timer = null;
+        }
+      });
   }, FLUSH_INTERVAL_MS);
   if (typeof timer.unref === "function") timer.unref();
 }
@@ -346,6 +368,7 @@ function stopMemberFetchQueue() {
     clearInterval(timer);
     timer = null;
   }
+  draining = false;
   pending.clear();
   attempted.clear();
   clients.clear();
