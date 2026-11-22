@@ -19,6 +19,38 @@ const {
 const { buildDefaultRegistry } = require("./registry");
 const { restTransportAgent } = require("../core/restTransportAgent");
 
+/**
+ * #917 item 1 (audit r4 F10a): `client.guilds.fetch()` with no options is a
+ * SINGLE `GET /users/@me/guilds` page — the API caps a page at 200 and the
+ * vendored GuildManager does no cursor loop. A bot in >200 guilds silently
+ * registered commands to page 1 only, then printed "0 failed" and exited 0.
+ * Page forward with the documented `after` cursor until the API stops
+ * returning NEW ids (the non-advancing-cursor break also ends a mock/API
+ * that ignores the parameter — never an infinite loop).
+ *
+ * @param {object} client discord.js client (Guilds intent)
+ * @returns {Promise<Map<string, {id: string, name: string}>>}
+ */
+async function fetchAllGuilds(client) {
+  const all = new Map();
+  let after;
+  for (;;) {
+    const page = await client.guilds.fetch(
+      after ? { after, limit: 200 } : { limit: 200 },
+    );
+    if (!page?.size) break;
+    let lastId = null;
+    for (const [id, guild] of page) {
+      all.set(id, guild);
+      lastId = id;
+    }
+    if (page.size < 200) break; // short page = last page
+    if (!lastId || lastId === after) break; // cursor never advanced — stop honest, loop never
+    after = lastId;
+  }
+  return all;
+}
+
 async function main() {
   const token = process.env.DISCORD_TOKEN;
   const clientId = process.env.CLIENT_ID;
@@ -73,7 +105,7 @@ async function main() {
   });
   await client.login(token);
 
-  const guilds = await client.guilds.fetch();
+  const guilds = await fetchAllGuilds(client);
   console.log(`Found ${guilds.size} guild(s)`);
 
   let successCount = 0;
@@ -108,4 +140,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { main };
+module.exports = { main, fetchAllGuilds };
